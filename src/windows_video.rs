@@ -191,7 +191,7 @@ fn nv12_rgba(input: &[u8], w: usize, h: usize, stride: usize) -> Result<Vec<u8>>
     Ok(rgba)
 }
 fn show_frame(data: &[u8], w: usize, h: usize, stride: usize, key: &str,
-    tx: &std::sync::mpsc::Sender<crate::gui::GuiEvent>, ctx: &eframe::egui::Context) -> Result<()> {
+    tx: &crate::gui::GuiTx, ctx: &eframe::egui::Context) -> Result<()> {
     let rgba = nv12_rgba(data, w, h, stride)?;
     tx.send(crate::gui::GuiEvent::StickerImageReady {
         key: key.into(), image: eframe::egui::ColorImage::from_rgba_unmultiplied([w,h], &rgba),
@@ -200,7 +200,7 @@ fn show_frame(data: &[u8], w: usize, h: usize, stride: usize, key: &str,
     Ok(())
 }
 pub fn decode(stop: Arc<AtomicBool>, rx: Receiver<Vec<u8>>,
-    tx: std::sync::mpsc::Sender<crate::gui::GuiEvent>, ctx: eframe::egui::Context,
+    tx: crate::gui::GuiTx, ctx: eframe::egui::Context,
     synced: Arc<AtomicBool>, tex_key: String) -> Result<()> {
     let _runtime = Runtime::new()?;
     unsafe {
@@ -226,11 +226,18 @@ pub fn decode(stop: Arc<AtomicBool>, rx: Receiver<Vec<u8>>,
     }
     Ok(())
 }
+// Media Foundation sources are free-threaded; both threads enter the MTA.
+struct MtaSource(IMFMediaSource);
+unsafe impl Send for MtaSource {}
+impl MtaSource {
+    unsafe fn shutdown(&self) { let _ = self.0.Shutdown(); }
+}
+
 struct Source(IMFMediaSource);
 impl Drop for Source { fn drop(&mut self) { unsafe { let _ = self.0.Shutdown(); } } }
 
 pub fn capture(stop: Arc<AtomicBool>, enabled: Arc<AtomicBool>, keyframe: Arc<AtomicBool>,
-    au_tx: SyncSender<Vec<u8>>, tx: Option<std::sync::mpsc::Sender<crate::gui::GuiEvent>>,
+    au_tx: SyncSender<Vec<u8>>, tx: Option<crate::gui::GuiTx>,
     ctx: Option<eframe::egui::Context>) -> Result<()> {
     let _runtime = Runtime::new()?;
     while !stop.load(Ordering::Relaxed) {
@@ -251,15 +258,15 @@ pub fn capture(stop: Arc<AtomicBool>, enabled: Arc<AtomicBool>, keyframe: Arc<At
             let mut encoder = Codec::encoder(320,240)?;
             // Shutdown interrupts ReadSample even when a camera/driver stops producing.
             let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-            let watch_source = source.0.clone();
+            let watch_source = MtaSource(source.0.clone());
             let watch_stop = stop.clone(); let watch_enabled = enabled.clone(); let watch_name = desired.clone();
             let watcher = std::thread::spawn(move || {
-                let _runtime = Runtime::new();
+                let Ok(_runtime) = Runtime::new() else { return; };
                 loop {
                     if done_rx.recv_timeout(Duration::from_millis(100)) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) { break; }
                     if watch_stop.load(Ordering::Relaxed) || !watch_enabled.load(Ordering::Relaxed)
                         || crate::media::selected_camera_device() != watch_name {
-                        let _ = watch_source.Shutdown(); break;
+                        watch_source.shutdown(); break;
                     }
                 }
             });
@@ -324,9 +331,11 @@ mod tests {
             let mut raw = vec![128; 320*240*3/2];
             raw[..320*240].fill(90);
             let mut decoded = 0;
-            for n in 0..30 {
+            let mut encoded_count = 0;
+            for n in 0..90 {
                 encoder.input(&sample(&raw,n * (10_000_000/15))?)?;
                 while let Some(encoded) = encoder.output()? {
+                    encoded_count += 1;
                     let packet = bytes(&encoded)?;
                     anyhow::ensure!(packet.windows(3).any(|s| s == [0,0,1]), "Encoder must produce Annex-B");
                     decoder.input(&sample(&packet,n * (10_000_000/15))?)?;
@@ -338,7 +347,7 @@ mod tests {
                     }
                 }
             }
-            anyhow::ensure!(decoded > 0, "Native H.264 pipeline produced no frames");
+            anyhow::ensure!(decoded > 0, "Native H.264 pipeline produced no frames; encoded={encoded_count}");
         }
         Ok(())
     }

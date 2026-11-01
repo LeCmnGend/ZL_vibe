@@ -44,7 +44,7 @@ pub(super) struct ThemePalette {
     /// Date chip / reaction chip surface.
     pub(super) chip_bg: Color32,
     /// Composer input surface.
-    pub(super) composer_bg: Color32,
+
     /// Soft drop shadow tint.
     pub(super) shadow: Color32,
 }
@@ -84,7 +84,7 @@ impl ThemePalette {
             canvas_bottom: Color32::from_rgb(31, 38, 50),
             badge: Color32::from_rgb(64, 132, 255),
             chip_bg: Color32::from_rgb(50, 56, 66),
-            composer_bg: Color32::from_rgb(44, 49, 58),
+
             shadow: Color32::from_rgba_unmultiplied(0, 0, 0, 60),
         }
     }
@@ -123,7 +123,7 @@ impl ThemePalette {
             canvas_bottom: Color32::from_rgb(225, 240, 250),
             badge: Color32::from_rgb(10, 110, 245),
             chip_bg: Color32::from_rgb(255, 255, 255),
-            composer_bg: Color32::from_rgb(255, 255, 255),
+
             shadow: Color32::from_rgba_unmultiplied(30, 60, 110, 22),
         }
     }
@@ -821,23 +821,8 @@ pub(super) fn draw_icon_attachment(
     draw_lucide_icon(painter, center, lucide::PAPERCLIP, size, color);
 }
 
-pub(super) fn draw_icon_chat_nav(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
-    draw_lucide_icon(painter, center, lucide::MESSAGE_SQUARE, size, color);
-}
-
 pub(super) fn draw_icon_contacts(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
     draw_lucide_icon(painter, center, lucide::USERS, size, color);
-}
-
-pub(super) fn draw_icon_cloud(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
-    draw_lucide_icon(painter, center, lucide::CLOUD, size, color);
-}
-
-pub(super) fn draw_icon_settings(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
-    draw_lucide_icon(painter, center, lucide::SETTINGS, size, color);
-}
-pub(super) fn draw_icon_feed(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
-    draw_lucide_icon(painter, center, lucide::NEWSPAPER, size, color);
 }
 
 pub(super) fn draw_icon_drawer(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
@@ -1130,7 +1115,7 @@ pub(super) fn ensure_cjk_font<'a>(ctx: &egui::Context, mut texts: impl Iterator<
         return;
     }
     CJK_LOADED.store(true, Ordering::Relaxed);
-    build_fonts(ctx, true);
+    build_fonts(ctx);
 }
 
 /// One font file chosen for the egui font stack (`index` selects a face inside a `.ttc`).
@@ -1380,10 +1365,10 @@ fn insert_font(
 }
 
 pub(super) fn setup_custom_fonts(ctx: &egui::Context) {
-    build_fonts(ctx, false);
+    build_fonts(ctx);
 }
 
-fn build_fonts(ctx: &egui::Context, with_cjk: bool) {
+fn build_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
     // 1. Embedded Lucide icon font (Private Use Area glyphs for every UI icon).

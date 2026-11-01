@@ -33,9 +33,7 @@ impl ZaloGuiApp {
         // -------------------------------------------------------------------
         let screen_rect = ctx.screen_rect();
         let screen_w = screen_rect.width();
-        let is_compact_w = false;
         let is_narrow_w = false;
-        let left_rail_w = 62.0;
         // The right info drawer only fits on wide windows.
         let drawer_allowed = screen_w >= 1000.0;
 
@@ -878,7 +876,9 @@ impl ZaloGuiApp {
                                                 .map(|(_, until)| *until > std::time::Instant::now())
                                                 .unwrap_or(false);
                                         let (sub_status_lbl, sub_status_col): (String, Color32) =
-                                            if is_group {
+                                            if is_typing_now {
+                                                ("Đang nhập…".into(), pal.accent_online)
+                                            } else if is_group {
                                                 let count = self.group_member_counts.get(&thread_id).map(|n| *n as u64)
                                                     .or_else(|| self.threads.get(self.selected_thread_index).and_then(|t| t.presentation.member_count));
                                                 (count.map(|n| format!("{n} thành viên")).unwrap_or_else(|| "Nhóm trò chuyện".into()), pal.text_secondary)
@@ -2671,6 +2671,8 @@ impl ZaloGuiApp {
                     }
 
                     // 4. Bottom Message Composer Bar (Compact Icon Actions + Spacious Input + Padded Send Button)
+                    let mut popup_plus_rect = Rect::NOTHING;
+                    let mut popup_emoji_rect = Rect::NOTHING;
                     let composer_frame = egui::Frame::none()
                         .fill(if pal.is_dark {
                             Color32::from_rgba_unmultiplied(33, 37, 43, 190)
@@ -2753,6 +2755,21 @@ impl ZaloGuiApp {
                                     let response = ui
                                         .horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 4.0;
+
+                                            let (plus_rect, plus_response) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
+                                            popup_plus_rect = plus_rect;
+                                            draw_lucide_icon(ui.painter(), plus_rect.center(), lucide::PLUS, 18.0, pal.text_secondary);
+                                            if plus_response.on_hover_text("Thêm tệp hoặc ảnh").clicked() {
+                                                self.attach_menu_open = !self.attach_menu_open;
+                                                self.emoji_popup_open = false;
+                                            }
+                                            let (emoji_rect, emoji_response) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
+                                            popup_emoji_rect = emoji_rect;
+                                            draw_lucide_icon(ui.painter(), emoji_rect.center(), lucide::SMILE, 18.0, pal.text_secondary);
+                                            if emoji_response.on_hover_text("Biểu tượng cảm xúc").clicked() {
+                                                self.emoji_popup_open = !self.emoji_popup_open;
+                                                self.attach_menu_open = false;
+                                            }
 
                                             // 1) Compact Sticker Icon Button
                                             let (stk_rect, stk_resp) = ui.allocate_exact_size(
@@ -3400,6 +3417,7 @@ impl ZaloGuiApp {
                                 });
                         });
 
+                    self.render_composer_popups(ctx, pal, popup_plus_rect, popup_emoji_rect, &thread_id, is_group);
                     ui.painter().hline(
                         composer_frame.response.rect.x_range(),
                         composer_frame.response.rect.top(),

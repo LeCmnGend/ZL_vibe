@@ -658,6 +658,7 @@ fn au_has_idr(au: &[u8]) -> bool {
 }
 
 /// True if the access unit can start decoding: it carries an IDR slice (5) or an SPS (7).
+#[cfg(any(not(windows), test))]
 fn au_is_sync_point(au: &[u8]) -> bool {
     au_has_nal_type(au, &[5, 7])
 }
@@ -972,7 +973,7 @@ fn spawn_camera_capture_thread(
                 egui_ctx.clone(),
             ) {
                 if let Some(tx) = gui_tx {
-                    let _ = tx.send(crate::gui::GuiEvent::CameraUnavailable(format!("Camera: {e:#}")));
+                    let _ = tx.send(crate::gui::GuiEvent::StatusUpdate(format!("Camera: {e:#}")));
                 }
                 if let Some(ctx) = egui_ctx {
                     ctx.request_repaint();
@@ -1178,6 +1179,7 @@ fn spawn_camera_capture_thread(
     });
 }
 
+#[cfg(any(not(windows), test))]
 fn find_aud_delimiter(buf: &[u8], start_from: usize) -> Option<usize> {
     if buf.len() < start_from + 6 {
         return None;
@@ -1190,6 +1192,7 @@ fn find_aud_delimiter(buf: &[u8], start_from: usize) -> Option<usize> {
     None
 }
 
+#[cfg(any(not(windows), test))]
 fn strip_leading_aud(au: &[u8]) -> Vec<u8> {
     if au.len() >= 6 && au[0..4] == [0, 0, 0, 1] && (au[4] & 0x1F) == 9 {
         au[6..].to_vec()
@@ -1198,6 +1201,7 @@ fn strip_leading_aud(au: &[u8]) -> Vec<u8> {
     }
 }
 
+#[cfg(not(windows))]
 fn run_local_preview_decoder(
     stop: Arc<AtomicBool>,
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
@@ -2253,11 +2257,13 @@ fn depacketize_rfc6184_h264(
 }
 
 /// Access Unit Delimiter NAL (`primary_pic_type=7`), written before every access unit sent to ffmpeg.
+#[cfg(any(not(windows), test))]
 const H264_AUD: &[u8] = &[0, 0, 0, 1, 0x09, 0xf0];
 
 /// Spawn a headless `ffmpeg` pipe to decode incoming H.264 Annex-B NAL units into `480×360` RGBA frames.
 /// Trim black letterbox/pillarbox borders added by `ffmpeg pad` so the returned RGBA buffer
 /// has the exact aspect ratio of the active video content with zero black bars.
+#[cfg(any(not(windows), test))]
 fn trim_black_borders(rgba: &[u8], w: usize, h: usize) -> (usize, usize, Vec<u8>) {
     if rgba.len() < w * h * 4 || w < 16 || h < 16 {
         return (w, h, rgba.to_vec());

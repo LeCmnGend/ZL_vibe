@@ -716,7 +716,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                     let cu_ws = catchup.clone();
                     tokio::spawn(async move {
                         let mut ws_rx: Option<
-                            tokio::sync::mpsc::UnboundedReceiver<crate::socket::WsEvent>,
+                            tokio::sync::mpsc::Receiver<crate::socket::WsEvent>,
                         > = None;
                         let mut ws_sek = String::new();
                         loop {
@@ -1888,15 +1888,6 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                         }
                                                     }
                                                 }
-                                                let more = data_node
-                                                    .get("more")
-                                                    .and_then(serde_json::Value::as_i64)
-                                                    .unwrap_or(0);
-                                                let has_reset = data_node
-                                                    .get("resetLastActionId")
-                                                    .and_then(serde_json::Value::as_str)
-                                                    .map(|r| r != "0" && !r.is_empty())
-                                                    .unwrap_or(false);
                                                 if !go_on {
                                                     if crate::chat::lp_reply_wants_more(&lp_resp) {
                                                         tokio::time::sleep(Duration::from_secs(10)).await;
@@ -3506,7 +3497,6 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                         WorkerCmd::LoginPassword { phone, pass } => {
                             let session_clone = session.clone();
                             let poll_clone = poll_state.clone();
-                            let wc_login = ws_cursors.clone();
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
                             tokio::spawn(async move {

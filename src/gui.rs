@@ -818,7 +818,6 @@ pub struct ZaloGuiApp {
     force_scroll_to_bottom: bool,
 
     // Background poll trigger
-    last_poll: std::time::Instant,
 
     // Redesigned workspace state
     /// Offline sample workspace (`--demo`): no worker, no network, nothing written to disk.
@@ -1255,7 +1254,6 @@ impl ZaloGuiApp {
             ime_just_committed: false,
             history_reached_start: HashSet::new(),
             force_scroll_to_bottom: false,
-            last_poll: std::time::Instant::now(),
             demo_mode: false,
             nav_section: NavSection::Messages,
             typing_indicators: HashMap::new(),

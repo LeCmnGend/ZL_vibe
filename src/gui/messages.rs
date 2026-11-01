@@ -293,45 +293,7 @@ pub(super) fn render_call_card_widget(
 
 /// Open an `http://` or `https://` URL in the user's default system browser.
 pub(super) fn open_external_url(url: &str) {
-    let trimmed = url.trim();
-    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
-        return;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        #[link(name = "shell32")]
-        extern "system" {
-            fn ShellExecuteW(
-                hwnd: *mut std::ffi::c_void,
-                lp_operation: *const u16,
-                lp_file: *const u16,
-                lp_parameters: *const u16,
-                lp_directory: *const u16,
-                n_show_cmd: i32,
-            ) -> isize;
-        }
-        let op: Vec<u16> = "open\0".encode_utf16().collect();
-        let mut file: Vec<u16> = trimmed.encode_utf16().collect();
-        file.push(0);
-        unsafe {
-            let _ = ShellExecuteW(
-                std::ptr::null_mut(),
-                op.as_ptr(),
-                file.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                5, // SW_SHOW
-            );
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(trimmed).spawn();
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(trimmed).spawn();
-    }
+    let _ = crate::platform::open_url(url);
 }
 /// Pick a folder. Windows uses the real folder picker; other platforms keep the
 /// upstream behaviour (pick any file, the caller uses its parent directory).

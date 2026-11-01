@@ -145,16 +145,19 @@ fn legacy_cli_keeps_cwd_and_version_does_not_prepare_storage() {
         env!("CARGO_BIN_EXE_ctdozlite")
     );
     let fixture = Fixture::new();
+    let appdata = Fixture::new();
     let result = Command::new(env!("CARGO_BIN_EXE_ctdozlite"))
         .args(["--print-data-dir", "--logout"])
+        .env("APPDATA", &appdata.0)
         .current_dir(&fixture.0)
         .output()
         .unwrap();
     assert!(result.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&result.stdout).trim(),
-        fixture.0.to_str().unwrap()
-    );
+    let selected = PathBuf::from(String::from_utf8_lossy(&result.stdout).trim());
+    #[cfg(windows)]
+    assert_eq!(selected, appdata.0.join("ZLV"));
+    #[cfg(not(windows))]
+    assert_eq!(selected, fixture.0);
     let data = fixture.0.join("not-created");
     let result = Command::new(env!("CARGO_BIN_EXE_ctdozlite"))
         .args(["--version", "--data-dir", data.to_str().unwrap()])
@@ -165,7 +168,7 @@ fn legacy_cli_keeps_cwd_and_version_does_not_prepare_storage() {
     assert!(result.status.success());
     assert_eq!(
         String::from_utf8_lossy(&result.stdout).trim(),
-        format!("ctdozlite v{}", env!("CARGO_PKG_VERSION"))
+        format!("ZL-vibe v{}", env!("ZL_VIBE_DISPLAY_VERSION"))
     );
     assert!(!data.exists());
     assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 0);

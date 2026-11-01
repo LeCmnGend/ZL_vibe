@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderValue, ORIGIN, REFERER};
-use reqwest::{Client, ClientBuilder, Method, RequestBuilder};
+use reqwest::{Client, ClientBuilder, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -78,7 +78,6 @@ pub fn is_url_blocked_by_privacy(url: &str) -> bool {
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) ZaloPC/26.10.11 Chrome/122.0.0.0 Electron/29.0.0 Safari/537.36";
 /// Deadline of one ordinary API exchange — connect, request *and* the whole response body.
-const API_TIMEOUT_SECS: u64 = 35;
 /// TCP connect deadline; the same for API calls and for long downloads.
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 /// A download that delivers no byte for this long is treated as a dead connection. There is
@@ -1518,6 +1517,7 @@ impl Session {
         let resp = match resp_result {
             Ok(r) => r,
             Err(e) => {
+                let e = e.without_url();
                 crate::logger::log_request(
                     &method,
                     url,
@@ -1588,7 +1588,7 @@ impl Session {
                 Some(&text),
                 Some(&format!("server error {code}: {msg}")),
             );
-            return Err(SessionError::new(code, msg).at(url).into());
+            return Err(SessionError::new(code, msg).at(redact_url(url)).into());
         }
         Ok(v)
     }
@@ -1794,19 +1794,19 @@ mod tests {
     fn server_map_fills_endpoints_without_a_verified_constant() {
         let mut domains = Domains::default();
         domains.apply_service_map(&serde_json::json!({
-            "group_cloud_message": "https://tt-group-cm.example.test/",
+            "group_cloud_message": "https://tt-group-cm.chat.zalo.me/",
         }));
 
-        assert_eq!(domains.cloud_msg, "https://tt-group-cm.example.test");
+        assert_eq!(domains.cloud_msg, "https://tt-group-cm.chat.zalo.me");
     }
 
     #[test]
     fn server_map_fills_an_empty_verified_slot() {
         let mut domains = Domains::default();
         domains.sticker.clear();
-        domains.apply_service_map(&serde_json::json!({"sticker": "https://from-server.test"}));
+        domains.apply_service_map(&serde_json::json!({"sticker": "https://tt-sticker-test.zaloapp.com"}));
 
-        assert_eq!(domains.sticker, "https://from-server.test");
+        assert_eq!(domains.sticker, "https://tt-sticker-test.zaloapp.com");
     }
 
     #[test]
@@ -1868,7 +1868,7 @@ mod tests {
             "zpw_ws": ["wss://ws7-msg.chat.zalo.me"],
             "zpw_service_map_v3": {
                 "friend": ["https://tt-friend-wpa.zaloapp.com"],
-                "group_cloud_message": ["https://tt-group-cm.example.test"],
+                "group_cloud_message": ["https://tt-group-cm.chat.zalo.me"],
             },
         }));
 
@@ -1876,7 +1876,7 @@ mod tests {
         assert_eq!(s.domains.lp_control, "https://p7-ctl-chat.zaloapp.com");
         assert_eq!(s.domains.ws, vec!["wss://ws7-msg.chat.zalo.me"]);
         assert_eq!(s.domains.friend, "https://tt-friend-wpa.chat.zalo.me");
-        assert_eq!(s.domains.cloud_msg, "https://tt-group-cm.example.test");
+        assert_eq!(s.domains.cloud_msg, "https://tt-group-cm.chat.zalo.me");
     }
 
     #[test]

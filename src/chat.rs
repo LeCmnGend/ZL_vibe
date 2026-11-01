@@ -2,7 +2,7 @@
 //!
 //! Notes: `re-notes/02_chat_data.md`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::session::{obj, Session};
@@ -774,37 +774,9 @@ pub fn should_replace_avatar(current: Option<&str>, incoming: Option<&str>) -> b
 /// Return `true` if two `Thread` entries represent the same underlying contact or group,
 /// even if Zalo issued a new session-scoped `userId` after a QR re-login.
 ///
-/// Two threads with distinct non-empty IDs are NEVER treated as the same contact solely
-/// because their display names match (#63 — multiple Zalo contacts/groups frequently share
-/// the same display name). Across different IDs, only the singleton "Cloud của tôi" thread
-/// or contacts sharing the same non-default CDN avatar hash (`avatar_file_key`) and name match.
+/// Names and avatars do not establish conversation identity.
 pub fn threads_represent_same_contact(a: &Thread, b: &Thread) -> bool {
-    if !a.id.is_empty() && a.id == b.id {
-        return true;
-    }
-    if a.is_group != b.is_group {
-        return false;
-    }
-    if !a.is_group && a.name.contains("Cloud của tôi") && b.name.contains("Cloud của tôi") {
-        return true;
-    }
-    // Group ids are stable; different ids are different groups even with the same name or
-    // the same (default) avatar file.
-    if a.is_group && !a.id.is_empty() && !b.id.is_empty() {
-        return false;
-    }
-    if let (Some(ka), Some(kb)) = (
-        avatar_file_key(a.avatar.as_deref()),
-        avatar_file_key(b.avatar.as_deref()),
-    ) {
-        if !ka.contains("default") && ka == kb {
-            return is_generic_thread_name(&a.name)
-                || is_generic_thread_name(&b.name)
-                || a.name.trim() == b.name.trim();
-        }
-        return false;
-    }
-    false
+    !a.id.is_empty() && a.id != "0" && a.is_group == b.is_group && a.id == b.id
 }
 
 fn wire_identity(value: Option<&Value>) -> Option<String> {
@@ -1098,7 +1070,7 @@ pub fn merge_thread_into(
 }
 
 /// Deduplicate `threads` in-place, merging entries that represent the same contact/group
-/// (by `id`, avatar hash, or non-generic display name) and preserving the authoritative/newer `id`.
+/// by server ID and conversation kind.
 pub fn deduplicate_threads(
     threads: &mut Vec<Thread>,
     authoritative_ids: Option<&std::collections::HashSet<String>>,
@@ -1117,7 +1089,7 @@ pub fn deduplicate_threads(
             }
         }
         if let Some(existing) = merged.iter_mut().find(|e| {
-            if e.id == t.id {
+            if threads_represent_same_contact(e, &t) {
                 return true;
             }
             if let Some(auth) = authoritative_ids {
@@ -1142,35 +1114,6 @@ pub fn deduplicate_threads(
             merge_thread_into(existing, t, incoming_auth);
         } else {
             merged.push(t);
-        }
-    }
-    let cloud_msg_ids: std::collections::HashSet<String> = merged
-        .iter()
-        .filter(|t| t.name.contains("Cloud của tôi"))
-        .flat_map(|t| t.messages.iter())
-        .filter_map(|m| {
-            if !m.id.is_empty() && !m.id.starts_with("out_") && !m.id.starts_with("local_") {
-                Some(m.id.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    if !cloud_msg_ids.is_empty() {
-        for t in merged.iter_mut() {
-            if !t.name.contains("Cloud của tôi") {
-                let before = t.messages.len();
-                t.messages.retain(|m| !cloud_msg_ids.contains(&m.id));
-                if t.messages.len() != before {
-                    if let Some(newest) = t.messages.last() {
-                        t.preview = newest.text.replace('\n', " ");
-                        t.time = newest.time.clone();
-                    } else {
-                        t.preview.clear();
-                        t.time.clear();
-                    }
-                }
-            }
         }
     }
     *threads = merged;
@@ -1211,6 +1154,7 @@ pub fn load_threads_cache() -> Vec<Thread> {
     Vec::new()
 }
 
+#[cfg(test)]
 fn cache_content_hash(text: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1221,6 +1165,7 @@ fn cache_content_hash(text: &str) -> u64 {
 
 /// `true` when the serialized cache must be written: first write, changed content, or the file
 /// is gone (deleted by the user or another build, so the remembered hash no longer describes it).
+#[cfg(test)]
 fn cache_write_needed(new_hash: u64, last_hash: Option<u64>, file_exists: bool) -> bool {
     !file_exists || last_hash != Some(new_hash)
 }
@@ -1272,18 +1217,6 @@ pub fn save_threads_cache(threads: &[Thread]) {
             let _ = crate::paths::write_private(std::path::Path::new(&path), text);
         }
     }
-}
-
-/// Hosts to try for `getfriends`, in order: `friend` first, `profile` as a fallback, no
-/// empties, no duplicates.
-fn friend_host_order<'a>(friend: &'a str, profile: &'a str) -> Vec<&'a str> {
-    let mut out: Vec<&str> = Vec::with_capacity(2);
-    for h in [friend, profile] {
-        if !h.is_empty() && !out.contains(&h) {
-            out.push(h);
-        }
-    }
-    out
 }
 
 /// `/api/social/friend/getfriends` — the friend list.
@@ -1447,12 +1380,14 @@ pub(crate) fn next_client_message_id() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    let previous = LAST_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
-            Some(now.max(last.saturating_add(1)))
-        })
-        .unwrap_or_else(|last| last);
-    now.max(previous.saturating_add(1))
+    let mut previous = LAST_ID.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(previous.saturating_add(1));
+        match LAST_ID.compare_exchange_weak(previous, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(current) => previous = current,
+        }
+    }
 }
 
 /// Convert inline Markdown (`**bold**`, `__underline__`, `~~strikethrough~~`, `*italic*`) and
@@ -4609,6 +4544,7 @@ const GROUP_INFO_CHUNK: usize = 50;
 /// versions `getlg/v4` just reported made it answer `unchangedsGroup` for all of them, so every
 /// group stayed "Nhóm <id>" (real account, 02/11). QTzalo caches no group info, so it always
 /// asks from version 0.
+#[cfg(test)]
 fn group_info_request_map(ids: &[String]) -> String {
     let map: serde_json::Map<String, Value> = ids.iter().map(|id| (id.clone(), json!(0))).collect();
     Value::Object(map).to_string()
@@ -5472,6 +5408,8 @@ mod catchup_tests {
 
     fn group(id: &str, name: &str, avatar: Option<&str>) -> Thread {
         Thread {
+            presentation: Default::default(),
+            unread: Default::default(),
             id: id.into(),
             name: name.into(),
             preview: String::new(),
@@ -6253,10 +6191,18 @@ fn media_fields(kind: MediaKind, content: Option<&Value>) -> MediaFields {
             f.link_src = Some("Video Zalo".into());
         }
         MediaKind::File => {
-            let name = human_text(o.get("title"))
+            let mut name = human_text(o.get("title"))
                 .or_else(|| human_text(params.get("fileName")))
                 .or_else(|| human_text(o.get("fileName")))
                 .or_else(|| human_text(o.get("name")));
+            if let (Some(name), Some(ext)) = (&mut name, params.get("fileExt").and_then(Value::as_str)) {
+                let ext = ext.trim().trim_start_matches('.');
+                if !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                    && !name.to_ascii_lowercase().ends_with(&format!(".{}", ext.to_ascii_lowercase())) {
+                    name.push('.');
+                    name.push_str(ext);
+                }
+            }
             if let Some(n) = &name {
                 f.text = format!("{label} {n}");
             }
@@ -6426,7 +6372,7 @@ fn parse_chat_message(it: &Value) -> Option<ChatMessage> {
     let is_photo_msg = matches!(msg_type.as_str(), "chat.photo" | "photo" | "2")
         || link_src.as_deref() == Some("Hình ảnh Zalo")
         || link_url.as_deref().is_some_and(is_zalo_photo_cdn_url)
-        || link_thumb.as_deref().is_some_and(is_zalo_photo_cdn_url);
+        || (msg_type != "chat.recommended" && link_thumb.as_deref().is_some_and(is_zalo_photo_cdn_url));
     let is_file_msg = matches!(
         msg_type.as_str(),
         "chat.file" | "file" | "19" | "share.file"
@@ -6474,7 +6420,6 @@ fn parse_chat_message(it: &Value) -> Option<ChatMessage> {
             }
         }
     }
-    let is_undo_type = matches!(msg_type.as_str(), "chat.undo" | "undo" | "31");
     // An E2EE payload names no readable content, so it is never an undo of another message.
     let is_undo_type = !is_e2ee && matches!(msg_type.as_str(), "chat.undo" | "undo" | "31");
     if is_undo_type {
@@ -9300,7 +9245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deduplicate_threads_migrates_session_scoped_ids() {
+    fn test_distinct_ids_with_same_name_and_avatar_stay_separate() {
         let old_dtc = Thread {
             presentation: Default::default(),
             unread: Default::default(),
@@ -9333,10 +9278,11 @@ mod tests {
         };
         let mut threads = vec![old_dtc, new_dtc];
         deduplicate_threads(&mut threads, None);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].id, "1000000000000000006");
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].id, "1000000000000000005");
+        assert_eq!(threads[1].id, "1000000000000000006");
         assert_eq!(threads[0].messages.len(), 1);
-        assert_eq!(threads[0].preview, "Hi");
+        assert!(threads[1].messages.is_empty());
     }
 
     #[test]
@@ -9483,8 +9429,7 @@ mod tests {
         let mut list = vec![cloud, polluted_contact];
         deduplicate_threads(&mut list, None);
         assert_eq!(list[0].messages.len(), 1);
-        assert!(list[1].messages.is_empty());
-        assert!(list[1].preview.is_empty());
+        assert_eq!(list[1].messages.len(), 1);
     }
 
     #[test]
@@ -9945,7 +9890,7 @@ mod send_identity_tests {
     }
 
     #[tokio::test]
-    async fn request_client_id_survives_send_variants_and_fallbacks() {
+    async fn request_client_id_survives_send_variants_and_errors() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::time::Duration;
@@ -9955,7 +9900,7 @@ mod send_identity_tests {
         let host = format!("http://{}", listener.local_addr().unwrap());
         let fixture = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for _ in 0..9 {
+            for _ in 0..7 {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
@@ -10024,7 +9969,7 @@ mod send_identity_tests {
         send_group_message_with_client_id(&session, "group-1", "Text", client_id)
             .await
             .unwrap();
-        send_link_message_with_client_id(
+        assert!(send_link_message_with_client_id(
             &session,
             "contact-1",
             "Text",
@@ -10039,23 +9984,24 @@ mod send_identity_tests {
             client_id,
         )
         .await
-        .unwrap();
+        .is_err());
         send_sticker_with_client_id(&session, "contact-1", 1, 2, 7, false, client_id)
             .await
             .unwrap();
-        send_quote_message_with_client_id(
+        assert!(send_quote_message_with_client_id(
             &session,
             "contact-1",
             "Text",
             &ChatMessage {
-                id: "server-quote".into(),
+                id: "123456".into(),
+                client_message_id: "123455".into(),
                 ..Default::default()
             },
             false,
             client_id,
         )
         .await
-        .unwrap();
+        .is_err());
         forward_message_with_client_id(
             &session,
             "contact-1",
@@ -10081,7 +10027,7 @@ mod send_identity_tests {
         .await
         .unwrap();
         let requests = fixture.join().unwrap();
-        assert_eq!(requests.len(), 9);
+        assert_eq!(requests.len(), 7);
         for (_, body) in requests {
             assert_eq!(body["clientId"], json!(client_id));
         }

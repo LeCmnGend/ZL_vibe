@@ -17,6 +17,7 @@ pub mod message_model;
 pub mod message_navigation;
 pub mod param_cipher;
 pub mod paths;
+pub mod platform;
 pub mod qr;
 pub mod reactions;
 pub mod reaction;
