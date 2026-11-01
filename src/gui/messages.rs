@@ -333,94 +333,43 @@ pub(super) fn open_external_url(url: &str) {
         let _ = std::process::Command::new("xdg-open").arg(trimmed).spawn();
     }
 }
+/// Pick a folder. Windows uses the real folder picker; other platforms keep the
+/// upstream behaviour (pick any file, the caller uses its parent directory).
+pub(super) fn pick_native_folder_dialog() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return rfd::FileDialog::new()
+            .set_title("Chọn thư mục lưu file tải về")
+            .pick_folder();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let f = pick_native_file_dialog(false)?;
+        Some(f.parent().map(|p| p.to_path_buf()).unwrap_or(f))
+    }
+}
 /// Open a native OS file-picker dialog on a worker thread and return the selected path.
 pub(super) fn pick_native_file_dialog(images_only: bool) -> Option<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        #[repr(C)]
-        struct OpenFileNameW {
-            l_struct_size: u32,
-            hwnd_owner: *mut std::ffi::c_void,
-            h_instance: *mut std::ffi::c_void,
-            lpstr_filter: *const u16,
-            lpstr_custom_filter: *mut u16,
-            n_max_cust_filter: u32,
-            n_filter_index: u32,
-            lpstr_file: *mut u16,
-            n_max_file: u32,
-            lpstr_file_title: *mut u16,
-            n_max_file_title: u32,
-            lpstr_initial_dir: *const u16,
-            lpstr_title: *const u16,
-            flags: u32,
-            n_file_offset: u16,
-            n_file_extension: u16,
-            lpstr_def_ext: *const u16,
-            l_cust_data: usize,
-            lpfn_hook: *const std::ffi::c_void,
-            lp_template_name: *const u16,
-            pv_reserved: *mut std::ffi::c_void,
-            dw_reserved: u32,
-            flags_ex: u32,
-        }
-        #[link(name = "comdlg32")]
-        extern "system" {
-            fn GetOpenFileNameW(lpofn: *mut OpenFileNameW) -> i32;
-        }
-        let filter_raw = if images_only {
-            "Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)\0*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp\0All Files (*.*)\0*.*\0\0"
+        // Native Win32 IFileOpenDialog (via `rfd`): opens instantly, no PowerShell /
+        // .NET cold start, and runs natively on ARM64. Called from a worker thread,
+        // so the blocking API does not freeze the egui event loop.
+        let title = if images_only {
+            "Chọn hình ảnh để gửi qua Zalo"
         } else {
-            "All Files (*.*)\0*.*\0Video & Media (*.mp4;*.mov;*.mkv;*.mp3;*.wav)\0*.mp4;*.mov;*.mkv;*.mp3;*.wav\0Documents (*.pdf;*.zip;*.docx;*.xlsx;*.txt)\0*.pdf;*.zip;*.docx;*.xlsx;*.txt\0\0"
+            "Chọn video hoặc tập tin đính kèm để gửi qua Zalo"
         };
-        let title_raw = if images_only {
-            "Chọn hình ảnh để gửi qua Zalo\0"
+        let mut dlg = rfd::FileDialog::new().set_title(title);
+        dlg = if images_only {
+            dlg.add_filter("Hình ảnh", &["png", "jpg", "jpeg", "webp", "gif", "bmp"])
+                .add_filter("Tất cả tập tin", &["*"])
         } else {
-            "Chọn video hoặc tập tin đính kèm để gửi qua Zalo\0"
+            dlg.add_filter("Tất cả tập tin", &["*"])
+                .add_filter("Video & âm thanh", &["mp4", "mov", "mkv", "mp3", "wav"])
+                .add_filter("Tài liệu", &["pdf", "zip", "docx", "xlsx", "txt"])
         };
-        let filter_u16: Vec<u16> = filter_raw.encode_utf16().collect();
-        let title_u16: Vec<u16> = title_raw.encode_utf16().collect();
-        let mut file_buf = vec![0u16; 1024];
-        // OFN_EXPLORER (0x00080000) | OFN_FILEMUSTEXIST (0x00001000) | OFN_PATHMUSTEXIST (0x00000800) | OFN_NOCHANGEDIR (0x00000008)
-        let mut ofn = OpenFileNameW {
-            l_struct_size: std::mem::size_of::<OpenFileNameW>() as u32,
-            hwnd_owner: std::ptr::null_mut(),
-            h_instance: std::ptr::null_mut(),
-            lpstr_filter: filter_u16.as_ptr(),
-            lpstr_custom_filter: std::ptr::null_mut(),
-            n_max_cust_filter: 0,
-            n_filter_index: 1,
-            lpstr_file: file_buf.as_mut_ptr(),
-            n_max_file: file_buf.len() as u32,
-            lpstr_file_title: std::ptr::null_mut(),
-            n_max_file_title: 0,
-            lpstr_initial_dir: std::ptr::null(),
-            lpstr_title: title_u16.as_ptr(),
-            flags: 0x0008_0000 | 0x0000_1000 | 0x0000_0800 | 0x0000_0008,
-            n_file_offset: 0,
-            n_file_extension: 0,
-            lpstr_def_ext: std::ptr::null(),
-            l_cust_data: 0,
-            lpfn_hook: std::ptr::null(),
-            lp_template_name: std::ptr::null(),
-            pv_reserved: std::ptr::null_mut(),
-            dw_reserved: 0,
-            flags_ex: 0,
-        };
-        let ok = unsafe { GetOpenFileNameW(&mut ofn) };
-        if ok != 0 {
-            let end = file_buf
-                .iter()
-                .position(|&c| c == 0)
-                .unwrap_or(file_buf.len());
-            let s = String::from_utf16_lossy(&file_buf[..end]);
-            if !s.is_empty() {
-                Some(std::path::PathBuf::from(s))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        return dlg.pick_file();
     }
     #[cfg(target_os = "macos")]
     {
