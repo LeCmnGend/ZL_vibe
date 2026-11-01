@@ -4,6 +4,7 @@ use super::*;
 /// republishes it whenever its threads change.
 pub(super) static KNOWN_THREADS: std::sync::Mutex<Vec<(String, String, bool)>> =
     std::sync::Mutex::new(Vec::new());
+static IMAGE_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 pub enum WorkerCmd {
     /// Read OS authorization without prompting.
@@ -403,6 +404,9 @@ async fn prefetch_missing_sticker_thumbnails(
         let tx = gui_tx.clone();
         let ctx = egui_ctx.clone();
         async move {
+            let Ok(_permit) = IMAGE_JOBS.acquire().await else {
+                return;
+            };
             if let Some(vec) = fetch_image_bytes(&client, &url).await {
                 if let Ok(dyn_img) = image::load_from_memory(&vec) {
                     let _ = std::fs::write(&cache_path, &vec);
@@ -2800,6 +2804,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 }
                             }
                             tokio::spawn(async move {
+                                let Ok(_permit) = IMAGE_JOBS.acquire().await else {
+                                    return;
+                                };
                                 let cache_path =
                                     crate::paths::cache_dir().join(format!("{key}.png"));
 
