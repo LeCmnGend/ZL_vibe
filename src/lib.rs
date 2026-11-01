@@ -4,6 +4,7 @@ pub mod call;
 pub mod chat;
 pub mod clock;
 pub mod crypto;
+pub mod download;
 pub mod endpoints;
 pub mod feed;
 pub mod gui;

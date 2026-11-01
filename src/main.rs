@@ -11,7 +11,7 @@
 use anyhow::Result;
 use session::Session;
 pub use zalo_rust::{
-    account_manager, api_mcp, audio, call, chat, clock, crypto, data_dir, endpoints, feed, gui, history_sync,
+    account_manager, api_mcp, audio, call, chat, clock, crypto, data_dir, download, endpoints, feed, gui, history_sync,
     logger, login, media, media_resources, message_model, param_cipher, qr, reactions, scheduler,
     session, socket, store, tui, ui, unread, updater, voip_log,
 };
