@@ -1680,11 +1680,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     let mut t_list = vec![t];
                                     let uin = s.login.as_ref().map(|l| l.uin.as_str()).unwrap_or_default();
                                     let db_path = crate::store::db_path_for_account(uin);
-                                    crate::store::load_history_into_threads(
-                                        &db_path,
-                                        &mut t_list,
-                                        (have + 300).max(500),
-                                    );
+                                    if let Ok(store) = crate::store::MessageStore::open(&db_path) {
+                                        let _ = store.hydrate_selected_threads(&mut t_list, (have + 300).max(500));
+                                    }
                                     let Some(mut t) =
                                         t_list.into_iter().find(|x| x.id == group_id)
                                     else {

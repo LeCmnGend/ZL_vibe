@@ -299,6 +299,14 @@ impl MessageStore {
     /// Hydrate `threads` with persisted threads and message history from SQLite.
     /// Returns the total number of messages loaded into `threads`.
     pub fn hydrate_threads(&self, threads: &mut Vec<Thread>, limit_per_thread: usize) -> Result<usize> {
+        self.hydrate_scoped(threads, limit_per_thread, true)
+    }
+
+    pub fn hydrate_selected_threads(&self, threads: &mut Vec<Thread>, limit_per_thread: usize) -> Result<usize> {
+        self.hydrate_scoped(threads, limit_per_thread, false)
+    }
+
+    fn hydrate_scoped(&self, threads: &mut Vec<Thread>, limit_per_thread: usize, include_unlisted: bool) -> Result<usize> {
         crate::chat::deduplicate_threads(threads, None);
 
         let stored_threads = self.all_threads().unwrap_or_default();
@@ -313,7 +321,7 @@ impl MessageStore {
                     existing.name = st.name;
                 }
                 existing.is_group = existing.is_group || st.is_group;
-            } else {
+            } else if include_unlisted {
                 threads.push(Thread {
                     presentation: Default::default(),
                     unread: Default::default(),
@@ -1366,6 +1374,18 @@ fn import_official_zalo_pc_db(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_history_does_not_add_other_threads() {
+        let mut store = MessageStore::open(":memory:").unwrap();
+        for id in ["a", "b"] {
+            store.upsert_thread(&StoredThread { thread_id: id.into(), name: id.into(), is_group: true, last_ts: 1 }).unwrap();
+        }
+        let mut threads = vec![Thread { presentation: Default::default(), unread: Default::default(), id: "a".into(), name: "a".into(), preview: String::new(), time: String::new(), avatar: None, is_group: true, messages: Vec::new() }];
+        store.hydrate_selected_threads(&mut threads, 10).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, "a");
+    }
 
     #[test]
     fn local_time_when_hydrating_seconds_and_milliseconds() {
