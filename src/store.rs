@@ -59,7 +59,7 @@ impl MessageStore {
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
-                msg_id TEXT PRIMARY KEY,
+                msg_id TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
                 sender_id TEXT,
                 sender_name TEXT,
@@ -67,7 +67,8 @@ impl MessageStore {
                 msg_type TEXT,
                 ts INTEGER,
                 is_outgoing INTEGER,
-                raw_json TEXT
+                raw_json TEXT,
+                PRIMARY KEY(thread_id, msg_id)
             );
             CREATE INDEX IF NOT EXISTS idx_thread_ts ON messages(thread_id, ts);
             CREATE TABLE IF NOT EXISTS threads (
@@ -86,6 +87,20 @@ impl MessageStore {
                  PRAGMA user_version = 1;
                  COMMIT;",
             )?;
+        }
+
+        // Transactional migration from the original globally keyed message ID.
+        let thread_pk: i64 = conn.query_row("SELECT pk FROM pragma_table_info('messages') WHERE name='thread_id'", [], |row| row.get(0))?;
+        if thread_pk == 0 {
+            let migration = conn.unchecked_transaction()?;
+            migration.execute_batch("ALTER TABLE messages RENAME TO messages_v1;
+                CREATE TABLE messages (msg_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+                    sender_id TEXT, sender_name TEXT, text TEXT, msg_type TEXT,
+                    ts INTEGER, is_outgoing INTEGER, raw_json TEXT, PRIMARY KEY(thread_id,msg_id));
+                INSERT INTO messages SELECT msg_id,thread_id,sender_id,sender_name,text,msg_type,ts,is_outgoing,raw_json FROM messages_v1;
+                DROP TABLE messages_v1;
+                CREATE INDEX idx_thread_ts ON messages(thread_id,ts);")?;
+            migration.commit()?;
         }
 
         Ok(Self { conn })
@@ -110,8 +125,8 @@ impl MessageStore {
         )?;
         if rows == 0 && !msg.raw_json.is_empty() {
             let _ = self.conn.execute(
-                "UPDATE messages SET raw_json = ?1, msg_type = ?2, text = ?4 WHERE msg_id = ?3",
-                params![msg.raw_json, msg.msg_type, msg.msg_id, msg.text],
+                "UPDATE messages SET raw_json = ?1, msg_type = ?2, text = ?4 WHERE msg_id = ?3 AND thread_id = ?5",
+                params![msg.raw_json, msg.msg_type, msg.msg_id, msg.text, msg.thread_id],
             );
         }
         Ok(rows > 0)
@@ -121,8 +136,8 @@ impl MessageStore {
     pub fn delete_message(&mut self, thread_id: &str, msg_id: &str, ts: i64) -> Result<()> {
         if !msg_id.is_empty() {
             let _ = self.conn.execute(
-                "DELETE FROM messages WHERE msg_id = ?1",
-                params![msg_id],
+                "DELETE FROM messages WHERE msg_id = ?1 AND thread_id = ?2",
+                params![msg_id, thread_id],
             );
         }
         if ts > 0 && !thread_id.is_empty() {
@@ -192,7 +207,9 @@ impl MessageStore {
             "INSERT INTO threads (thread_id, name, is_group, last_ts)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(thread_id) DO UPDATE SET
-                 name = excluded.name,
+                 name = CASE WHEN excluded.name = '' OR excluded.name = 'Nhóm ' || excluded.thread_id
+                    OR excluded.name = 'Người dùng ' || excluded.thread_id
+                    THEN threads.name ELSE excluded.name END,
                  is_group = excluded.is_group,
                  last_ts = MAX(COALESCE(last_ts, 0), excluded.last_ts)",
             params![
@@ -296,28 +313,6 @@ impl MessageStore {
                     existing.name = st.name;
                 }
                 existing.is_group = existing.is_group || st.is_group;
-            } else if !st.is_group
-                && st.name.contains("Cloud của tôi")
-                && threads
-                    .iter()
-                    .any(|t| !t.is_group && t.name.contains("Cloud của tôi"))
-            {
-                // Migrate stale session-scoped `send2me_id` ("Cloud của tôi") in SQLite to the active session's `id`.
-                // Normal contacts/groups must NEVER be merged by display name alone (#63).
-                if let Some(live_id) = threads
-                    .iter()
-                    .find(|t| !t.is_group && t.name.contains("Cloud của tôi"))
-                    .map(|t| t.id.clone())
-                {
-                    let _ = self.conn.execute(
-                        "UPDATE messages SET thread_id = ?1 WHERE thread_id = ?2",
-                        params![live_id, st.thread_id],
-                    );
-                    let _ = self.conn.execute(
-                        "DELETE FROM threads WHERE thread_id = ?1",
-                        params![st.thread_id],
-                    );
-                }
             } else {
                 threads.push(Thread {
                     presentation: Default::default(),
@@ -337,30 +332,8 @@ impl MessageStore {
             }
         }
 
-        // Primary-key lookups for the messages actually in memory. This used to load every
-        // (msg_id, thread_id) row in the database into a HashMap on each call. One transaction
-        // around them: in autocommit every SELECT takes and drops the file lock, ~50 µs on
-        // Windows, which made 62k lookups cost 3 s.
-        let tx = self.conn.unchecked_transaction()?;
-        let mut owner_of = self.conn.prepare("SELECT thread_id FROM messages WHERE msg_id = ?1")?;
-
         let mut loaded_count = 0;
         for t in threads.iter_mut() {
-            let before = t.messages.len();
-            let tid = t.id.clone();
-            t.messages.retain(|m| {
-                owner_of
-                    .query_row(params![m.id], |r| r.get::<_, String>(0))
-                    .map_or(true, |owner| owner == tid)
-            });
-            if t.messages.len() != before && t.messages.is_empty() {
-                t.preview.clear();
-                t.time.clear();
-                let _ = self.conn.execute(
-                    "UPDATE threads SET last_ts = 0 WHERE thread_id = ?1",
-                    params![t.id],
-                );
-            }
             let saved_msgs = self.messages_for(&t.id, limit_per_thread)?;
             for sm in saved_msgs {
                 let time = if sm.ts > 0 {
@@ -518,8 +491,6 @@ impl MessageStore {
                 }
             }
         }
-        drop(owner_of);
-        tx.commit()?;
         crate::chat::deduplicate_threads(threads, None);
         Ok(loaded_count)
     }
@@ -1699,5 +1670,50 @@ mod tests {
             decode_zalo_cipher_payload(&enc, key),
             "Này bố kiểm tra mail xem ạ"
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn message(thread_id: &str) -> StoredMessage {
+        StoredMessage { msg_id: "same-id".into(), thread_id: thread_id.into(), sender_id: "sender".into(), sender_name: "Same name".into(), text: thread_id.into(), msg_type: "text".into(), ts: 1, is_outgoing: false, raw_json: "{}".into() }
+    }
+    #[test]
+    fn same_message_id_is_scoped_to_thread_and_delete_does_not_cross_threads() {
+        let mut store = MessageStore::open(":memory:").unwrap();
+        assert!(store.upsert_message(&message("a")).unwrap());
+        assert!(store.upsert_message(&message("b")).unwrap());
+        let mut update = message("a"); update.text = "edited".into();
+        assert!(!store.upsert_message(&update).unwrap());
+        assert_eq!(store.messages_for("a",10).unwrap()[0].text,"edited");
+        assert_eq!(store.messages_for("b",10).unwrap()[0].text,"b");
+        store.delete_message("a","same-id",0).unwrap();
+        assert!(store.messages_for("a",10).unwrap().is_empty());
+        assert_eq!(store.messages_for("b",10).unwrap().len(),1);
+    }
+    #[test]
+    fn old_pages_do_not_erase_group_name_or_recency() {
+        let mut store = MessageStore::open(":memory:").unwrap();
+        let mut thread = StoredThread {thread_id:"123".into(),name:"Nhóm có tên".into(),is_group:true,last_ts:99};
+        store.upsert_thread(&thread).unwrap();
+        thread.name = "Nhóm 123".into(); thread.last_ts = 1;
+        store.upsert_thread(&thread).unwrap();
+        thread.name.clear(); store.upsert_thread(&thread).unwrap();
+        let saved = store.all_threads().unwrap();
+        assert_eq!(saved[0].name,"Nhóm có tên"); assert_eq!(saved[0].last_ts,99);
+    }
+    #[test]
+    fn migrates_legacy_database_without_losing_messages() {
+        let dir = std::env::temp_dir().join(format!("ctdoz-migration-{}-{}",std::process::id(),crate::param_cipher::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap(); let path = dir.join("history.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE messages (msg_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL,sender_id TEXT,sender_name TEXT,text TEXT,msg_type TEXT,ts INTEGER,is_outgoing INTEGER,raw_json TEXT);
+            INSERT INTO messages VALUES ('same-id','a','','','old','text',1,0,'{}');").unwrap();
+        drop(conn);
+        let mut store = MessageStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(store.messages_for("a",10).unwrap()[0].text,"old");
+        assert!(store.upsert_message(&message("b")).unwrap());
+        drop(store); std::fs::remove_dir_all(dir).unwrap();
     }
 }
