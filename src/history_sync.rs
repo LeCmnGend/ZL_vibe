@@ -406,7 +406,7 @@ where
     let db_added = tokio::task::spawn_blocking(move || -> Result<usize> {
         let mut st = MessageStore::open(&db_path_clone)?;
         let n = store::persist_threads(&mut st, &snapshot)?;
-        chat::save_threads_cache(&snapshot);
+        chat::save_threads_cache_for_account(&snapshot, &uin_str);
         Ok(n)
     })
     .await??;
@@ -583,7 +583,9 @@ pub async fn import_mobile_backup_container(
         }
     }
 
-    let mut store = crate::store::MessageStore::open("zalo_history.db")?;
+    let uin = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
+        .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản để lưu lịch sử"))?;
+    let mut store = crate::store::MessageStore::open(crate::store::db_path_for_account(uin))?;
     let temp_dir = std::env::temp_dir().join(format!("ctdozlite_sync_{}", crate::param_cipher::random_hex(8)));
     let _ = std::fs::create_dir_all(&temp_dir);
 
@@ -703,9 +705,11 @@ pub async fn import_mobile_backup_container(
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 
-    let mut cached_threads = crate::chat::load_threads_cache();
+    let uin = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
+        .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản để lưu lịch sử"))?;
+    let mut cached_threads = crate::chat::load_threads_cache_for_account(uin);
     let _ = store.hydrate_threads(&mut cached_threads, 50);
-    crate::chat::save_threads_cache(&cached_threads);
+    crate::chat::save_threads_cache_for_account(&cached_threads, uin);
 
     // Notify Zalo server and phone that snapshot is downloaded, dismissing mobile spinner
     let _ = crate::chat::clean_sync(s, &pub_key_b64).await;
@@ -992,9 +996,11 @@ pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
         }
     }
 
-    let mut cached_threads = crate::chat::load_threads_cache();
+    let uin = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
+        .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản để lưu lịch sử"))?;
+    let mut cached_threads = crate::chat::load_threads_cache_for_account(uin);
     let _ = store.hydrate_threads(&mut cached_threads, 50);
-    crate::chat::save_threads_cache(&cached_threads);
+    crate::chat::save_threads_cache_for_account(&cached_threads, uin);
 
     if let Some(pub_k) = get_sync_public_key() {
         let _ = crate::chat::clean_sync(s, &pub_k).await;

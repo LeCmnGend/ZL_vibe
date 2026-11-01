@@ -22,6 +22,7 @@ pub mod reactions;
 pub mod session;
 pub mod socket;
 pub mod store;
+pub mod sync_state;
 pub mod timefmt;
 pub mod trace_shape;
 pub mod tui;

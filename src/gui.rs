@@ -66,6 +66,7 @@ pub enum GuiEvent {
     },
     LoginFailed(String),
     ThreadsUpdated(Vec<Thread>),
+    AccountThreadsUpdated { uin: String, threads: Vec<Thread> },
     MessageSent {
         client_message_id: String,
         thread_id: String,
@@ -252,9 +253,14 @@ pub enum GuiEvent {
     },
     /// Offline catch-up: messages fetched so far by the current catch-up, `done` at the end.
     SyncProgress {
+        uin: String,
         fetched: usize,
         done: bool,
     },
+    /// Spans in which messages may be missing (not dismissed yet); empty hides the banner.
+    MissingRanges { uin: String, ranges: Vec<crate::store::MissingRange> },
+    /// Estimated last-activity time (ms) per conversation id (`get-last-msgs` + msgId clock).
+    ConversationActivity { uin: String, activity: HashMap<String, i64> },
 }
 
 fn phone_sync_completion_message(
@@ -634,6 +640,11 @@ pub struct ZaloGuiApp {
     media: media_view::MediaViewState,
     /// Offline catch-up progress: `(fetched, done, last update)`.
     sync_progress: Option<(usize, bool, std::time::Instant)>,
+    /// Open missing-message ranges for the banner (`MessageStore::open_missing_ranges`).
+    missing_ranges: Vec<crate::store::MissingRange>,
+    /// Estimated last-activity time (ms) per conversation, for ordering and for which
+    /// conversations the "Tin nhắn" list shows.
+    conv_activity: HashMap<String, i64>,
 
     info_drawer_open: bool,
     profile_menu_open: bool,
@@ -904,6 +915,28 @@ impl ZaloGuiApp {
                     std::time::Instant::now() + Duration::from_secs(60),
                 ));
             }
+            // `QTZALO_DEMO_SYNC=1` shows the catch-up strip running (`=done`: finished);
+            // `QTZALO_DEMO_MISSING=1` shows the missing-messages banner.
+            match env("QTZALO_DEMO_SYNC").as_deref() {
+                Some("1") => app.sync_progress = Some((37, false, std::time::Instant::now())),
+                Some("done") => {
+                    app.sync_progress = Some((
+                        37,
+                        true,
+                        std::time::Instant::now() + Duration::from_secs(60),
+                    ))
+                }
+                _ => {}
+            }
+            if env("QTZALO_DEMO_MISSING").as_deref() == Some("1") {
+                let now = crate::timefmt::now_ms();
+                app.missing_ranges = vec![crate::store::MissingRange {
+                    conv_id: "*".into(),
+                    from_ts: now - 26 * 3_600_000,
+                    to_ts: now - 2 * 3_600_000,
+                    reason: "evict:510_1".into(),
+                }];
+            }
             // Deliberately NOT spawning the session worker: WORKER_TX stays unset, so every
             // `WORKER_TX.get()` send is a no-op and no network request can leave the process.
             drop(session);
@@ -968,6 +1001,13 @@ impl ZaloGuiApp {
             .unwrap_or(0);
 
         let mut app = Self::empty_state(cc, loaded_settings, dark_mode, dev_mode, rx, tx.clone());
+        if is_logged_in {
+            // Order and open banners as saved, before the network answers.
+            if let Ok(store) = crate::store::MessageStore::open(crate::paths::history_db()) {
+                app.conv_activity = crate::sync_state::load_conversation_activity(&store);
+                app.missing_ranges = store.open_missing_ranges().unwrap_or_default();
+            }
+        }
         app.is_logged_in = is_logged_in;
         app.user_name = user_name;
         app.user_uin = user_uin;
@@ -1032,6 +1072,8 @@ impl ZaloGuiApp {
             image_viewer: None,
             media: media_view::MediaViewState::default(),
             sync_progress: None,
+            missing_ranges: Vec::new(),
+            conv_activity: HashMap::new(),
             status_msg: "Trực tuyến · Sẵn sàng".into(),
             info_drawer_open: settings.info_drawer_open,
             profile_menu_open: false,
@@ -1208,12 +1250,19 @@ impl ZaloGuiApp {
         self.publish_known_threads();
         let snapshot = self.threads.clone();
         if let Some(wtx) = WORKER_TX.get() {
-            let _ = wtx.send(WorkerCmd::PersistThreads(snapshot));
+            let _ = wtx.send(WorkerCmd::PersistThreads { uin: self.user_uin.clone(), threads: snapshot });
         }
     }
 
     fn check_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.event_rx.try_recv() {
+            let event = match event {
+                GuiEvent::AccountThreadsUpdated { uin, threads } => {
+                    if uin.is_empty() || uin != self.user_uin { continue; }
+                    GuiEvent::ThreadsUpdated(threads)
+                }
+                other => other,
+            };
             match event {
                 GuiEvent::NotificationAuthorization { request_id, result } => {
                     self.notification_authorization.finish(request_id, result);
@@ -1247,6 +1296,7 @@ impl ZaloGuiApp {
                     self.login_in_progress = false;
                     self.login_status_msg = format!("Lỗi đăng nhập: {err}");
                 }
+                GuiEvent::AccountThreadsUpdated { .. } => unreachable!("account event normalized above"),
                 GuiEvent::ThreadsUpdated(updates) => {
                     ensure_cjk_font(ctx, thread_texts(&updates));
                     if self.is_logged_in && !updates.is_empty() {
@@ -1435,8 +1485,16 @@ impl ZaloGuiApp {
                 } => self.on_video_progress(url, received, total),
                 GuiEvent::VideoReady { url, path } => self.on_video_ready(url, path),
                 GuiEvent::VideoFailed { url, error } => self.on_video_failed(url, error),
-                GuiEvent::SyncProgress { fetched, done } => {
-                    self.sync_progress = Some((fetched, done, std::time::Instant::now()));
+                GuiEvent::SyncProgress { uin, fetched, done } => {
+                    if !uin.is_empty() && uin == self.user_uin {
+                        self.sync_progress = Some((fetched, done, std::time::Instant::now()));
+                    }
+                }
+                GuiEvent::MissingRanges { uin, ranges } => {
+                    if !uin.is_empty() && uin == self.user_uin { self.missing_ranges = ranges; }
+                }
+                GuiEvent::ConversationActivity { uin, activity } => {
+                    if !uin.is_empty() && uin == self.user_uin { self.conv_activity = activity; }
                 }
                 GuiEvent::LoggedOut => {
                     self.is_logged_in = false;

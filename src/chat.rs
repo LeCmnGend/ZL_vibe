@@ -1176,10 +1176,19 @@ pub fn load_threads_cache() -> Vec<Thread> {
     Vec::new()
 }
 
+pub fn load_threads_cache_for_account(uin: &str) -> Vec<Thread> {
+    let Some(uin) = crate::sync_state::sanitize_uin(uin) else { return Vec::new(); };
+    let path = format!("accounts/{uin}_threads.json");
+    std::fs::read_to_string(path).ok()
+        .and_then(|text| serde_json::from_str::<Vec<Thread>>(&text).ok())
+        .map(|mut threads| { deduplicate_threads(&mut threads, None); threads })
+        .unwrap_or_default()
+}
+
 /// Snapshot of the thread list for an instant first paint. Only the newest
 /// `PRELOAD_MSGS` messages per thread are kept: full history lives in SQLite, and
 /// rewriting every message as pretty JSON on each change cost more than the SQLite write.
-pub fn save_threads_cache(threads: &[Thread]) {
+fn serialize_threads_cache(threads: &[Thread]) -> serde_json::Result<String> {
     let keep = crate::store::MessageStore::PRELOAD_MSGS;
     let slim: Vec<Thread> = threads
         .iter()
@@ -1195,11 +1204,23 @@ pub fn save_threads_cache(threads: &[Thread]) {
             messages: t.messages[t.messages.len().saturating_sub(keep)..].to_vec(),
         })
         .collect();
-    if let Ok(text) = serde_json::to_string(&slim) {
+    serde_json::to_string(&slim)
+}
+
+pub fn save_threads_cache_for_account(threads: &[Thread], uin: &str) {
+    let Some(uin) = crate::sync_state::sanitize_uin(uin) else { return; };
+    if let Ok(text) = serialize_threads_cache(threads) {
+        let path = format!("accounts/{uin}_threads.json");
+        let _ = crate::paths::write_private(std::path::Path::new(&path), text);
+    }
+}
+
+pub fn save_threads_cache(threads: &[Thread]) {
+    if let Ok(text) = serialize_threads_cache(threads) {
         let _ = crate::paths::write_private(std::path::Path::new("threads_cache.json"), &text);
-        if let Some(uin) = active_uin_from_session() {
-            let _ = std::fs::create_dir_all("accounts");
-            let _ = crate::paths::write_private(std::path::Path::new(&format!("accounts/{uin}_threads.json")), text);
+        if let Some(uin) = active_uin_from_session().and_then(|value| crate::sync_state::sanitize_uin(&value).map(str::to_owned)) {
+            let path = format!("accounts/{uin}_threads.json");
+            let _ = crate::paths::write_private(std::path::Path::new(&path), text);
         }
     }
 }
@@ -4549,8 +4570,10 @@ pub struct QueueCursor {
 ///   `"{lastActionId},{lastActionIdOther}," + encodeURIComponent(btoa(JSON.stringify(queues)) + ",1")`
 /// - `getChatFromPolling(params)`:
 ///   `GET {zpw_chts_new[0]}/?zpw_ver=694&zpw_type=30&params={params}&ts={unix_sec}`
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct PollState {
+    #[serde(skip)]
+    pub owner_uin: String,
     pub last_action_id: String,
     pub last_action_id_other: String,
     pub queues: std::collections::BTreeMap<String, QueueCursor>,
@@ -4593,6 +4616,7 @@ impl Default for PollState {
             );
         }
         Self {
+            owner_uin: String::new(),
             last_action_id: "1".into(),
             last_action_id_other: "1".into(),
             queues,
@@ -4774,6 +4798,11 @@ pub async fn get_cloud_messages(
 ///
 /// Uses a 12-second timeout matching `lp_chat` long-polling windows (`sync-v2-sub-worker.js:3498030`).
 pub async fn get_chat_from_polling(s: &Session, state: &mut PollState) -> Result<Value> {
+    let uin = s.login.as_ref().map(|login| login.uin.as_str()).unwrap_or_default();
+    if state.owner_uin != uin {
+        *state = crate::sync_state::SyncState::new(uin).poll;
+    }
+
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
@@ -4812,6 +4841,9 @@ pub async fn get_chat_from_polling(s: &Session, state: &mut PollState) -> Result
             if crate::trace_shape::enabled() {
                 crate::trace_shape::line("lp", format!("<- {}", crate::trace_shape::shape(&dec)));
             }
+            if let Some(login) = s.login.as_ref() {
+                crate::sync_state::record_gaps_from(&dec, &login.uin);
+            }
             if let Some(code) = dec.get("error_code").and_then(Value::as_i64) {
                 if code != 0 {
                     let msg = dec
@@ -4835,41 +4867,203 @@ pub async fn get_chat_from_polling(s: &Session, state: &mut PollState) -> Result
     }
 }
 
+/// Safety cap on long-poll pages in one catch-up (each page is one `getChatFromPolling`).
+pub const LP_CATCHUP_MAX_BATCHES: usize = 200;
+
+/// `true` when a long-poll reply says there is more to fetch right away (`more == 1` or a
+/// cursor reset to follow).
+pub fn lp_reply_wants_more(lp_resp: &Value) -> bool {
+    let data_node = lp_resp.get("data").unwrap_or(lp_resp);
+    let more = data_node.get("more").and_then(Value::as_i64).unwrap_or(0);
+    let has_reset = pick_str(data_node, &["resetLastActionId"])
+        .map(|r| r != "0" && !r.is_empty())
+        .unwrap_or(false);
+    more != 0 || has_reset
+}
+
+/// Number of chat messages (`msgs` + `groupMsgs`) in a long-poll reply.
+pub fn lp_reply_message_count(lp_resp: &Value) -> usize {
+    let data_node = lp_resp.get("data").unwrap_or(lp_resp);
+    ["msgs", "groupMsgs"]
+        .iter()
+        .filter_map(|k| data_node.get(*k).and_then(Value::as_array))
+        .map(Vec::len)
+        .sum()
+}
+
+/// `(thread_id, is_group, last_msg_id)` for each conversation in a `get-last-msgs` reply
+/// (`clearUnreads`, type 0). On a device that just logged in this is the only list of recent
+/// conversations the server gives (previews are filtered), and `lastMsgId` orders them in time.
+pub fn conversation_last_msg_ids(resp: &Value) -> Vec<(String, bool, String)> {
+    let parsed;
+    let mut data_node = resp.get("data").unwrap_or(resp);
+    if let Some(s) = data_node.as_str() {
+        parsed = serde_json::from_str::<Value>(s.trim()).unwrap_or(Value::Null);
+        data_node = &parsed;
+    }
+    let Some(arr) = data_node.get("clearUnreads").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, bool, String)> = Vec::new();
+    for cu in arr {
+        if cu.get("type").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            continue;
+        }
+        let (Some(tid), Some(last)) = (pick_str(cu, &["idTo"]), pick_str(cu, &["lastMsgId"])) else {
+            continue;
+        };
+        if tid.is_empty() || tid == "0" || last.parse::<u64>().map(|n| n == 0).unwrap_or(true) {
+            continue;
+        }
+        let is_group = is_group_flag(cu);
+        match out.iter_mut().find(|(t, _, _)| *t == tid) {
+            Some(e) if e.2.parse::<u64>().unwrap_or(0) < last.parse::<u64>().unwrap_or(0) => e.2 = last,
+            Some(_) => {}
+            None => out.push((tid, is_group, last)),
+        }
+    }
+    out
+}
+
+/// Pages of older cloud history fetched per conversation to close a gap (A4).
+pub const CLOUD_GAP_MAX_PAGES: usize = 10;
+
+/// A cloud history page leaves a hole when its oldest message is newer than the newest one
+/// stored locally (more arrived while QTzalo was closed than one page holds).
+pub fn needs_gap_fill(local_newest_ts: i64, page_oldest_ts: i64) -> bool {
+    local_newest_ts > 0 && page_oldest_ts > local_newest_ts
+}
+
+/// `(oldest ts, minMsgId, hasMore)` of a `getrecentv2` / `getoldv2` reply.
+pub fn cloud_page_info(resp: &Value) -> (i64, Option<String>, bool) {
+    let d = resp.get("data").unwrap_or(resp);
+    let oldest = d
+        .get("groupMsgs")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| pick_str(m, &["ts"]).and_then(|t| t.parse::<i64>().ok()))
+                .min()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let min_id = pick_str(d, &["minMsgId"]).filter(|s| s.parse::<u64>().map(|n| n > 0).unwrap_or(false));
+    let has_more = d.get("hasMore").and_then(Value::as_i64).unwrap_or(0) != 0;
+    (oldest, min_id, has_more)
+}
+
+/// Merge the newest cloud page of `conv_id` into `t`, then follow `getoldv2` until it meets
+/// the messages already stored (or [`CLOUD_GAP_MAX_PAGES`]).
+async fn merge_cloud_with_gap_fill(s: &Session, t: &mut Thread, conv_id: &str, first_page: &Value) {
+    let local_newest = t.messages.iter().map(|m| m.ts).max().unwrap_or(0);
+    merge_group_history(t, first_page);
+    let (mut oldest, mut min_id, mut has_more) = cloud_page_info(first_page);
+    let mut pages = 0;
+    while has_more && needs_gap_fill(local_newest, oldest) && pages < CLOUD_GAP_MAX_PAGES {
+        let Some(cursor) = min_id.take() else {
+            break;
+        };
+        let Ok(page) = get_cloud_messages(s, conv_id, &cursor, true, 50).await else {
+            break;
+        };
+        merge_group_history(t, &page);
+        (oldest, min_id, has_more) = cloud_page_info(&page);
+        pages += 1;
+    }
+    if pages > 0 {
+        crate::trace_shape::line("cm", format!("gap fill: {pages} older page(s)"));
+    }
+}
+
+#[cfg(test)]
+mod catchup_tests {
+    use super::*;
+
+    #[test]
+    fn gap_fill_decision_and_page_info() {
+        assert!(needs_gap_fill(1_000, 5_000));
+        assert!(!needs_gap_fill(5_000, 1_000), "page reaches back past what we have");
+        assert!(!needs_gap_fill(0, 5_000), "nothing stored yet: nothing to join");
+        let page = json!({ "data": { "hasMore": 1, "minMsgId": "8440000000001",
+            "groupMsgs": [ { "ts": "1793549000000" }, { "ts": "1793548000000" } ] } });
+        assert_eq!(cloud_page_info(&page), (1_793_548_000_000, Some("8440000000001".into()), true));
+        let empty = json!({ "data": { "hasMore": 0, "groupMsgs": [], "minMsgId": "0" } });
+        assert_eq!(cloud_page_info(&empty), (0, None, false));
+    }
+
+    #[test]
+    fn lp_reply_more_and_count() {
+        let done = json!({ "data": { "more": 0, "msgs": [{}, {}], "groupMsgs": [{}], "resetLastActionId": "0" } });
+        assert!(!lp_reply_wants_more(&done));
+        assert_eq!(lp_reply_message_count(&done), 3);
+        assert!(lp_reply_wants_more(&json!({ "data": { "more": 1, "msgs": [] } })));
+        assert!(lp_reply_wants_more(&json!({ "data": { "more": 0, "resetLastActionId": "77" } })));
+        assert_eq!(lp_reply_message_count(&json!({ "error_code": 0, "data": {} })), 0);
+    }
+
+    #[test]
+    fn last_msg_ids_from_clear_unreads() {
+        let resp = json!({ "data": { "msgs": [], "clearUnreads": [
+            { "idTo": "111", "isGroup": 0, "lastMsgId": "8440000000001", "type": 0 },
+            { "idTo": "222", "isGroup": 1, "lastMsgId": "8430000000000", "type": 0 },
+            { "idTo": "111", "isGroup": 0, "lastMsgId": "8440000000009", "type": 0 },
+            { "idTo": "333", "isGroup": 0, "lastMsgId": "0", "type": 0 },
+            { "idTo": "444", "isGroup": 0, "lastMsgId": "8450000000000", "type": 1 }
+        ] } });
+        assert_eq!(
+            conversation_last_msg_ids(&resp),
+            vec![
+                ("111".to_string(), false, "8440000000009".to_string()),
+                ("222".to_string(), true, "8430000000000".to_string()),
+            ]
+        );
+        let as_string = json!({ "data": resp["data"].to_string() });
+        assert_eq!(conversation_last_msg_ids(&as_string).len(), 2);
+    }
+}
+
 /// Poll both `getChatFromPolling` (`lp_chat`) and `get-last-msgs` (`convers_api`),
 /// merge all incoming/outgoing/group messages into `threads`, resolve unknown names,
 /// and persist to `zalo_history.db` and `threads_cache.json`.
+///
+/// The long-poll is followed until the server says it is done (`more == 0`, no reset), up to
+/// [`LP_CATCHUP_MAX_BATCHES`] pages. Returns how many messages the long-poll delivered.
 pub async fn poll_new_messages(
     s: &Session,
     state: &mut PollState,
     threads: &mut Vec<Thread>,
-) -> Result<()> {
+) -> Result<usize> {
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
-    // 1. Poll live/offline message queues via `getChatFromPolling` (follow `more == 1` / `resetLastActionId` up to 3 batches)
-    for batch in 1..=3 {
+    // 1. Poll live/offline message queues via `getChatFromPolling` until caught up.
+    let mut fetched = 0usize;
+    for batch in 1..=LP_CATCHUP_MAX_BATCHES {
         let Ok(lp_resp) = get_chat_from_polling(s, state).await else {
             break;
         };
         merge_previews(threads, &lp_resp);
-        let data_node = lp_resp.get("data").unwrap_or(&lp_resp);
-        let more = data_node.get("more").and_then(Value::as_i64).unwrap_or(0);
-        let has_reset = pick_str(data_node, &["resetLastActionId"])
-            .map(|r| r != "0" && !r.is_empty())
-            .unwrap_or(false);
-        if more == 0 && !has_reset {
+        fetched += lp_reply_message_count(&lp_resp);
+        if !lp_reply_wants_more(&lp_resp) {
             break;
         }
-        if batch == 3 {
-            crate::trace_shape::line(
-                "lp",
-                format!("stopped at the 3-batch cap with more={more} reset={has_reset}"),
-            );
+        if batch == LP_CATCHUP_MAX_BATCHES {
+            crate::trace_shape::line("lp", format!("stopped at the {batch}-batch cap"));
         }
     }
     // 2. Poll conversation previews via `get-last-msgs` (both empty map and populated known thread IDs)
     match get_last_msgs(s, &[]).await {
-        Ok(preview_resp) => merge_previews(threads, &preview_resp),
+        Ok(preview_resp) => {
+            merge_previews(threads, &preview_resp);
+            let activity = conversation_last_msg_ids(&preview_resp);
+            if let Some(uin) = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin)) {
+                if !activity.is_empty() {
+                    if let Ok(mut store) = crate::store::MessageStore::open(crate::store::db_path_for_account(uin)) {
+                        let _ = store.upsert_thread_activity(&activity);
+                    }
+                }
+            }
+        },
         Err(e) if crate::session::SessionStatus::from_error(&e) == crate::session::SessionStatus::Expired => {
             return Err(e);
         }
@@ -4900,7 +5094,7 @@ pub async fn poll_new_messages(
     if !send2me_id.is_empty() {
         if let Ok(cm_resp) = get_cloud_messages(s, &send2me_id, "0", false, 50).await {
             if let Some(t) = threads.iter_mut().find(|t| t.id == send2me_id) {
-                merge_group_history(t, &cm_resp);
+                merge_cloud_with_gap_fill(s, t, &send2me_id, &cm_resp).await;
             } else {
                 merge_previews(threads, &cm_resp);
             }
@@ -4914,7 +5108,7 @@ pub async fn poll_new_messages(
     for gid in group_ids.into_iter().take(5) {
         if let Ok(cm_resp) = get_cloud_messages(s, &gid, "0", false, 50).await {
             if let Some(t) = threads.iter_mut().find(|t| t.id == gid) {
-                merge_group_history(t, &cm_resp);
+                merge_cloud_with_gap_fill(s, t, &gid, &cm_resp).await;
             }
         }
     }
@@ -4922,11 +5116,13 @@ pub async fn poll_new_messages(
     resolve_thread_names(s, threads).await;
     threads.retain(|t| !t.messages.is_empty() || !t.name.starts_with("Người dùng "));
     deduplicate_threads(threads, None);
-    if let Ok(mut store) = crate::store::MessageStore::open(crate::paths::history_db()) {
-        let _ = crate::store::persist_threads(&mut store, threads);
+    if let Some(uin) = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin)) {
+        if let Ok(mut store) = crate::store::MessageStore::open(crate::store::db_path_for_account(uin)) {
+            let _ = crate::store::persist_threads(&mut store, threads);
+        }
+        save_threads_cache_for_account(threads, uin);
     }
-    save_threads_cache(threads);
-    Ok(())
+    Ok(fetched)
 }
 
 fn extract_content_text(v: &Value) -> Option<String> {
