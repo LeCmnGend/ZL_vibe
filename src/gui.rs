@@ -1317,8 +1317,12 @@ impl ZaloGuiApp {
                 }
                 GuiEvent::StickerImageReady { key, image } => {
                     self.loading_stickers.remove(&key);
-                    let tex = ctx.load_texture(&key, image, TextureOptions::LINEAR);
-                    self.sticker_textures.insert(key, tex);
+                    if let Some(texture) = self.sticker_textures.get_mut(&key) {
+                        texture.set(image, TextureOptions::LINEAR);
+                    } else {
+                        let texture = ctx.load_texture(&key, image, TextureOptions::LINEAR);
+                        self.sticker_textures.insert(key, texture);
+                    }
                 }
                 GuiEvent::StickerStoreLoaded(packs) => {
                     self.sticker_store_loading = false;
