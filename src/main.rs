@@ -21,11 +21,12 @@ pub const POLL_SECS: u64 = 4;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let demo_mode = args.iter().any(|a| a == "--demo");
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("ZL-vibe v{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    if args.iter().any(|a| a == "--check-update") {
+    if !demo_mode && args.iter().any(|a| a == "--check-update") {
         match gui::check_github_release_cli().await {
             Ok(info) => {
                 if info.has_update {
@@ -69,7 +70,19 @@ async fn main() -> Result<()> {
             }
         }
     }
-    let data_path = data_dir::initialize(&args)?;
+    let data_path = if demo_mode {
+        let demo_dir = std::env::temp_dir().join(format!(
+            "ZL-vibe-demo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()
+        ));
+        std::fs::create_dir(&demo_dir)?;
+        let demo_path = demo_dir.to_str().ok_or_else(|| anyhow::anyhow!("Đường dẫn thư mục demo không hợp lệ"))?;
+        let demo_args = vec!["--data-dir".to_owned(), demo_path.to_owned()];
+        data_dir::initialize(&demo_args)?
+    } else {
+        data_dir::initialize(&args)?
+    };
     if args.iter().any(|a| a == "--print-data-dir") {
         println!("{}", data_path.display());
         return Ok(());
@@ -119,7 +132,7 @@ async fn main() -> Result<()> {
                 .find_map(|a| a.strip_prefix("--proxy=").map(str::to_string))
         });
 
-    if force_logout {
+    if force_logout && !demo_mode {
         let _ = std::fs::remove_file(paths::session_file());
         let _ = std::fs::remove_file(paths::threads_cache_file());
         println!(
@@ -142,7 +155,7 @@ async fn main() -> Result<()> {
     }
 
     let mut s = Session::new(dev_mode, dump, dump_raw)?;
-    if let Some(ref p) = cli_proxy {
+    if let Some(ref p) = cli_proxy.filter(|_| !demo_mode) {
         if let Some(norm) = s.set_proxy(Some(p))? {
             println!(
                 "🌐 Đã kích hoạt Proxy cho phiên này: {}",
@@ -152,7 +165,7 @@ async fn main() -> Result<()> {
     }
 
     // Attempt to restore persistent session from disk
-    let session_restored = if !force_logout {
+    let session_restored = if !force_logout && !demo_mode {
         if s.load().is_ok() {
             if let Some(li) = &s.login {
                 let name = if li.display_name.is_empty() {
@@ -176,14 +189,14 @@ async fn main() -> Result<()> {
     };
 
     // If `--mcp` is requested, run the Model Context Protocol JSON-RPC 2.0 server over stdio (#35).
-    if force_mcp {
+    if force_mcp && !demo_mode {
         let shared = std::sync::Arc::new(tokio::sync::Mutex::new(s));
         return api_mcp::run_mcp_stdio_server(shared, "zalo_history.db").await;
     }
 
     // If `--api-port <PORT>` is set without `--gui`/`--tui`, run headless REST + MCP server if `--api-only` is passed;
     // otherwise spawn the REST server in the background alongside GUI/TUI (#35).
-    if let Some(port) = api_port {
+    if let Some(port) = api_port.filter(|_| !demo_mode) {
         let shared = std::sync::Arc::new(tokio::sync::Mutex::new(s.clone()));
         println!("🌐 REST API & MCP HTTP server đang lắng nghe tại http://127.0.0.1:{port}/api/v1/status");
         if args.iter().any(|a| a == "--api-only") {
@@ -198,7 +211,7 @@ async fn main() -> Result<()> {
     // If `--gui` is specified (or default when not `--tui` / `--qr` / `--phone`):
     // Open the native GUI window IMMEDIATELY without blocking on network requests!
     // Background worker in `gui.rs` handles `get_server_info`, `get_friends`, and `poll_new_messages`.
-    if force_gui || (!force_tui && !force_qr && !args.iter().any(|a| a.starts_with("--phone"))) {
+    if demo_mode || force_gui || (!force_tui && !force_qr && !args.iter().any(|a| a.starts_with("--phone"))) {
         println!("🚀 Đang khởi chạy giao diện đồ họa ZL-vibe (egui)…");
         #[cfg(target_os = "windows")]
         if dev_mode {
@@ -219,12 +232,15 @@ async fn main() -> Result<()> {
         if let Some(icon) = gui::load_app_icon() {
             viewport = viewport.with_icon(std::sync::Arc::new(icon));
         }
-        let mut initial_threads = chat::load_threads_cache();
-        store::load_history_into_threads(
-            "zalo_history.db",
-            &mut initial_threads,
-            store::MessageStore::PRELOAD_MSGS,
-        );
+        let mut initial_threads = Vec::new();
+        if !demo_mode {
+            initial_threads = chat::load_threads_cache();
+            store::load_history_into_threads(
+                "zalo_history.db",
+                &mut initial_threads,
+                store::MessageStore::PRELOAD_MSGS,
+            );
+        }
 
         let renderers = gui_renderer_order();
         let mut last_err = None;

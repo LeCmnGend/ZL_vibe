@@ -2998,7 +2998,9 @@ impl ZaloGuiApp {
                 });
             }
         }
-        if spawn_multi_zalo {
+        if spawn_multi_zalo && self.demo_mode {
+            self.show_toast("Không mở tài khoản thật trong chế độ demo");
+        } else if spawn_multi_zalo {
             let profile = self.settings.multi_profile_name.trim().to_string();
             if profile.is_empty() {
                 self.show_toast("⚠️ Vui lòng nhập tên Profile (ví dụ: acc2)");
