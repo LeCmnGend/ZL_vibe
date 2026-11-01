@@ -33,6 +33,9 @@ pub mod unread;
 pub mod video;
 pub mod voip_log;
 
+#[cfg(windows)]
+mod windows_video;
+
 /// Writable storage selection and private atomic session writes.
 pub mod data_dir;
 /// Bounded media downloads, cache isolation, and resource admission.

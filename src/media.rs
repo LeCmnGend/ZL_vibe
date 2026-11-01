@@ -119,6 +119,13 @@ pub fn list_media_devices(refresh: bool) -> (Vec<String>, Vec<String>) {
             }
         }
     }
+    #[cfg(windows)]
+    let cams = crate::windows_video::camera_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| !is_ignored_virtual_or_ir_device(name))
+        .collect();
+    #[cfg(not(windows))]
     let cams = enumerate_ffmpeg_cameras();
     let pair = (mics, cams);
     if let Ok(mut g) = CACHED_DEVICES.lock() {
@@ -127,6 +134,7 @@ pub fn list_media_devices(refresh: bool) -> (Vec<String>, Vec<String>) {
     pair
 }
 
+#[cfg(not(windows))]
 fn enumerate_ffmpeg_cameras() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
@@ -323,9 +331,12 @@ impl MediaHandle {
 impl Drop for MediaHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        for t in self.threads.drain(..) {
-            let _ = t.join();
-        }
+        let threads = std::mem::take(&mut self.threads);
+        thread::spawn(move || {
+            for t in threads {
+                let _ = t.join();
+            }
+        });
     }
 }
 
@@ -949,6 +960,27 @@ fn spawn_camera_capture_thread(
     gui_tx: Option<crate::gui::GuiTx>,
     egui_ctx: Option<eframe::egui::Context>,
 ) {
+    #[cfg(windows)]
+    {
+        thread::spawn(move || {
+            if let Err(e) = crate::windows_video::capture(
+                stop,
+                cam_enabled,
+                want_keyframe,
+                cam_au_tx,
+                gui_tx.clone(),
+                egui_ctx.clone(),
+            ) {
+                if let Some(tx) = gui_tx {
+                    let _ = tx.send(crate::gui::GuiEvent::CameraUnavailable(format!("Camera: {e:#}")));
+                }
+                if let Some(ctx) = egui_ctx {
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+    #[cfg(not(windows))]
     thread::spawn(move || {
         use std::io::Read;
         use std::process::{Command, Stdio};
@@ -1351,6 +1383,13 @@ fn run_media_loop(
     gui_tx: Option<crate::gui::GuiTx>,
     egui_ctx: Option<eframe::egui::Context>,
 ) {
+    struct StopOnExit(Arc<AtomicBool>);
+    impl Drop for StopOnExit {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    let _stop_on_exit = StopOnExit(stop.clone());
     let (h264_tx, h264_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(120);
     let (cam_au_tx, cam_au_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
     let video_synced = Arc::new(AtomicBool::new(false));
@@ -2273,6 +2312,23 @@ fn run_h264_ffmpeg_decoder(
     synced: Arc<AtomicBool>,
     tex_key: String,
 ) {
+    #[cfg(windows)]
+    {
+        if let Err(e) = crate::windows_video::decode(
+            stop,
+            h264_rx,
+            gui_tx.clone(),
+            egui_ctx.clone(),
+            synced,
+            tex_key,
+        ) {
+            let _ = gui_tx.send(crate::gui::GuiEvent::StatusUpdate(format!("Video decode: {e:#}")));
+            egui_ctx.request_repaint();
+        }
+        return;
+    }
+    #[cfg(not(windows))]
+    {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
 
@@ -2422,6 +2478,7 @@ fn run_h264_ffmpeg_decoder(
     }
     crate::voip_log::line("VDEC", format!("decoder stop, {decoded} frames decoded"));
     let _ = child.kill();
+    }
 }
 
 #[cfg(test)]
