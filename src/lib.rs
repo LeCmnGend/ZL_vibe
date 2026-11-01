@@ -15,11 +15,13 @@ pub mod message_model;
 /// Exact quoted-message references in loaded conversations.
 pub mod message_navigation;
 pub mod param_cipher;
+pub mod paths;
 pub mod qr;
 pub mod reactions;
 pub mod session;
 pub mod socket;
 pub mod store;
+pub mod timefmt;
 pub mod tui;
 pub mod ui;
 pub mod unread;
