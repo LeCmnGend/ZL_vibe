@@ -1291,7 +1291,12 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             tokio::spawn(async move {
                                 let mut s = session_clone.lock().await.clone();
                                 if s.login.is_some() {
-                                    match s.session_status().await {
+                                    let status = s.session_status().await;
+                                    crate::trace_shape::line(
+                                        "sync",
+                                        format!("refresh: check_session -> {status:?}"),
+                                    );
+                                    match status {
                                         crate::session::SessionStatus::Valid => {}
                                         crate::session::SessionStatus::Expired => {
                                             // Keep `session.json`: the old credentials stay
@@ -1396,6 +1401,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                         ex.avatar = gt.avatar;
                                                     }
                                                     ex.is_group = true;
+                                                    if gt.presentation.member_count.is_some() {
+                                                        ex.presentation.member_count = gt.presentation.member_count;
+                                                    }
                                                 } else {
                                                     list.push(gt);
                                                 }
@@ -1406,6 +1414,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             errors.push(format!("Nhóm: {e}"));
                                         }
                                     }
+                                    crate::trace_shape::line("sync", format!("refresh: threads={} groups={} errors={}", list.len(), list.iter().filter(|t| t.is_group).count(), errors.len()));
                                     let uin = s.login.as_ref().map(|l| l.uin.as_str()).unwrap_or_default();
                                     let db_path = crate::store::db_path_for_account(uin);
                                     crate::store::load_history_into_threads(
@@ -1441,6 +1450,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                 .send(GuiEvent::MuteSnapshotSynced(mute_map));
                                         }
                                     }
+                                    crate::trace_shape::line("sync", "refresh: poll_new_messages done");
                                     let total_msgs: usize =
                                         list.iter().map(|t| t.messages.len()).sum();
                                     let n_threads = list.len();
