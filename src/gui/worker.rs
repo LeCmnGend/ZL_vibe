@@ -234,6 +234,77 @@ pub(super) fn resp_error_code(resp: &serde_json::Value) -> Option<i64> {
         .filter(|c| *c != 0)
 }
 
+/// Largest image accepted from the network or disk for stickers / thumbnails / avatars.
+pub(super) const MAX_IMAGE_BYTES: usize = 15 * 1024 * 1024;
+
+/// Zalo's own static/CDN hosts (`*.zalo.me`, `*.zaloapp.com`, `*.zdn.vn`, `*.zadn.vn`).
+fn is_zalo_cdn_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    crate::session::is_zalo_host(&h)
+        || h == "zdn.vn"
+        || h.ends_with(".zdn.vn")
+        || h == "zadn.vn"
+        || h.ends_with(".zadn.vn")
+}
+
+/// May this URL be fetched automatically to render an image?
+///
+/// `https://` always; plain `http://` only for Zalo's own CDN hosts (some legacy stickers are
+/// still served that way). Anything else (`file:`, `ftp:`, other `http://` hosts) is refused.
+pub(super) fn image_url_allowed(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url.trim()) else {
+        return false;
+    };
+    match u.scheme() {
+        "https" => u.host_str().is_some(),
+        "http" => u.host_str().map(is_zalo_cdn_host).unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Resolve the path of a locally sent image (`local://<absolute path>` or an absolute path).
+///
+/// UNC / network paths (`\\server\share\x.png`, `//server/x`) are refused: on Windows merely
+/// opening one makes the OS connect to that host and offer the user's NTLM credentials.
+pub(super) fn local_image_path(url: &str) -> Option<std::path::PathBuf> {
+    let raw = url.strip_prefix("local://").unwrap_or(url).trim();
+    if raw.is_empty() || raw.starts_with("\\\\") || raw.starts_with("//") {
+        return None;
+    }
+    let p = std::path::Path::new(raw);
+    if !p.is_absolute() {
+        return None;
+    }
+    let meta = std::fs::metadata(p).ok()?;
+    if !meta.is_file() || meta.len() > MAX_IMAGE_BYTES as u64 {
+        return None;
+    }
+    Some(p.to_path_buf())
+}
+
+/// Download an image (stickers, thumbnails, avatars) with the scheme/host policy of
+/// [`image_url_allowed`] and a [`MAX_IMAGE_BYTES`] cap.
+pub(super) async fn fetch_image_bytes(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
+    if !image_url_allowed(url) {
+        return None;
+    }
+    let mut resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_IMAGE_BYTES as u64) {
+        return None;
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if buf.len() + chunk.len() > MAX_IMAGE_BYTES {
+            return None;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Some(buf)
+}
+
 /// Immediately decode any disk-cached sticker thumbnails (`stickers_cache/stk_{cid}_{sid}.png`)
 /// and push `GuiEvent::StickerImageReady` *before* sending sticker list metadata, returning any
 /// missing `(key, url, cache_path)` entries for concurrent network prefetching.
@@ -242,8 +313,8 @@ pub(super) fn preload_disk_sticker_thumbnails(
     gui_tx: &GuiTx,
     limit: usize,
 ) -> Vec<(String, String, std::path::PathBuf)> {
-    let cache_dir = std::path::Path::new("stickers_cache");
-    let _ = std::fs::create_dir_all(cache_dir);
+    let cache_dir_buf = crate::paths::cache_dir();
+    let cache_dir = cache_dir_buf.as_path();
 
     let mut missing = Vec::new();
     for item in items.iter().take(limit) {
@@ -296,24 +367,19 @@ async fn prefetch_missing_sticker_thumbnails(
         let tx = gui_tx.clone();
         let ctx = egui_ctx.clone();
         async move {
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(b) = resp.bytes().await {
-                        let vec = b.to_vec();
-                        if let Ok(dyn_img) = image::load_from_memory(&vec) {
-                            let _ = std::fs::write(&cache_path, &vec);
-                            let rgba = dyn_img.to_rgba8();
-                            let size = [rgba.width() as usize, rgba.height() as usize];
-                            let pixels = rgba.as_flat_samples();
-                            let color_img =
-                                egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-                            let _ = tx.send(GuiEvent::StickerImageReady {
-                                key,
-                                image: color_img,
-                            });
-                            ctx.request_repaint();
-                        }
-                    }
+            if let Some(vec) = fetch_image_bytes(&client, &url).await {
+                if let Ok(dyn_img) = image::load_from_memory(&vec) {
+                    let _ = std::fs::write(&cache_path, &vec);
+                    let rgba = dyn_img.to_rgba8();
+                    let size = [rgba.width() as usize, rgba.height() as usize];
+                    let pixels = rgba.as_flat_samples();
+                    let color_img =
+                        egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                    let _ = tx.send(GuiEvent::StickerImageReady {
+                        key,
+                        image: color_img,
+                    });
+                    ctx.request_repaint();
                 }
             }
         }
@@ -775,7 +841,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                         WorkerCmd::PersistThreads(threads_snapshot) => {
                             tokio::task::spawn_blocking(move || {
                                 if let Ok(mut store) =
-                                    crate::store::MessageStore::open("zalo_history.db")
+                                    crate::store::MessageStore::open(crate::paths::history_db())
                                 {
                                     let _ =
                                         crate::store::persist_threads(&mut store, &threads_snapshot);
@@ -794,9 +860,10 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             if let Some(task) = current_qr_task.take() {
                                 task.abort();
                             }
-                            let _ = std::fs::remove_file("session.json");
-                            let _ = std::fs::remove_file("threads_cache.json");
-                            let _ = std::fs::remove_file("zalo_history.db");
+                            // Logging out removes credentials only. The local message history
+                            // (`zalo_history.db`) is kept: deleting it is a separate, explicit action.
+                            let _ = std::fs::remove_file(crate::paths::session_file());
+                            let _ = std::fs::remove_file(crate::paths::threads_cache_file());
                             {
                                 let mut s = session.lock().await;
                                 s.logout();
@@ -1026,7 +1093,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                                 &mut s, data,
                                                             );
                                                         }
-                                                        let _ = s.save_to_file("session.json");
+                                                        let _ = s.save();
 
                                                         if let Ok(info) =
                                                             crate::login::get_login_info(&s).await
@@ -1254,7 +1321,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                     li.display_name = name.clone();
                                                 }
                                             }
-                                            let _ = sl.save_to_file("session.json");
+                                            let _ = sl.save();
                                         }
                                         let u_ava = s
                                             .login
@@ -1857,7 +1924,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 let s = session_clone.lock().await.clone();
                                 let client_id = crate::chat::next_client_message_id();
                                 if let Some(found_url) = crate::chat::extract_first_url(&text) {
-                                    let meta = crate::chat::parse_link_metadata(&s, &found_url)
+                                    // The user is sending this link: a direct OpenGraph fetch
+                                    // from this machine is acceptable here.
+                                    let meta = crate::chat::parse_link_metadata(&s, &found_url, true)
                                         .await
                                         .unwrap_or_else(|_| crate::chat::LinkMetadata {
                                             url: found_url.clone(),
@@ -2145,7 +2214,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             (to_id.clone(), msg.id.clone(), msg.ts);
                                         let _ = tokio::task::spawn_blocking(move || {
                                             if let Ok(mut store) =
-                                                crate::store::MessageStore::open("zalo_history.db")
+                                                crate::store::MessageStore::open(crate::paths::history_db())
                                             {
                                                 let _ = store.delete_message(&tid, &mid, ts);
                                             }
@@ -2396,9 +2465,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 }
                             }
                             tokio::spawn(async move {
-                                let cache_dir = std::path::Path::new("stickers_cache");
-                                let _ = std::fs::create_dir_all(cache_dir);
-                                let cache_path = cache_dir.join(format!("{key}.png"));
+                                let cache_path =
+                                    crate::paths::cache_dir().join(format!("{key}.png"));
 
                                 // Bytes come from the disk cache, a local file or the network. They
                                 // used to be decoded once to validate and again to use; now once, on
@@ -2409,17 +2477,11 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     } else if !url.starts_with("http://")
                                         && !url.starts_with("https://")
                                     {
-                                        (std::fs::read(&url).ok(), false)
+                                        (local_image_path(&url).and_then(|path| std::fs::read(path).ok()), false)
                                     } else {
                                         let client = { session_clone.lock().await.clone().http };
                                         let fetch_url = crate::store::jxl_to_jpg_url(&url);
-                                        let body = match client.get(&fetch_url).send().await {
-                                            Ok(resp) if resp.status().is_success() => {
-                                                resp.bytes().await.ok()
-                                            }
-                                            _ => None,
-                                        };
-                                        (body.map(|b| b.to_vec()), true)
+                                        (fetch_image_bytes(&client, &fetch_url).await, true)
                                     };
                                 let Some(bytes) = bytes_opt else {
                                     return;
@@ -2450,8 +2512,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                         // Apply smooth anti-aliased circular alpha mask for avatar textures (`ava_*`)
                                         if key.starts_with("ava_") {
                                             let side = rgba.width().min(rgba.height()).clamp(32, 160);
-                                            let x0 = (rgba.width() - side) / 2;
-                                            let y0 = (rgba.height() - side) / 2;
+                                            let x0 = rgba.width().saturating_sub(side) / 2;
+                                            let y0 = rgba.height().saturating_sub(side) / 2;
                                             let cropped = image::imageops::crop_imm(
                                                 &rgba, x0, y0, side, side,
                                             )
@@ -2629,7 +2691,10 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             let ctx_clone = egui_ctx.clone();
                             tokio::spawn(async move {
                                 let s = session_clone.lock().await.clone();
-                                if let Ok(meta) = crate::chat::parse_link_metadata(&s, &url).await {
+                                // Automatic previews (received messages, composer) only use
+                                // Zalo's server-side parser: no request from this machine to an
+                                // arbitrary URL (privacy: IP leak / LAN probing).
+                                if let Ok(meta) = crate::chat::parse_link_metadata(&s, &url, false).await {
                                     let _ = gui_tx_clone.send(GuiEvent::LinkPreviewReady(meta));
                                     ctx_clone.request_repaint();
                                 }
@@ -2912,7 +2977,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             if let Some(cfg) = info.get("data") {
                                                 crate::login::apply_login_config(&mut s, cfg);
                                                 s.apply_server_info(cfg);
-                                                let _ = s.save_to_file("session.json");
+                                                let _ = s.save();
 
                                                 let uin = s
                                                     .login

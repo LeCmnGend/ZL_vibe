@@ -159,16 +159,12 @@ pub fn compute_file_md5(path: &Path) -> Result<String> {
     }))
 }
 
-/// Locate `ZaloCall.exe` across workspace and standard Zalo PC install directories.
+/// Locate `ZaloCall.exe` in the standard Zalo PC install directory (`%LOCALAPPDATA%\Programs\Zalo`).
+///
+/// Working-directory-relative candidates and a developer's hard-coded `F:\…` path were removed:
+/// an executable must never be picked up from wherever the app happens to be started.
 pub fn find_zalocall_exe() -> Option<PathBuf> {
-    let mut candidates = vec![
-        PathBuf::from(r"..\Zalo-26.10.11\plugins\capture\ZaloCall.exe"),
-        PathBuf::from(r"Zalo-26.10.11\plugins\capture\ZaloCall.exe"),
-        PathBuf::from(r"plugins\capture\ZaloCall.exe"),
-        PathBuf::from(
-            r"F:\CODE\Reverse-engineer\DATA\4_zalo\Zalo-26.10.11\plugins\capture\ZaloCall.exe",
-        ),
-    ];
+    let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
         let zalo_root = Path::new(&local_app).join("Programs").join("Zalo");
@@ -207,9 +203,7 @@ pub fn build_init_payload(s: &Session, command: &str, should_start_native: bool)
         })
         .unwrap_or_else(|| ("0".into(), "Zalo User".into()));
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let log_dir = cwd.join("dump");
-    let _ = std::fs::create_dir_all(&log_dir);
+    let log_dir = crate::paths::dump_dir();
 
     let call_log = log_dir.join("call.log").to_string_lossy().to_string();
     let zrtc_log = log_dir.join("zrtc.log").to_string_lossy().to_string();
@@ -404,19 +398,33 @@ pub async fn upgrade_session_for_group_call(s: &Session) -> Result<()> {
     Ok(())
 }
 
-/// Append a diagnostic line to `call_trace.log` (current directory) and mirror it to stderr.
+/// Is call tracing enabled? Only in dev mode (`--dev`) or with `ZALO_CALL_TRACE=1`.
+pub fn call_trace_enabled() -> bool {
+    crate::logger::is_dev_mode()
+        || std::env::var("ZALO_CALL_TRACE").ok().as_deref() == Some("1")
+}
+
+/// Append a diagnostic line to `logs/call_trace.log` (per-user data dir) and mirror it to stderr.
 ///
-/// The trace contains decrypted signaling payloads (call ids, session ids, RTP addresses),
-/// so treat `call_trace.log` like `session.json`: never commit it.
+/// The trace contains decrypted signaling payloads (call ids, session ids, RTP addresses), so it
+/// is **off by default**: it is only written in dev mode or with `ZALO_CALL_TRACE=1`
+/// ([`call_trace_enabled`]). Earlier builds always wrote it into the working directory.
 pub fn trace_line(tag: &str, body: impl AsRef<str>) {
     use std::io::Write;
+    if !call_trace_enabled() {
+        return;
+    }
     let body = body.as_ref();
     let ts = crate::login::unix_now();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("call_trace.log")
+    let path = crate::paths::logs_dir().join("call_trace.log");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&path) {
         let _ = writeln!(f, "[{ts}] {tag} {body}");
     }
     eprintln!("[call] {tag} {body}");
@@ -1858,17 +1866,8 @@ pub fn official_imei() -> String {
 /// `answer` (402).
 pub fn generate_call_session() -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    let hex = crate::param_cipher::random_hex(230);
-    let bytes = hex.as_bytes();
-    let mut raw = Vec::with_capacity(114);
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        let hi = (bytes[i] as char).to_digit(16).unwrap_or(0) as u8;
-        let lo = (bytes[i + 1] as char).to_digit(16).unwrap_or(0) as u8;
-        raw.push((hi << 4) | lo);
-        i += 2;
-    }
-    URL_SAFE_NO_PAD.encode(raw)
+    // 115 bytes from the OS CSPRNG → 154 url-safe base64 chars (same shape as before).
+    URL_SAFE_NO_PAD.encode(crate::param_cipher::random_bytes(115))
 }
 
 pub fn build_pure_rust_invite_fields_with_port(
@@ -2214,7 +2213,7 @@ impl CallBridge {
                                 .unwrap_or(false);
                             if needs_uid {
                                 if s_lock.sync_profile_me().await.is_some() {
-                                    let _ = s_lock.save_to_file("session.json");
+                                    let _ = s_lock.save();
                                 }
                             }
                             s_lock.clone()
@@ -4362,7 +4361,7 @@ mod tests {
     #[ignore]
     async fn live_call_dtc_trace() {
         let mut s = Session::new(true, false, false).unwrap();
-        s.load_from_file("session.json").expect("load session.json");
+        s.load().expect("load session.json");
         let partner_id = "1000000000000000005";
         let mut ctrl_state = CtrlPollState::default();
         let _ = poll_voip_controls(&s, &mut ctrl_state).await;

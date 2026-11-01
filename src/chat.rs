@@ -1192,18 +1192,31 @@ pub fn save_threads_cache(threads: &[Thread]) {
         })
         .collect();
     if let Ok(text) = serde_json::to_string(&slim) {
-        let _ = std::fs::write("threads_cache.json", &text);
+        let _ = crate::paths::write_private(std::path::Path::new("threads_cache.json"), &text);
         if let Some(uin) = active_uin_from_session() {
             let _ = std::fs::create_dir_all("accounts");
-            let _ = std::fs::write(format!("accounts/{uin}_threads.json"), text);
+            let _ = crate::paths::write_private(std::path::Path::new(&format!("accounts/{uin}_threads.json")), text);
         }
     }
 }
 
+/// Hosts to try for `getfriends`, in order: `friend` first, `profile` as a fallback, no
+/// empties, no duplicates.
+fn friend_host_order<'a>(friend: &'a str, profile: &'a str) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::with_capacity(2);
+    for h in [friend, profile] {
+        if !h.is_empty() && !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    out
+}
+
 /// `/api/social/friend/getfriends` — the friend list.
 ///
-/// Uses `s.domains.friend` (defaulting to `tt-friend-wpa.chat.zalo.me`), falling back
-/// to `s.domains.profile` only if `domains.friend` is empty.
+/// Tries `s.domains.friend` (the canonical `tt-friend-wpa.chat.zalo.me` host) first and
+/// `s.domains.profile` only as a fallback. Every failing host is logged and the final error
+/// carries context instead of being swallowed (upstream issue #22).
 pub async fn get_friends(s: &Session) -> Result<Vec<Thread>> {
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
@@ -1977,9 +1990,11 @@ pub async fn send_attachment(
         };
         // Pre-populate `stickers_cache/thumb_<md5>.png` with the local image bytes so the GUI
         // renders the sent photo immediately without an extra network round-trip.
-        let _ = std::fs::create_dir_all("stickers_cache");
         let cache_key = format!("thumb_{}", crate::crypto::md5_hex(&final_thumb));
-        let _ = std::fs::write(format!("stickers_cache/{cache_key}.png"), &file_bytes);
+        let _ = std::fs::write(
+            crate::paths::cache_dir().join(format!("{cache_key}.png")),
+            &file_bytes,
+        );
 
         let msg_id = send_resp
             .get("data")
@@ -2272,29 +2287,126 @@ fn extract_meta_attr(tag: &str, attr_name: &str) -> Option<String> {
     None
 }
 
-/// Scrape OpenGraph / Twitter Card / HTML `<meta>` tags directly from a webpage URL.
-pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(3800))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .ok()?;
-    let resp = client
-        .get(url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
-        )
-        .header("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8")
-        .send()
+/// Largest HTML prefix read when scraping OpenGraph tags.
+const OG_MAX_BYTES: usize = 256 * 1024;
+/// Redirect hops followed (each one re-validated) when scraping OpenGraph tags.
+const OG_MAX_REDIRECTS: usize = 4;
+
+/// `true` for globally routable addresses; `false` for loopback, private (RFC 1918), CGNAT,
+/// link-local, unique-local (fc00::/7), multicast, documentation and unspecified ranges.
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || o[0] == 0
+                || o[0] >= 240
+                || (o[0] == 100 && (o[1] & 0xC0) == 64)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 198 && (o[1] & 0xFE) == 18))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(v4));
+            }
+            let seg0 = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg0 & 0xfe00) == 0xfc00
+                || (seg0 & 0xffc0) == 0xfe80
+                || seg0 == 0x2001 && v6.segments()[1] == 0x0db8)
+        }
+    }
+}
+
+/// Resolve an `https://` URL's host and return it with one address — only when *every*
+/// resolved address is public. The caller pins that address so a second DNS answer cannot
+/// redirect the request into the local network (DNS rebinding).
+async fn resolve_public_https(url: &reqwest::Url) -> Option<(String, std::net::SocketAddr)> {
+    if url.scheme() != "https" {
+        return None;
+    }
+    let host = url.host_str()?.to_string();
+    let port = url.port_or_known_default()?;
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return is_public_ip(ip).then(|| (host.clone(), std::net::SocketAddr::new(ip, port)));
+    }
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
         .await
-        .ok()?;
+        .ok()?
+        .collect();
+    if addrs.is_empty() || addrs.iter().any(|a| !is_public_ip(a.ip())) {
+        return None;
+    }
+    Some((host, addrs[0]))
+}
+
+/// Scrape OpenGraph / Twitter Card / HTML `<meta>` tags directly from a webpage URL.
+///
+/// This request leaves from the user's own machine, so it is only used for links the user is
+/// sending (see [`parse_link_metadata`]). Hardened: `https://` only, every hop (redirects are
+/// followed manually) must resolve to public addresses only, the resolved address is pinned,
+/// and at most [`OG_MAX_BYTES`] of the body are read.
+pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
+    let mut current = reqwest::Url::parse(url.trim()).ok()?;
+    let mut final_resp = None;
+    for _ in 0..=OG_MAX_REDIRECTS {
+        let (host, addr) = resolve_public_https(&current).await?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(3800))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&host, addr)
+            .build()
+            .ok()?;
+        let resp = client
+            .get(current.clone())
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+            )
+            .header("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8")
+            .send()
+            .await
+            .ok()?;
+        if resp.status().is_redirection() {
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)?
+                .to_str()
+                .ok()?
+                .to_string();
+            current = current.join(&loc).ok()?;
+            continue;
+        }
+        final_resp = Some(resp);
+        break;
+    }
+    let mut resp = final_resp?;
     if !resp.status().is_success() {
         return None;
     }
-    let bytes = resp.bytes().await.ok()?;
-    let take_len = bytes.len().min(131_072);
-    let html = String::from_utf8_lossy(&bytes[..take_len]);
+    let mut bytes: Vec<u8> = Vec::with_capacity(16 * 1024);
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = OG_MAX_BYTES - bytes.len();
+                bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                if bytes.len() >= OG_MAX_BYTES {
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let html = String::from_utf8_lossy(&bytes);
 
     let mut og_title = String::new();
     let mut og_desc = String::new();
@@ -2326,7 +2438,7 @@ pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
                     og_desc = content;
                 }
                 "og:image" | "twitter:image" | "lark:url:video_cover_image_url"
-                    if og_thumb.is_empty() && content.starts_with("http") =>
+                    if og_thumb.is_empty() && content.starts_with("https://") =>
                 {
                     og_thumb = content;
                 }
@@ -2369,7 +2481,17 @@ fn is_placeholder_zalo_thumb(thumb: &str) -> bool {
 
 /// Parse rich link metadata (`title`, `desc`, `thumb`, `src`) via Zalo's `/api/message/parselink`
 /// (`cmd 11285`) combined with direct OpenGraph HTML scraping fallback.
-pub async fn parse_link_metadata(s: &Session, raw_url: &str) -> Result<LinkMetadata> {
+///
+/// `allow_direct_fetch` controls the OpenGraph fallback that requests the page **from the
+/// user's machine**. Pass `false` for links in received messages (and for any automatic
+/// preview): only Zalo's server-side `parselink` is used, so a sender cannot learn the user's
+/// IP address or probe the local network by sending a link. Pass `true` only for a link the
+/// user is sending themselves.
+pub async fn parse_link_metadata(
+    s: &Session,
+    raw_url: &str,
+    allow_direct_fetch: bool,
+) -> Result<LinkMetadata> {
     let url = raw_url.trim().to_string();
     let domain = url
         .split("://")
@@ -2431,7 +2553,9 @@ pub async fn parse_link_metadata(s: &Session, raw_url: &str) -> Result<LinkMetad
         }
     }
 
-    if meta.title.is_empty() || meta.thumb.is_empty() || meta.desc.is_empty() {
+    if allow_direct_fetch
+        && (meta.title.is_empty() || meta.thumb.is_empty() || meta.desc.is_empty())
+    {
         if let Some(og) = scrape_opengraph_metadata(&url).await {
             if meta.title.is_empty() && !og.title.is_empty() {
                 meta.title = og.title;
@@ -2714,7 +2838,8 @@ pub struct StickerItem {
 /// Returns ~390 official Zalo sticker packs sorted by newest/featured first and caches them to
 /// `stickers_cache/store_packs.json`.
 pub async fn fetch_sticker_store_packs(s: &Session) -> Result<Vec<StickerPackInfo>> {
-    let cache_dir = std::path::Path::new("stickers_cache");
+    let cache_dir_buf = crate::paths::cache_dir();
+    let cache_dir = cache_dir_buf.as_path();
     let _ = std::fs::create_dir_all(cache_dir);
     let cache_path = cache_dir.join("store_packs.json");
     if let Ok(raw_cache) = std::fs::read_to_string(&cache_path) {
@@ -2841,7 +2966,8 @@ pub async fn fetch_sticker_pack_items(
             .collect());
     }
 
-    let cache_dir = std::path::Path::new("stickers_cache");
+    let cache_dir_buf = crate::paths::cache_dir();
+    let cache_dir = cache_dir_buf.as_path();
     let _ = std::fs::create_dir_all(cache_dir);
     let cache_path = cache_dir.join(format!("pack_{cate_id}.json"));
     if let Ok(raw_cache) = std::fs::read_to_string(&cache_path) {
@@ -3024,7 +3150,8 @@ pub fn canonical_vn_sticker_queries(keyword: &str) -> Vec<String> {
 /// Includes both normalized accented/raw forms and ASCII-folded forms so typing accented or
 /// unaccented Vietnamese triggers suggestions reliably.
 pub async fn fetch_sticker_suggest_keywords(s: &Session) -> Result<Vec<String>> {
-    let cache_dir = std::path::Path::new("stickers_cache");
+    let cache_dir_buf = crate::paths::cache_dir();
+    let cache_dir = cache_dir_buf.as_path();
     let _ = std::fs::create_dir_all(cache_dir);
     let cache_path = cache_dir.join("suggest_keywords_v2.json");
     if let Ok(raw_cache) = std::fs::read_to_string(&cache_path) {
@@ -3229,7 +3356,8 @@ pub async fn search_stickers_by_keyword(s: &Session, keyword: &str) -> Result<Ve
     if kw.is_empty() {
         return Ok(Vec::new());
     }
-    let cache_dir = std::path::Path::new("stickers_cache");
+    let cache_dir_buf = crate::paths::cache_dir();
+    let cache_dir = cache_dir_buf.as_path();
     let _ = std::fs::create_dir_all(cache_dir);
     let cache_path = cache_dir.join(format!("suggest_v2_{}.json", crate::crypto::md5_hex(&kw)));
     if let Ok(raw_cache) = std::fs::read_to_string(&cache_path) {
@@ -4719,7 +4847,7 @@ pub async fn poll_new_messages(
     resolve_thread_names(s, threads).await;
     threads.retain(|t| !t.messages.is_empty() || !t.name.starts_with("Người dùng "));
     deduplicate_threads(threads, None);
-    if let Ok(mut store) = crate::store::MessageStore::open("zalo_history.db") {
+    if let Ok(mut store) = crate::store::MessageStore::open(crate::paths::history_db()) {
         let _ = crate::store::persist_threads(&mut store, threads);
     }
     save_threads_cache(threads);

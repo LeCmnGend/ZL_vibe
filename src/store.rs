@@ -50,11 +50,18 @@ impl MessageStore {
     pub const PRELOAD_MSGS: usize = 20;
 
     /// Open SQLite database at `path` and initialize table schemas and indices if absent.
-    pub fn open(path: &str) -> Result<Self> {
-        let conn = if path == ":memory:" {
+    ///
+    /// `":memory:"` opens an in-memory database. The bare legacy name `"zalo_history.db"` is
+    /// redirected to the per-user [`crate::paths::history_db`] so older call sites never create
+    /// a stray copy in the working directory. The file is restricted to the owner on Unix.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = resolve_db_path(path.as_ref());
+        let conn = if path.as_os_str() == ":memory:" {
             Connection::open_in_memory()?
         } else {
-            Connection::open(path)?
+            let c = Connection::open(&path)?;
+            crate::paths::restrict_file(&path);
+            c
         };
 
         conn.execute_batch(
@@ -604,7 +611,11 @@ fn persist_threads_inner(store: &mut MessageStore, threads: &[Thread]) -> Result
 }
 
 /// Convenience helper: open `zalo_history.db` (or `path`) and hydrate `threads` with saved history.
-pub fn load_history_into_threads(path: &str, threads: &mut Vec<Thread>, limit_per_thread: usize) {
+pub fn load_history_into_threads(
+    path: impl AsRef<std::path::Path>,
+    threads: &mut Vec<Thread>,
+    limit_per_thread: usize,
+) {
     if let Ok(store) = MessageStore::open(path) {
         let _ = store.hydrate_threads(threads, limit_per_thread);
     }
@@ -1362,6 +1373,15 @@ fn import_official_zalo_pc_db(
     let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("import_pc");
     let cipher_key = "de039414865b856ea650d3305b1f387f";
     import_message_table(src_conn, dst, stem, stem, stem.starts_with('g'), cipher_key, report)
+}
+
+/// Redirect the legacy bare `zalo_history.db` name to the per-user data directory.
+fn resolve_db_path(path: &std::path::Path) -> std::path::PathBuf {
+    if path == std::path::Path::new("zalo_history.db") {
+        crate::paths::history_db()
+    } else {
+        path.to_path_buf()
+    }
 }
 
 #[cfg(test)]

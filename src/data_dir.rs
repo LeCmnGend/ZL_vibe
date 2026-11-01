@@ -138,14 +138,30 @@ pub fn initialize(args: &[String]) -> Result<PathBuf> {
     let executable =
         std::env::current_exe().context("Không xác định được đường dẫn chương trình")?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let (path, private) = resolve(
+    let (mut path, mut private) = resolve(
         args,
         &cwd,
         &executable,
         home.as_deref(),
         cfg!(target_os = "macos"),
     )?;
+    #[cfg(target_os = "windows")]
+    {
+        let explicit = args.iter().any(|arg| arg == "--data-dir" || arg.starts_with("--data-dir="));
+        if !explicit {
+            let base = std::env::var_os("APPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .context("Không xác định được APPDATA")?
+                .join("ZLV");
+            let relative = path.strip_prefix(&cwd).context("Không xác định được hồ sơ dữ liệu")?;
+            path = base.join(relative);
+            private = true;
+        }
+    }
     prepare(&path, private)?;
+    crate::paths::set_data_dir(path.clone())
+        .map_err(|_| anyhow::anyhow!("Thư mục dữ liệu đã được chọn trước khi khởi tạo"))?;
     // Legacy storage callers use relative paths; switch once before creating workers.
     std::env::set_current_dir(&path)
         .with_context(|| format!("Không chọn được thư mục dữ liệu {}", path.display()))?;

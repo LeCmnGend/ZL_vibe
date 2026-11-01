@@ -308,9 +308,10 @@ pub async fn login_via_qr(s: &mut Session, language: &str) -> Result<Value> {
         Ok(art) => println!("{art}"),
         Err(e) => {
             eprintln!("! không vẽ được QR trong terminal: {e}");
-            let path = "qr.png";
-            save_png(&q, path)?;
-            println!("  ảnh QR đã lưu: {path}");
+            let path = crate::paths::data_dir().join("qr.png");
+            let path_str = path.display().to_string();
+            save_png(&q, &path_str)?;
+            println!("  ảnh QR đã lưu: {path_str}");
         }
     }
     println!("Quét mã bằng Zalo trên điện thoại…");
@@ -341,10 +342,13 @@ pub async fn login_via_qr(s: &mut Session, language: &str) -> Result<Value> {
         let _ = s.sync_profile_me().await;
         s.sync_live_sek();
         println!("✓ Đã nạp khoá phiên zpw_enk và cập nhật endpoints!");
-        if let Err(e) = s.save_to_file("session.json") {
+        if let Err(e) = s.save() {
             eprintln!("! Lỗi lưu session.json: {e}");
         } else {
-            println!("✓ Đã lưu phiên vào session.json (tự động khôi phục cho các lần chạy sau)");
+            println!(
+                "✓ Đã lưu phiên vào {} (tự động khôi phục cho các lần chạy sau)",
+                crate::paths::session_file().display()
+            );
         }
     } else {
         bail!("getLoginInfo không trả về data: {info}");

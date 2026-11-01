@@ -120,9 +120,12 @@ async fn main() -> Result<()> {
         });
 
     if force_logout {
-        let _ = std::fs::remove_file("session.json");
-        let _ = std::fs::remove_file("threads_cache.json");
-        println!("✓ Đã đăng xuất và xóa phiên lưu trữ cũ (session.json, threads_cache.json).");
+        let _ = std::fs::remove_file(paths::session_file());
+        let _ = std::fs::remove_file(paths::threads_cache_file());
+        println!(
+            "✓ Đã đăng xuất và xóa phiên lưu trữ (session.json, threads_cache.json) trong {}.",
+            paths::data_dir().display()
+        );
         if !force_gui && !force_tui && !force_qr {
             return Ok(());
         }
@@ -150,7 +153,7 @@ async fn main() -> Result<()> {
 
     // Attempt to restore persistent session from disk
     let session_restored = if !force_logout {
-        if let Ok(_) = s.load_from_file("session.json") {
+        if s.load().is_ok() {
             if let Some(li) = &s.login {
                 let name = if li.display_name.is_empty() {
                     "Zalo User"
@@ -332,9 +335,15 @@ async fn main() -> Result<()> {
                 Some(v) => v,
                 None => ui::prompt("Số điện thoại: ")?,
             };
-            let password = match arg_val("--pass") {
-                Some(v) => v,
-                None => ui::prompt_password("Mật khẩu: ")?,
+            // `--pass <pwd>` was removed: it leaked the password into the process list and
+            // shell history. `--pass-stdin` reads one line from stdin for unattended runs.
+            if args.iter().any(|a| a == "--pass") {
+                eprintln!("! Tuỳ chọn --pass đã bị gỡ vì làm lộ mật khẩu. Dùng --pass-stdin hoặc nhập khi được hỏi.");
+            }
+            let password = if args.iter().any(|a| a == "--pass-stdin") {
+                ui::read_stdin_line()?
+            } else {
+                ui::prompt_password("Mật khẩu: ")?
             };
             let iso = match arg_val("--iso") {
                 Some(v) => v,
@@ -349,6 +358,7 @@ async fn main() -> Result<()> {
                 } else {
                     login::login_by_password(&mut s, phone.trim(), &password, iso.trim()).await?
                 };
+                drop(password);
                 logged_in_now = true;
             }
         }

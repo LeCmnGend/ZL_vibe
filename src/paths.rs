@@ -36,6 +36,11 @@ const LEGACY_FILES: &[&str] = &[
 
 static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+/// Set the directory selected at startup before any storage is opened.
+pub fn set_data_dir(path: PathBuf) -> Result<(), PathBuf> {
+    DATA_DIR.set(path)
+}
+
 /// The per-user data directory. Created (private) on first use.
 pub fn data_dir() -> &'static Path {
     DATA_DIR.get_or_init(|| {

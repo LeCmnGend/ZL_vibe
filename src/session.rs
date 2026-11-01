@@ -3,6 +3,7 @@
 //! Mirrors the `_get` / `_post` / `_getCommonParams` / `getEncodedParams` helpers from
 //! `compact-app-pc-*.js`. See `re-notes/02_chat_data.md` §2–§4.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -284,7 +285,8 @@ impl Domains {
             ("voice_call", &mut self.voice_call),
             ("sticker", &mut self.sticker),
         ] {
-            let urls = map.get(key).map(all_urls).unwrap_or_default();
+            let urls: Vec<_> = map.get(key).map(all_urls).unwrap_or_default()
+                .into_iter().filter(|url| is_trusted_zalo_url(url, &["https"])).collect();
             if !urls.is_empty() {
                 self.service_map_candidates.insert(key.into(), urls.clone());
             }
@@ -379,6 +381,8 @@ impl Domains {
             }
         }
     }
+
+
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -693,6 +697,10 @@ impl Session {
             &self.domains.sticker,
         ];
         for host in hosts {
+            // Only TLS Zalo hosts; `Secure` keeps the cookie off any plain-HTTP request.
+            if !is_trusted_zalo_url(host, &["https"]) {
+                continue;
+            }
             if let Ok(url) = reqwest::Url::parse(host) {
                 self.jar.add_cookie_str("zpw_sek=; Path=/; Max-Age=0", &url);
             }
@@ -970,8 +978,20 @@ impl Session {
         }
     }
 
+    /// Save the session to the per-user `session.json` ([`crate::paths::session_file`]).
+    pub fn save(&self) -> Result<()> {
+        self.save_to_file(crate::paths::session_file())
+    }
+
+    /// Restore the session from the per-user `session.json` ([`crate::paths::session_file`]).
+    pub fn load(&mut self) -> Result<()> {
+        self.load_from_file(crate::paths::session_file())
+    }
+
     /// Save the authenticated session to disk so subsequent runs can restore it without re-authenticating.
-    pub fn save_to_file(&self, path: &str) -> Result<()> {
+    ///
+    /// Written atomically and owner-only (`0600` on Unix) via [`crate::paths::write_private`].
+    pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
         use base64::Engine;
         let latest_sek = self.current_zpw_sek();
         let mut saved_login = self.login.clone();
@@ -999,14 +1019,17 @@ impl Session {
             cookies,
         };
         let text = serde_json::to_string_pretty(&saved)?;
-        crate::data_dir::write_private_atomic(std::path::Path::new(path), text.as_bytes())?;
+        crate::data_dir::write_private_atomic(path.as_ref(), text.as_bytes())?;
         Ok(())
     }
 
     /// Load a previously saved session from disk and restore cookies, keys, and endpoints.
-    pub fn load_from_file(&mut self, path: &str) -> Result<()> {
+    pub fn load_from_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
         use base64::Engine;
+        let path = path.as_ref();
         let text = std::fs::read_to_string(path)?;
+        // Files written by older builds were world-readable on Unix.
+        crate::paths::restrict_file(path);
         let saved: SavedSession = serde_json::from_str(&text)?;
 
         if self.proxy_url.is_none() {
@@ -1093,11 +1116,8 @@ impl Session {
     ///
     /// Credentials are redacted; the point is the response *shape*, not the content.
     fn dump_exchange(&self, method: &str, url: &str, status: u16, body: &str) {
-        let dir = std::path::Path::new("dump");
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("! dump dir: {e}");
-            return;
-        }
+        let dir_buf = crate::paths::dump_dir();
+        let dir = dir_buf.as_path();
         let n = std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0) + 1;
         // Name the file from the path only; the query carries ids we should not keep.
         let path_part = url.split('?').next().unwrap_or(url);
@@ -1174,11 +1194,12 @@ impl Session {
             self.domains.lp_control = v;
         }
         if let Some(arr) = data.get("zpw_ws").and_then(|v| v.as_array()) {
+            // TLS websockets only: the session cookie rides on the handshake.
             let list: Vec<String> = arr
                 .iter()
                 .filter_map(|x| x.as_str())
-                .map(|s| s.trim_end_matches('/').to_string())
-                .filter(|s| s.starts_with("wss://") || s.starts_with("ws://"))
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+                .filter(|s| s.starts_with("wss://"))
                 .collect();
             if !list.is_empty() {
                 self.domains.ws = list;
@@ -1317,11 +1338,11 @@ impl Session {
                 "Content-Type",
                 format!("multipart/form-data; boundary={boundary}"),
             );
-        if let Some(sek) = &self.zpw_sek {
-            if !sek.is_empty() {
+        if let Some(sek) = self.current_zpw_sek().filter(|s| !s.is_empty()) {
+            if is_trusted_zalo_url(url, &["https"]) {
                 rb = rb
                     .header("Cookie", format!("zpw_sek={sek}; _zlang=vi"))
-                    .header("zpw_sek", sek)
+                    .header("zpw_sek", &sek)
                     .header("Origin", "https://chat.zalo.me")
                     .header("Referer", "https://chat.zalo.me/");
             }
@@ -1389,19 +1410,7 @@ impl Session {
         }
         let method = m.as_str().to_string();
         let mut rb = self.http.request(m, url);
-        let is_zalo_host = reqwest::Url::parse(url)
-            .map(|u| {
-                u.host_str()
-                    .map(|h| {
-                        h == "zalo.me"
-                            || h.ends_with(".zalo.me")
-                            || h == "zaloapp.com"
-                            || h.ends_with(".zaloapp.com")
-                    })
-                    .unwrap_or(false)
-            })
-            .unwrap_or_else(|_| url.contains("zalo.me") || url.contains("zaloapp.com"));
-        if is_zalo_host {
+        if is_trusted_zalo_url(url, &["https"]) {
             let active_sek = self.current_zpw_sek();
             let mut pairs = Vec::new();
             if let Ok(m) = self.live_cookies.read() {
@@ -1446,7 +1455,9 @@ impl Session {
             }
         };
 
-        self.ingest_set_cookie_headers(resp.headers());
+        if is_trusted_zalo_url(resp.url().as_str(), &["https"]) {
+            self.ingest_set_cookie_headers(resp.headers());
+        }
         let status = resp.status();
         let text = resp.text().await?;
         if self.verbose {
@@ -1558,6 +1569,23 @@ pub fn obj(pairs: &[(&str, Value)]) -> Value {
         m.insert((*k).to_string(), v.clone());
     }
     Value::Object(m)
+}
+
+/// `true` when `host` is `zalo.me` / `zaloapp.com` or one of their subdomains.
+pub fn is_zalo_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "zalo.me" || h.ends_with(".zalo.me") || h == "zaloapp.com" || h.ends_with(".zaloapp.com")
+}
+
+/// `true` when `url` parses, uses one of `schemes`, and points at a Zalo host.
+///
+/// The gate for attaching `zpw_sek` to any outgoing request or websocket handshake.
+pub fn is_trusted_zalo_url(url: &str, schemes: &[&str]) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .filter(|u| schemes.iter().any(|s| u.scheme().eq_ignore_ascii_case(s)))
+        .and_then(|u| u.host_str().map(is_zalo_host))
+        .unwrap_or(false)
 }
 
 /// Strip anything that could be a credential before a URL lands in a dump file.
