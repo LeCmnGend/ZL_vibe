@@ -631,7 +631,9 @@ impl ZaloGuiApp {
                                         });
                                         let (sub_status_lbl, sub_status_col): (String, Color32) =
                                             if is_group {
-                                                ("Nhóm trò chuyện".into(), pal.text_secondary)
+                                                let count = self.group_member_counts.get(&thread_id).map(|n| *n as u64)
+                                                    .or_else(|| self.threads.get(self.selected_thread_index).and_then(|t| t.presentation.member_count));
+                                                (count.map(|n| format!("{n} thành viên")).unwrap_or_else(|| "Nhóm trò chuyện".into()), pal.text_secondary)
                                             } else if is_cloud_thread {
                                                 ("Lưu trữ đám mây cá nhân".into(), pal.text_secondary)
                                             } else {

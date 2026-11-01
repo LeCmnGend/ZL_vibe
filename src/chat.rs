@@ -550,7 +550,8 @@ impl Thread {
     pub fn apply_group_sidebar_metadata(&mut self, info: &Value) {
         if let Some(count) = info
             .get("totalMember")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.trim().parse().ok()))
+            .filter(|count| *count > 0)
         {
             self.presentation.member_count = Some(count);
         }
@@ -974,6 +975,9 @@ pub fn merge_thread_into(
         target.avatar = incoming.avatar;
     }
     target.is_group = target.is_group || incoming.is_group;
+    if let Some(count) = incoming.presentation.member_count {
+        target.presentation.member_count = Some(count);
+    }
 
     // Repeated text and timestamps are not identities. Keep ambiguous keys instead of
     // choosing the first candidate, especially when multiple pending sends collide.
@@ -4245,6 +4249,7 @@ pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
                 let mut need_mem_uids: Vec<String> = Vec::new();
                 for g in &mut groups {
                     if let Some(info) = info_map.get(&g.id) {
+                        g.apply_group_sidebar_metadata(info);
                         if let Some(name) = pick_str(info, &["name", "groupName", "displayName"]) {
                             g.name = name;
                         }
@@ -4406,6 +4411,7 @@ pub async fn resolve_thread_names(s: &Session, threads: &mut [Thread]) {
                             .trim_start_matches('g')
                             .trim_start_matches('G');
                     if let Some(info) = info_map.get(&t.id).or_else(|| info_map.get(clean_id)) {
+                        t.apply_group_sidebar_metadata(info);
                         if let Some(name) = pick_str(info, &["name", "groupName", "displayName"]) {
                             if !name.is_empty() {
                                 t.name = name;
@@ -8203,4 +8209,16 @@ mod generic_name_tests {
             assert!(!is_generic_thread_name(name), "{name}");
         }
     }
+    #[test]
+    fn group_member_count_uses_valid_server_values_and_survives_merge() {
+        let mut group = Thread { id: "group_1".into(), is_group: true, ..Default::default() };
+        group.apply_group_sidebar_metadata(&serde_json::json!({"totalMember": " 42 "}));
+        assert_eq!(group.presentation.member_count, Some(42));
+        group.apply_group_sidebar_metadata(&serde_json::json!({"totalMember": 0}));
+        assert_eq!(group.presentation.member_count, Some(42));
+        let mut existing = Thread { id: "group_1".into(), is_group: true, ..Default::default() };
+        merge_thread_into(&mut existing, group, true);
+        assert_eq!(existing.presentation.member_count, Some(42));
+    }
+
 }
