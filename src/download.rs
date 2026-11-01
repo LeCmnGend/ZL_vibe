@@ -536,8 +536,8 @@ pub fn dir_size(dir: &Path) -> u64 {
     total
 }
 
-/// Delete everything *inside* `dir` (files and sub-folders; symlinks are removed, never
-/// followed) but keep `dir` itself. Returns (bytes freed, entries that could not be removed).
+/// Delete cached files and sub-folders, retaining clipboard images that may be awaiting upload.
+/// Symlinks are removed without following them. Returns freed bytes and failed entries.
 pub fn clear_dir_contents(dir: &Path) -> (u64, usize) {
     let mut freed = 0u64;
     let mut failed = 0usize;
@@ -546,6 +546,10 @@ pub fn clear_dir_contents(dir: &Path) -> (u64, usize) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        // Clipboard images may still be awaiting upload or sending.
+        if entry.file_name().to_str().is_some_and(|name| name.starts_with("clipboard_") && name.ends_with(".png")) {
+            continue;
+        }
         let Ok(ft) = entry.file_type() else {
             failed += 1;
             continue;
@@ -726,13 +730,15 @@ mod tests {
         let cache = base.join("stickers_cache");
         std::fs::create_dir_all(cache.join("sub")).unwrap();
         std::fs::write(cache.join("a.png"), b"12345").unwrap();
+        std::fs::write(cache.join("clipboard_pending.png"), b"pending").unwrap();
         std::fs::write(cache.join("sub").join("b.png"), b"123").unwrap();
         std::fs::write(base.join("session.json"), b"keep").unwrap();
-        assert_eq!(dir_size(&cache), 8);
+        assert_eq!(dir_size(&cache), 15);
         let (freed, failed) = clear_dir_contents(&cache);
         assert_eq!((freed, failed), (8, 0));
         assert!(cache.is_dir());
-        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+        assert_eq!(std::fs::read(cache.join("clipboard_pending.png")).unwrap(), b"pending");
         assert_eq!(std::fs::read(base.join("session.json")).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(&base);
     }
