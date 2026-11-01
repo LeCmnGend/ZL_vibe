@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
         let mut viewport = eframe::egui::ViewportBuilder::default()
             .with_app_id("ctdozlite")
             .with_decorations(false)
-            .with_inner_size([1020.0, 700.0])
+            .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([480.0, 360.0])
             .with_title("ctdozlite");
         if let Some(icon) = gui::load_app_icon() {
