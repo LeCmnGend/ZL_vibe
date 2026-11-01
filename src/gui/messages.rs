@@ -802,21 +802,6 @@ pub(super) fn extract_message_link_view(msg: &ChatMessage) -> Option<(String, St
     Some((caption, url.to_string(), domain))
 }
 
-/// Convert days since 1970-01-01 into `(year, month, day)` (Howard Hinnant's algorithm).
-pub(super) fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = (y + if m <= 2 { 1 } else { 0 }) as i32;
-    (year, m, d)
-}
-
 /// Normalize a millisecond or second timestamp to milliseconds (`> 0`).
 pub(super) fn normalize_ts_ms(ts: i64) -> i64 {
     if ts <= 0 {
@@ -836,10 +821,8 @@ pub(super) fn should_show_time_divider(prev: Option<&ChatMessage>, curr: &ChatMe
     let prev_ms = normalize_ts_ms(prev.ts);
     let curr_ms = normalize_ts_ms(curr.ts);
     if prev_ms > 0 && curr_ms > 0 {
-        let tz_offset_sec = 7 * 3600; // UTC+7 (Vietnam)
-        let prev_day = (prev_ms / 1000 + tz_offset_sec) / 86_400;
-        let curr_day = (curr_ms / 1000 + tz_offset_sec) / 86_400;
-        if prev_day != curr_day {
+        // Local calendar days (OS time zone) — no hard-coded UTC offset.
+        if crate::timefmt::local_day_index(prev_ms) != crate::timefmt::local_day_index(curr_ms) {
             return true;
         }
         return (curr_ms - prev_ms).abs() >= 30 * 60 * 1000;
@@ -847,39 +830,46 @@ pub(super) fn should_show_time_divider(prev: Option<&ChatMessage>, curr: &ChatMe
     false
 }
 
-/// Format the label for a centered date/time separator pill.
-pub(super) fn format_time_divider_label(msg: &ChatMessage) -> String {
+/// Format the label for a centered date/time separator chip.
+///
+/// A new calendar day shows the day (`Hôm nay`, `Hôm qua`, `Thứ Hai, 27/10`, `27/10/2025`);
+/// a long pause within the same day shows just the time (`14:05`).
+pub(super) fn format_time_divider_label(prev: Option<&ChatMessage>, msg: &ChatMessage) -> String {
     let ts_ms = normalize_ts_ms(msg.ts);
     if ts_ms <= 0 {
         return if msg.time.is_empty() {
             "Cuộc trò chuyện".to_string()
         } else {
-            format!("Hôm nay • {}", msg.time)
+            msg.time.clone()
         };
     }
-    let tz_offset_sec = 7 * 3600;
-    let local_sec = ts_ms / 1000 + tz_offset_sec;
-    let msg_day = local_sec.div_euclid(86_400);
-    let sec_of_day = local_sec.rem_euclid(86_400);
-    let hh = sec_of_day / 3600;
-    let mm = (sec_of_day % 3600) / 60;
-
-    let now_sec = (crate::login::unix_now() as i64) + tz_offset_sec;
-    let today_day = now_sec.div_euclid(86_400);
-    let (y, m, d) = civil_from_days(msg_day);
-
-    if msg_day == today_day {
-        format!("Hôm nay • {hh:02}:{mm:02}")
-    } else if msg_day == today_day - 1 {
-        format!("Hôm qua • {hh:02}:{mm:02}")
-    } else {
-        format!("{d:02}/{m:02}/{y}")
+    let msg_day = crate::timefmt::local_day_index(ts_ms);
+    let same_day_as_prev = prev
+        .map(|p| normalize_ts_ms(p.ts))
+        .filter(|p| *p > 0)
+        .map(|p| crate::timefmt::local_day_index(p) == msg_day)
+        .unwrap_or(false);
+    if same_day_as_prev {
+        return crate::timefmt::hm_from_ms(ts_ms);
+    }
+    let today = crate::timefmt::local_day_index(crate::timefmt::now_ms());
+    let (y, m, d) = crate::timefmt::local_ymd(ts_ms);
+    match today - msg_day {
+        0 => "Hôm nay".to_string(),
+        1 => "Hôm qua".to_string(),
+        2..=6 => format!("{}, {d:02}/{m:02}", weekday_long(crate::timefmt::local_weekday(ts_ms))),
+        _ => format!("{d:02}/{m:02}/{y}"),
     }
 }
 
-/// Render a centered Zalo-style compact date pill (no side hairlines).
-pub(super) fn render_date_divider(ui: &mut egui::Ui, msg: &ChatMessage, pal: &ThemePalette) {
-    let label = format_time_divider_label(msg);
+/// Render a centered compact date chip (white pill with a hairline border).
+pub(super) fn render_date_divider(
+    ui: &mut egui::Ui,
+    prev: Option<&ChatMessage>,
+    msg: &ChatMessage,
+    pal: &ThemePalette,
+) {
+    let label = format_time_divider_label(prev, msg);
     let avail_w = ui.available_width();
     ui.horizontal(|ui| {
         let text_w = ui.fonts(|f| {
@@ -891,31 +881,24 @@ pub(super) fn render_date_divider(ui: &mut egui::Ui, msg: &ChatMessage, pal: &Th
             .size()
             .x
         });
-        let pill_w = text_w + 26.0;
+        let pill_w = text_w + 28.0;
         let left_space = ((avail_w - pill_w) * 0.5).max(0.0);
         if left_space > 0.0 {
             ui.add_space(left_space);
         }
-        let pill_bg = if pal.is_dark {
-            Color32::from_rgba_unmultiplied(30, 34, 41, 235)
-        } else {
-            Color32::from_rgba_unmultiplied(219, 228, 240, 215)
-        };
         egui::Frame::none()
-            .fill(pill_bg)
-            .rounding(Rounding::same(10.0))
-            .inner_margin(Margin::symmetric(13.0, 3.5))
+            .fill(pal.chip_bg)
+            .stroke(Stroke::new(1.0_f32, pal.border))
+            .rounding(Rounding::same(11.0))
+            .inner_margin(Margin::symmetric(13.0, 4.0))
+            .shadow(egui::epaint::Shadow {
+                offset: Vec2::new(0.0, 1.0),
+                blur: 6.0,
+                spread: 0.0,
+                color: pal.shadow,
+            })
             .show(ui, |ui| {
-                ui.label(
-                    RichText::new(label)
-                        .size(11.4)
-                        .color(if pal.is_dark {
-                            Color32::from_rgb(215, 218, 224)
-                        } else {
-                            pal.text_secondary
-                        })
-                        .strong(),
-                );
+                ui.label(RichText::new(label).size(12.0).color(pal.text_secondary));
             });
     });
 }
@@ -1533,7 +1516,10 @@ pub(super) fn render_message_body(
         return None;
     };
 
-    let link_col = if pal.is_dark {
+    let link_col = if outgoing {
+        // Solid blue outgoing bubbles: links stay white (underlined via the domain line).
+        pal.bubble_out_text
+    } else if pal.is_dark {
         Color32::from_rgb(97, 175, 239) // #61AFEF Zalo/Atom clean link blue
     } else {
         pal.primary
@@ -1874,7 +1860,7 @@ pub(super) fn render_chat_bubble(
                 .max(measure(desc, 12.3))
                 .max(measure(&dom, 12.6))
                 + 8.0;
-            w.clamp(135.0, max_text_width.min(340.0)).ceil()
+            { let cap = max_text_width.min(340.0); w.clamp(135.0_f32.min(cap), cap).ceil() }
         }
     } else {
         let display_str = if msg.text.trim() == "[Tin nhắn đã thu hồi]" {
@@ -2388,17 +2374,16 @@ pub(super) fn render_quote_block(
     } else {
         (pal.bubble_in_text, pal.bubble_in_meta)
     };
-    let bar_col = if outgoing && pal.is_dark {
-        Color32::from_rgb(147, 197, 253)
+    // Quote on a solid blue outgoing bubble: white bar on a translucent white well.
+    let bar_col = if outgoing {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 220)
     } else {
-        pal.primary
+        pal.text_muted
     };
-    let bg_col = if outgoing && pal.is_dark {
-        Color32::from_rgba_unmultiplied(0, 0, 0, 42)
-    } else if outgoing {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 150)
+    let bg_col = if outgoing {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 38)
     } else {
-        text_col.linear_multiply(0.06)
+        text_col.linear_multiply(0.05)
     };
     let inner_col_w = (max_w - 28.0).max(72.0);
     let frame = egui::Frame::none()

@@ -186,14 +186,23 @@ impl ZaloGuiApp {
         let mut close_menu = false;
         let mut do_logout = false;
         let mut do_wipe = false;
+        // Anchored just above the profile footer at the bottom of the navigation sidebar.
+        let screen = ctx.screen_rect();
         let area_resp = egui::Area::new(Id::new("left_rail_profile_popover"))
             .order(egui::Order::Foreground)
-            .fixed_pos(Pos2::new(68.0, 44.0))
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(Pos2::new(screen.left() + 10.0, screen.bottom() - 70.0))
             .show(ctx, |ui| {
                 egui::Frame::none()
                     .fill(pal.bg_elevated)
                     .stroke(Stroke::new(1.0_f32, pal.border))
-                    .rounding(Rounding::same(12.0))
+                    .rounding(Rounding::same(14.0))
+                    .shadow(egui::epaint::Shadow {
+                        offset: Vec2::new(0.0, 4.0),
+                        blur: 18.0,
+                        spread: 0.0,
+                        color: pal.shadow,
+                    })
                     .inner_margin(Margin::same(10.0))
                     .show(ui, |ui| {
                         ui.set_width(220.0);
@@ -282,7 +291,7 @@ impl ZaloGuiApp {
                             if let Some(tx) = WORKER_TX.get() {
                                 let _ = tx.send(WorkerCmd::RefreshThreadsManual);
                             }
-                            self.status_msg = "⏳ Đang làm mới danh sách hội thoại…".into();
+                            self.show_toast("Đang làm mới danh sách hội thoại…");
                             close_menu = true;
                         }
 
@@ -1010,7 +1019,7 @@ impl ZaloGuiApp {
                                     (SettingsTab::General, lucide::SETTINGS, "Cài đặt chung"),
                                     (SettingsTab::Account, lucide::USER, "Tài khoản"),
                                     (SettingsTab::Privacy, lucide::LOCK, "Quyền riêng tư"),
-                                    (SettingsTab::Sync, lucide::REFRESH, "Đồng bộ tin nhắn"),
+                                    (SettingsTab::Sync, lucide::REFRESH, "Dữ liệu & làm mới"),
                                     (SettingsTab::Appearance, lucide::PAINTBRUSH, "Giao diện"),
                                     (SettingsTab::Notifications, lucide::BELL, "Thông báo"),
                                     (SettingsTab::Messages, lucide::MESSAGE_SQUARE, "Tin nhắn"),

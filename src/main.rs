@@ -22,7 +22,7 @@ pub const POLL_SECS: u64 = 4;
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ctdozlite v{}", env!("CARGO_PKG_VERSION"));
+        println!("ZL-vibe v{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|a| a == "--check-update") {
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
     // Open the native GUI window IMMEDIATELY without blocking on network requests!
     // Background worker in `gui.rs` handles `get_server_info`, `get_friends`, and `poll_new_messages`.
     if force_gui || (!force_tui && !force_qr && !args.iter().any(|a| a.starts_with("--phone"))) {
-        println!("🚀 Đang khởi chạy giao diện đồ họa ctdozlite (egui)…");
+        println!("🚀 Đang khởi chạy giao diện đồ họa ZL-vibe (egui)…");
         #[cfg(target_os = "windows")]
         if dev_mode {
             #[link(name = "kernel32")]
@@ -215,7 +215,7 @@ async fn main() -> Result<()> {
             .with_decorations(false)
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([480.0, 360.0])
-            .with_title("ctdozlite");
+            .with_title("ZL-vibe");
         if let Some(icon) = gui::load_app_icon() {
             viewport = viewport.with_icon(std::sync::Arc::new(icon));
         }
@@ -240,7 +240,7 @@ async fn main() -> Result<()> {
             let app_session = s.clone();
             let threads = initial_threads.clone();
             match eframe::run_native(
-                "ctdozlite",
+                "ZL-vibe",
                 native_options,
                 Box::new(move |cc| {
                     Ok(Box::new(gui::ZaloGuiApp::new(cc, app_session, dev_mode, threads)))
