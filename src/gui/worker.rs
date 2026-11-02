@@ -466,6 +466,16 @@ fn send_new_gaps(gui_tx: &GuiTx, ctx: &egui::Context, uin: &str) {
     }
 }
 
+/// Forward the reaction changes in a socket / `lp_control` payload to the GUI.
+fn send_reactions(payload: &serde_json::Value, s: &Session, gui_tx: &GuiTx, ctx: &egui::Context) {
+    let Some(li) = s.login.as_ref() else { return; };
+    let events = crate::reactions::parse_reaction_events(payload);
+    if !events.is_empty() {
+        let _ = gui_tx.send(GuiEvent::ReactionsReceived { uin: li.uin.clone(), events });
+        ctx.request_repaint();
+    }
+}
+
 /// Recompute conversation order (`get-last-msgs` activity + msgId clock) for the GUI.
 fn send_conversation_activity(gui_tx: &GuiTx, ctx: &egui::Context, uin: &str) {
     if crate::sync_state::sanitize_uin(uin).is_none() { return; }
@@ -714,6 +724,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                     .send(GuiEvent::MuteEventsReceived(mute_evs));
                                                 ctx_ws.request_repaint();
                                             }
+                                            if matches!(ev.cmd, crate::socket::CMD_PUSH_REACTION | crate::socket::CMD_PULL_REACT_1_1 | crate::socket::CMD_PULL_REACT_GROUP) {
+                                                send_reactions(&ev.payload, &s_snap, &gui_tx_ws, &ctx_ws);
+                                            }
                                             for sync_ev in
                                                 crate::chat::extract_mobile_sync_controls(data_node)
                                             {
@@ -903,7 +916,11 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     let mut st = cps.lock().await;
                                     crate::call::poll_control_events(&s_snap, &mut st).await
                                 };
-                                if let Ok((events, mute_evs)) = ctrl_res {
+                                if let Ok((events, mute_evs, reaction_events)) = ctrl_res {
+                                    if !reaction_events.is_empty() {
+                                        let uin = s_snap.login.as_ref().map(|l| l.uin.clone()).unwrap_or_default();
+                                        let _ = gui_tx_ctrl.send(GuiEvent::ReactionsReceived { uin, events: reaction_events });
+                                    }
                                     for ev in events {
                                         cb.handle_control_event(ev);
                                     }

@@ -125,6 +125,8 @@ pub enum GuiEvent {
         ts: i64,
         reaction: String,
     },
+    /// Reaction changes from socket `612/610/611` or `lp_control` (`crate::reaction`).
+    ReactionsReceived { uin: String, events: Vec<crate::reactions::ReactionEvent> },
     MessageDeleted {
         thread_id: String,
         msg_id: String,
@@ -1635,6 +1637,24 @@ impl ZaloGuiApp {
                         self.persist_threads_async();
                     }
                     self.status_msg = format!("Đã gửi trả lời lúc {}", crate::ui::clock());
+                }
+                GuiEvent::ReactionsReceived { uin, events } => {
+                    if uin == self.user_uin && !uin.is_empty() {
+                        let mut changed = false;
+                        for event in &events {
+                            if let Some(thread) = self.threads.iter_mut().find(|thread| {
+                                thread.id == event.thread_id || format!("g{}", thread.id) == event.thread_id
+                            }) {
+                                if let Some(message) = thread.messages.iter_mut().find(|message| {
+                                    (!event.message_id.is_empty() && message.id == event.message_id)
+                                        || (!event.client_message_id.is_empty() && message.client_message_id == event.client_message_id)
+                                }) {
+                                    changed |= message.apply_reaction(event);
+                                }
+                            }
+                        }
+                        if changed { self.persist_threads_async(); }
+                    }
                 }
                 GuiEvent::Reacted {
                     thread_id,

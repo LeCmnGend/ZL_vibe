@@ -99,6 +99,11 @@ pub fn send_sync_message_ws_request(payload: &Value) -> bool {
     });
     send_ws_frame(CMD_SYNC_REQUEST, 0, 1, Some(&body))
 }
+/// Reactions: `610_x` / `611_x` are pulled after being offline (1-1 / groups), `612` is pushed
+/// while open (`re-notes/10` §17).
+pub const CMD_PULL_REACT_1_1: u16 = 610;
+pub const CMD_PULL_REACT_GROUP: u16 = 611;
+pub const CMD_PUSH_REACTION: u16 = 612;
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                   (KHTML, like Gecko) ZaloPC/26.10.11 Chrome/122.0.0.0 Electron/29.0.0 Safari/537.36";
 
