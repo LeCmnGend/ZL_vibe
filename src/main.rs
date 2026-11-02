@@ -13,7 +13,7 @@ use session::Session;
 pub use zalo_rust::{
     account_manager, api_mcp, audio, call, chat, clock, crypto, data_dir, download, endpoints, feed, gui, history_sync,
     logger, login, media, media_resources, message_model, param_cipher, qr, reactions, scheduler,
-    session, socket, store, sync_state, trace_shape, tui, ui, unread, updater, voip_log,
+    session, socket, store, sync_state, trace_shape, tui, ui, unread, updater, video, voip_log,
 };
 
 pub const POLL_SECS: u64 = 4;

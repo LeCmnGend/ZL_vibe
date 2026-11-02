@@ -28,6 +28,7 @@ pub mod trace_shape;
 pub mod tui;
 pub mod ui;
 pub mod unread;
+pub mod video;
 pub mod voip_log;
 
 /// Writable storage selection and private atomic session writes.
