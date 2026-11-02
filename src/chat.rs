@@ -643,6 +643,8 @@ pub fn sidebar_sender_id(message: &ChatMessage) -> Option<String> {
 pub fn is_generic_thread_name(name: &str) -> bool {
     let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
     let t = name.trim();
+    // Only QTzalo's own placeholders ("Người dùng <id>", "Nhóm <id>") or a bare id: many real
+    // group names start with "Nhóm " too, and must never be replaced by a placeholder.
     t.is_empty()
         || numeric(t)
         || t.strip_prefix("Người dùng ").is_some_and(|rest| numeric(rest.trim()))
@@ -781,6 +783,11 @@ pub fn threads_represent_same_contact(a: &Thread, b: &Thread) -> bool {
     }
     if !a.is_group && a.name.contains("Cloud của tôi") && b.name.contains("Cloud của tôi") {
         return true;
+    }
+    // Group ids are stable; different ids are different groups even with the same name or
+    // the same (default) avatar file.
+    if a.is_group && !a.id.is_empty() && !b.id.is_empty() {
+        return false;
     }
     if let (Some(ka), Some(kb)) = (
         avatar_file_key(a.avatar.as_deref()),
@@ -4233,6 +4240,19 @@ fn format_multi_group_avatar(
     Some(format!("multi:{tot};{}", slots.join(";")))
 }
 
+/// Groups asked about per `getmg-v2` request.
+const GROUP_INFO_CHUNK: usize = 50;
+
+/// `gridVerMap` for `getmg-v2`: every group at version `0`. The server only returns
+/// `gridInfoMap` entries for groups whose version differs from the one sent; sending the
+/// versions `getlg/v4` just reported made it answer `unchangedsGroup` for all of them, so every
+/// group stayed "Nhóm <id>" (real account, 02/11). QTzalo caches no group info, so it always
+/// asks from version 0.
+fn group_info_request_map(ids: &[String]) -> String {
+    let map: serde_json::Map<String, Value> = ids.iter().map(|id| (id.clone(), json!(0))).collect();
+    Value::Object(map).to_string()
+}
+
 /// `GET /api/group/getlg/v4` (cmd 12027) — list of all groups user belongs to.
 pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
     if s.login.is_none() {
@@ -4272,7 +4292,17 @@ pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
         }
         if !groups.is_empty() {
             let gids: Vec<String> = groups.iter().map(|g| g.id.clone()).collect();
-            if let Ok((info_map, rem_ids)) = fetch_group_profiles(s, &gids).await {
+            let mut combined_info = serde_json::Map::new();
+            let mut combined_removed = std::collections::HashSet::new();
+            for chunk in gids.chunks(GROUP_INFO_CHUNK) {
+                if let Ok((info, removed)) = fetch_group_profiles(s, chunk).await {
+                    combined_info.extend(info);
+                    combined_removed.extend(removed);
+                }
+            }
+            {
+                let info_map = combined_info;
+                let rem_ids = combined_removed;
                 let mut need_mem_uids: Vec<String> = Vec::new();
                 for g in &mut groups {
                     if let Some(info) = info_map.get(&g.id) {
@@ -4324,6 +4354,14 @@ pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
                     groups.retain(|g| !rem_ids.contains(&g.id));
                 }
             }
+            crate::trace_shape::line(
+                "grp",
+                format!(
+                    "get_groups: {} groups, {} without a name",
+                    groups.len(),
+                    groups.iter().filter(|g| is_generic_thread_name(&g.name)).count()
+                ),
+            );
         }
     }
     Ok(groups)
@@ -4676,9 +4714,21 @@ impl PollState {
         }
         if let Some(qs) = data_node.get("queueStatus").and_then(Value::as_object) {
             for (qid, qval) in qs {
-                // Only update configured HTTP long-polling MSG queues ("1", "2", "3", plus any
-                // `QTZALO_LP_QUEUES` extras in dev mode). Adding socket-only queues ("15", "16",
-                // "7", "8") causes lp_chat to reject subsequent requests.
+                // Message queues the server reports for this session but we do not track yet
+                // (`queue_actionid_map`: "6" = 511_0, "15" = 510_1, "16" = 511_1) are tracked
+                // from the start of what the server kept. Without this the long-poll repeats
+                // the same `more = 1` page forever (real account: group queue "16", 02/11).
+                // Unknown queues ("7", "8") stay untracked.
+                if matches!(qid.as_str(), "6" | "15" | "16") && !self.queues.contains_key(qid) {
+                    self.queues.insert(
+                        qid.clone(),
+                        QueueCursor {
+                            last_id: "1".into(),
+                            ids: Vec::new(),
+                        },
+                    );
+                    continue;
+                }
                 let Some(entry) = self.queues.get_mut(qid) else {
                     continue;
                 };
@@ -4881,6 +4931,21 @@ pub fn lp_reply_wants_more(lp_resp: &Value) -> bool {
     more != 0 || has_reset
 }
 
+/// Follow a long-poll reply with another request only when the server says there is more
+/// *and* the cursor moved. A reply can say `more = 1` for a queue the client does not track
+/// (seen on the real account: group queue `16` repeated the same 100 messages 1800 times in
+/// 3 minutes), and asking again with an unchanged cursor would only return the same page.
+pub fn lp_should_continue(before: &PollState, after: &PollState, lp_resp: &Value) -> bool {
+    if !lp_reply_wants_more(lp_resp) {
+        return false;
+    }
+    if before == after {
+        crate::trace_shape::line("lp", "more=1 but the cursor did not move; stop");
+        return false;
+    }
+    true
+}
+
 /// Number of chat messages (`msgs` + `groupMsgs`) in a long-poll reply.
 pub fn lp_reply_message_count(lp_resp: &Value) -> usize {
     let data_node = lp_resp.get("data").unwrap_or(lp_resp);
@@ -4991,6 +5056,78 @@ mod catchup_tests {
         assert_eq!(cloud_page_info(&empty), (0, None, false));
     }
 
+    fn group(id: &str, name: &str, avatar: Option<&str>) -> Thread {
+        Thread {
+            id: id.into(),
+            name: name.into(),
+            preview: String::new(),
+            time: String::new(),
+            avatar: avatar.map(Into::into),
+            is_group: true,
+            messages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn real_names_starting_with_nhom_are_not_placeholders() {
+        assert!(is_generic_thread_name("Nhóm 7012345678901234567"));
+        assert!(is_generic_thread_name("Người dùng 123"));
+        assert!(is_generic_thread_name("123456"));
+        assert!(is_generic_thread_name("  "));
+        assert!(!is_generic_thread_name("Nhóm Thiết kế"));
+        assert!(!is_generic_thread_name("Nhóm 12A1"));
+
+        // A placeholder from an incoming group message never replaces the real name.
+        let mut t = group("7012", "Nhóm Thiết kế", None);
+        merge_thread_into(&mut t, group("7012", "Nhóm 7012", None), true);
+        assert_eq!(t.name, "Nhóm Thiết kế");
+        // …but the real name replaces a placeholder.
+        let mut p = group("7012", "Nhóm 7012", None);
+        merge_thread_into(&mut p, group("7012", "Nhóm Thiết kế", None), true);
+        assert_eq!(p.name, "Nhóm Thiết kế");
+    }
+
+    #[test]
+    fn different_groups_are_never_the_same_contact() {
+        let avt = Some("https://s120-ava-talk.zadn.vn/a/b/default_group.jpg");
+        let a = group("111", "Lớp 12A1", avt);
+        let b = group("222", "Lớp 12A1", avt);
+        assert!(!threads_represent_same_contact(&a, &b));
+        assert!(threads_represent_same_contact(&a, &group("111", "Khác", None)));
+    }
+
+    #[test]
+    fn group_info_request_asks_from_version_zero() {
+        let ids = vec!["111".to_string(), "222".to_string()];
+        let v: Value = serde_json::from_str(&group_info_request_map(&ids)).unwrap();
+        assert_eq!(v, json!({ "111": 0, "222": 0 }));
+        assert_eq!(group_info_request_map(&[]), "{}");
+    }
+
+    #[test]
+    fn lp_tracks_reported_message_queues_and_stops_when_stuck() {
+        let mut st = PollState::default();
+        let reply = json!({ "data": { "more": 1, "lastActionId": "100", "queueStatus": {
+            "1": { "lastId": "100", "ids": [] },
+            "16": { "lastId": "8442899323544", "ids": ["8442899323544"] },
+            "7": { "lastId": "100", "evict": 1 }
+        } } });
+        st.update_from_response(&reply);
+        assert_eq!(st.queues["16"].last_id, "1", "new queue starts from what the server kept");
+        assert!(!st.queues.contains_key("7"));
+
+        // Same reply again: queue 16 now advances, so the catch-up may continue.
+        let before = st.clone();
+        st.update_from_response(&reply);
+        assert_eq!(st.queues["16"].last_id, "8442899323544");
+        assert!(lp_should_continue(&before, &st, &reply));
+
+        // Nothing moved although the server says "more": stop instead of spinning.
+        let before = st.clone();
+        st.update_from_response(&reply);
+        assert!(!lp_should_continue(&before, &st, &reply));
+    }
+
     #[test]
     fn lp_reply_more_and_count() {
         let done = json!({ "data": { "more": 0, "msgs": [{}, {}], "groupMsgs": [{}], "resetLastActionId": "0" } });
@@ -5039,12 +5176,13 @@ pub async fn poll_new_messages(
     // 1. Poll live/offline message queues via `getChatFromPolling` until caught up.
     let mut fetched = 0usize;
     for batch in 1..=LP_CATCHUP_MAX_BATCHES {
+        let before = state.clone();
         let Ok(lp_resp) = get_chat_from_polling(s, state).await else {
             break;
         };
         merge_previews(threads, &lp_resp);
         fetched += lp_reply_message_count(&lp_resp);
-        if !lp_reply_wants_more(&lp_resp) {
+        if !lp_should_continue(&before, state, &lp_resp) {
             break;
         }
         if batch == LP_CATCHUP_MAX_BATCHES {
@@ -7673,12 +7811,11 @@ mod tests {
         assert_eq!(ps.last_action_id, "8399086511016");
         assert_eq!(ps.last_action_id_other, "8399036593265");
         assert_eq!(ps.queues.get("1").unwrap().last_id, "8399086511016");
-        assert_eq!(
-            ps.queues.get("1").unwrap().ids,
-            vec!["8399086511016".to_string()]
-        );
-        // Socket-only queue "15" must NOT be added to HTTP polling queues
-        assert!(!ps.queues.contains_key("15"));
+        assert_eq!(ps.queues.get("1").unwrap().ids, vec!["8399086511016".to_string()]);
+        // A message queue the server reports ("15" = 510_1) is tracked from the start of what
+        // the server kept (real account 02/11: lp_chat accepted 15/16; without them the
+        // long-poll repeated the same page).
+        assert_eq!(ps.queues.get("15").unwrap().last_id, "1");
     }
 
     #[test]
