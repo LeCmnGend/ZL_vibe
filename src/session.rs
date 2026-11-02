@@ -392,6 +392,8 @@ pub struct LoginInfo {
     pub send2me_id: String,
     #[serde(default)]
     pub avatar: String,
+    #[serde(default)]
+    pub phone: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -770,6 +772,16 @@ impl Session {
                 Value::Number(n) => Some(n.to_string()),
                 _ => None,
             })?;
+        let phone = profile
+            .get("phoneNumber")
+            .or_else(|| profile.get("phone"))
+            .or_else(|| profile.get("phone_number"))
+            .and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
         let name = profile
             .get("displayName")
             .or_else(|| profile.get("zaloName"))
@@ -786,6 +798,9 @@ impl Session {
             li.uin = uid.clone();
             if !name.is_empty() {
                 li.display_name = name.clone();
+            }
+            if !phone.is_empty() {
+                li.phone = phone;
             }
             if !avatar.is_empty() {
                 li.avatar = avatar;
