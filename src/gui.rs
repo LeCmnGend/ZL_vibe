@@ -2571,18 +2571,6 @@ impl eframe::App for ZaloGuiApp {
             let mut ime_commit_in_frame = false;
             let mut ime_space_commit = false;
 
-            #[cfg(target_os = "macos")]
-            let space_is_down = {
-                #[link(name = "CoreGraphics", kind = "framework")]
-                extern "C" {
-                    fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
-                }
-                // state_id = 0 (kCGEventSourceStateCombinedSessionState), key = 49 (kVK_Space)
-                unsafe { CGEventSourceKeyState(0, 49) }
-            };
-            #[cfg(not(target_os = "macos"))]
-            let space_is_down = false;
-
             let space_in_events = i.events.iter().any(|e| match e {
                 egui::Event::Key {
                     key: Key::Space,
@@ -2593,50 +2581,16 @@ impl eframe::App for ZaloGuiApp {
                 _ => false,
             }) || i.key_down(Key::Space);
 
-            // Check whether Enter, non-space punctuation/navigation, or a mouse click
-            // occurred in the same frame so we only auto-append a trailing space when
-            // Spacebar triggered the macOS Vietnamese Telex IME commit (#71).
-            let enter_pressed = i.events.iter().any(|e| {
-                matches!(
-                    e,
-                    egui::Event::Key {
-                        key: Key::Enter,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-            let non_space_trigger = i.events.iter().any(|e| match e {
-                egui::Event::Text(s) => s != " ",
-                egui::Event::Key {
-                    key, pressed: true, ..
-                } => !matches!(key, Key::Space | Key::Backspace),
-                _ => false,
-            });
-            let mouse_clicked =
-                i.pointer.any_pressed() || i.pointer.any_released() || i.pointer.any_click();
-            let space_pressed = space_is_down || space_in_events;
-            let mut was_composing = self.ime_active;
-
             for event in &mut i.events {
                 match event {
                     egui::Event::Ime(egui::ImeEvent::Enabled) => {
                         self.ime_active = true;
-                        was_composing = true;
                     }
                     egui::Event::Ime(egui::ImeEvent::Preedit(text)) => {
                         self.ime_active = !text.is_empty();
-                        if !text.is_empty() {
-                            was_composing = true;
-                        }
                     }
                     egui::Event::Ime(egui::ImeEvent::Commit(ref mut text)) => {
-                        let inferred_macos_space_commit = cfg!(target_os = "macos")
-                            && was_composing
-                            && !enter_pressed
-                            && !non_space_trigger
-                            && !mouse_clicked;
-                        if (space_pressed || inferred_macos_space_commit)
+                        if space_in_events
                             && !text.is_empty()
                             && !text.ends_with(' ')
                             && !text.chars().any(crate::gui::theme::is_cjk)

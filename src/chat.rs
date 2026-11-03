@@ -1845,6 +1845,7 @@ fn register_file_done_waiter(file_id: &str) -> tokio::sync::oneshot::Receiver<St
 }
 
 /// Wait up to `timeout` for the `file_done` event of `file_id`; `None` on timeout.
+#[cfg(test)]
 async fn wait_for_file_done(file_id: &str, timeout: std::time::Duration) -> Option<String> {
     let rx = register_file_done_waiter(file_id);
     let res = tokio::time::timeout(timeout, rx).await;
@@ -1852,6 +1853,43 @@ async fn wait_for_file_done(file_id: &str, timeout: std::time::Duration) -> Opti
         reg.waiters.remove(file_id);
     }
     res.ok().and_then(Result::ok)
+}
+
+/// Race the shared file_done listener against this upload's WebSocket, taking the first matching
+/// fileId. The losing receive is dropped so unrelated notifications cannot delay the send.
+async fn wait_for_file_done_sources(
+    file_id: &str,
+    timeout: std::time::Duration,
+    ws_rx: &mut tokio::sync::mpsc::Receiver<crate::socket::WsEvent>,
+) -> Option<String> {
+    let mut shared_rx = register_file_done_waiter(file_id);
+    let socket_wait = async {
+        loop {
+            let Some(event) = ws_rx.recv().await else {
+                return std::future::pending::<Option<String>>().await;
+            };
+            let data = event.payload.get("data").unwrap_or(&event.payload);
+            if let Some((_, url)) = extract_file_done_controls(data)
+                .into_iter()
+                .find(|(id, _)| id == file_id)
+            {
+                return Some(url);
+            }
+        }
+    };
+    let result = tokio::time::timeout(timeout, async {
+        tokio::select! {
+            result = &mut shared_rx => result.ok(),
+            result = socket_wait => result,
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Ok(mut registry) = FILE_DONE_REGISTRY.lock() {
+        registry.waiters.remove(file_id);
+    }
+    result
 }
 
 /// Upload and send a photo, video, or general file attachment to a 1-1 or group conversation.
@@ -2122,7 +2160,12 @@ pub async fn send_attachment_ext(
         return Ok((send_resp, cm));
     }
 
-    // Video / Audio / Document / Archive upload (`asyncfile/upload` -> `asyncfile/msg`, fallback `sharefile_full`)
+    // Video / Audio / Document / Archive upload (`asyncfile/upload` -> `asyncfile/msg`)
+    // Zalo server processes the uploaded file asynchronously and emits a WebSocket notification
+    // (`cmd = 601`, `subCmd = 0`, `act_type = "file_done"`) containing the CDN fileUrl.
+    // That fileUrl is mandatory for `/api/message/asyncfile/msg` (or `/api/group/asyncfile/msg`).
+    let mut ws_rx = crate::socket::spawn(s.clone());
+
     let mime = match ext.as_str() {
         "mp4" => "video/mp4",
         "mov" => "video/quicktime",
@@ -2183,14 +2226,20 @@ pub async fn send_attachment_ext(
     let file_id = pick_str(data_node, &["fileId", "clientFileId"]).filter(|id| id != "-1");
     let client_file_id = data_node.get("clientFileId").cloned().unwrap_or_else(|| json!(client_id));
     let mut file_url = pick_str(data_node, &["fileUrl", "url", "normalUrl"]).unwrap_or_default();
-    if file_url.is_empty() && FILE_DONE_LISTENER_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+    if file_url.is_empty() {
         if let Some(fid) = file_id.as_deref() {
-            match wait_for_file_done(fid, FILE_DONE_TIMEOUT).await {
-                Some(url) => file_url = url,
-                None => crate::logger::log_error(
+            let timeout = if FILE_DONE_LISTENER_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+                FILE_DONE_TIMEOUT
+            } else {
+                std::time::Duration::from_secs(6)
+            };
+            if let Some(url) = wait_for_file_done_sources(fid, timeout, &mut ws_rx).await {
+                file_url = url;
+            } else {
+                crate::logger::log_error(
                     "chat::send_attachment",
-                    &format!("no file_done event for fileId {fid} within {FILE_DONE_TIMEOUT:?}"),
-                ),
+                    &format!("no file_done event for fileId {fid} within {timeout:?}"),
+                );
             }
         }
     }
@@ -2201,15 +2250,8 @@ pub async fn send_attachment_ext(
         } else {
             "/api/message/asyncfile/msg"
         };
-        let fid_val = fid
-            .parse::<u64>()
-            .map(|n| json!(n))
-            .unwrap_or_else(|_| json!(fid));
         let mut msg_obj = serde_json::Map::new();
-        msg_obj.insert("fileId".into(), fid_val);
-        if !file_url.is_empty() {
-            msg_obj.insert("fileUrl".into(), json!(file_url));
-        }
+        msg_obj.insert("fileId".into(), json!(fid));
         msg_obj.insert("checksum".into(), json!(checksum));
         msg_obj.insert("checksumSha".into(), json!(""));
         msg_obj.insert("extension".into(), json!(ext));
@@ -2221,13 +2263,15 @@ pub async fn send_attachment_ext(
         msg_obj.insert("fileCount".into(), json!(0));
         msg_obj.insert("fdata".into(), json!("{}"));
         msg_obj.insert("imei".into(), json!(s.imei));
-        msg_obj.insert("zsource".into(), json!(-1));
-        msg_obj.insert("ttl".into(), json!(0));
         if is_group {
             msg_obj.insert("grid".into(), json!(clean_target));
         } else {
             msg_obj.insert("toid".into(), json!(clean_target));
         }
+        msg_obj.insert("fileUrl".into(), json!(file_url));
+        msg_obj.insert("zsource".into(), json!(-1));
+        msg_obj.insert("ttl".into(), json!(0));
+
         let params = s.encoded_params(&Value::Object(msg_obj))?;
         let url = format!("{file_host}{msg_ep}?{}", s.common_params());
         let r = s.post_form(&url, format!("params={params}")).await?;
@@ -2249,7 +2293,6 @@ pub async fn send_attachment_ext(
         .unwrap_or(-1)
         != 0
     {
-        // Fallback to single-shot `/api/message/sharefile_full` or `/api/group/sharefile_full`
         let share_ep = if is_group {
             "/api/group/sharefile_full"
         } else {
@@ -2536,7 +2579,7 @@ pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
         let tag = &after[..=end];
         cursor = &after[end + 1..];
 
-        if tag.len() >= 5 && tag[1..5].eq_ignore_ascii_case("meta") {
+        if tag.get(1..5).map_or(false, |s| s.eq_ignore_ascii_case("meta")) {
             let key = extract_meta_attr(tag, "property")
                 .or_else(|| extract_meta_attr(tag, "name"))
                 .unwrap_or_default()
@@ -2561,7 +2604,7 @@ pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
                 }
                 _ => {}
             }
-        } else if og_title.is_empty() && tag.len() >= 6 && tag[1..6].eq_ignore_ascii_case("title") {
+        } else if og_title.is_empty() && tag.get(1..6).map_or(false, |s| s.eq_ignore_ascii_case("title")) {
             if let Some(close) = cursor.find("</") {
                 let raw_t = unescape_html_entities(&cursor[..close]);
                 if !raw_t.is_empty() {
