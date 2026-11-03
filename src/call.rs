@@ -4146,6 +4146,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ctrl_poll_echoes_at_most_ten_newest_ids_per_queue() {
+        // [O] 03/11: the first lp_control reply listed 50 ids in each of queues 5, 14 and 17;
+        // echoing all of them made every later poll fail with 413 Payload Too Large.
+        let ids: Vec<Value> = (1001..=1050).map(|n| json!(n.to_string())).collect();
+        let mut st = CtrlPollState::default();
+        st.update_from_response(&json!({
+            "lastActionId": "1050",
+            "queueStatus": { "17": { "lastId": "1050", "ids": ids } }
+        }));
+        let expected: Vec<String> = (1041..=1050).map(|n| n.to_string()).collect();
+        assert_eq!(st.queues["17"].ids, expected);
+    }
+
+    #[test]
     fn outbound_call_lock_allows_only_test_accounts() {
         // Outbound calls are unlocked for all non-empty 1-1 and group targets
         assert!(call_target_allowed("1000000000000000001", "", false));
