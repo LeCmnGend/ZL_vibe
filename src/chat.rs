@@ -424,6 +424,8 @@ pub struct SidebarMember {
     pub id: String,
     pub name: String,
     pub avatar: Option<String>,
+    #[serde(default)]
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1391,7 +1393,7 @@ fn parse_thread(v: &Value) -> Option<Thread> {
     })
 }
 
-fn pick_str(v: &Value, keys: &[&str]) -> Option<String> {
+pub(crate) fn pick_str(v: &Value, keys: &[&str]) -> Option<String> {
     for k in keys {
         match v.get(*k) {
             Some(Value::String(s)) if !s.is_empty() => return Some(s.clone()),
@@ -5579,35 +5581,50 @@ fn extract_sticker_info(v: &Value) -> Option<(u64, u64, u32)> {
     }
 }
 
-/// Check whether `url` points to a Zalo photo CDN asset (`photo-stal`, `photo-zmp`, `zpcloud.zdn.vn`, etc., #72).
+/// Check whether `url` points to an image asset (Zalo photo CDN, local photo, or direct image URL, #72).
 pub fn is_zalo_photo_cdn_url(url: &str) -> bool {
     let u = url.trim().to_ascii_lowercase();
-    if (!u.starts_with("http://") && !u.starts_with("https://")) || u.contains("/renewmedia") {
+    if (!u.starts_with("http://") && !u.starts_with("https://") && !u.starts_with("local://"))
+        || u.contains("/renewmedia")
+    {
         return false;
     }
     let path_part = u.split('?').next().unwrap_or(&u);
     if [
-        ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z", ".txt",
-        ".csv", ".mp4", ".mov", ".mp3", ".m4a", ".exe", ".dmg", ".apk",
+        ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z", ".tar",
+        ".gz", ".txt", ".csv", ".mp4", ".mov", ".mkv", ".avi", ".mp3", ".m4a", ".wav", ".exe",
+        ".dmg", ".apk",
     ]
     .iter()
     .any(|ext| path_part.ends_with(ext))
     {
         return false;
     }
+    // Direct image file extensions anywhere
+    if [
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".ico", ".jfif", ".tiff",
+    ]
+    .iter()
+    .any(|ext| path_part.ends_with(ext))
+    {
+        return true;
+    }
+    // Zalo specific photo CDNs and subpaths
     u.contains("photo-stal")
         || u.contains("photo-zmp")
         || u.contains("photo-aka")
-        || (u.contains("zdn.vn")
+        || u.contains("photo-link-talk")
+        || u.contains("res-zalo")
+        || ((u.contains("zdn.vn") || u.contains("zadn.vn"))
             && (path_part.contains("/jpg/")
                 || path_part.contains("/png/")
                 || path_part.contains("/webp/")
                 || path_part.contains("/gif/")
-                || path_part.ends_with(".jpg")
-                || path_part.ends_with(".jpeg")
-                || path_part.ends_with(".png")
-                || path_part.ends_with(".webp")
-                || path_part.ends_with(".gif")))
+                || path_part.contains("/gr/")
+                || path_part.contains("/no/")
+                || u.contains("zpcloud")
+                || u.contains("zpg-r")
+                || u.contains("zfcloud")))
 }
 
 /// Sanitize and resolve the original sender filename for a Zalo file attachment (#74),

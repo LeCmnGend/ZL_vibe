@@ -210,6 +210,9 @@ pub enum WorkerCmd {
     FetchSocialProfile {
         target_uid: String,
     },
+    FetchGroupMembers {
+        group_id: String,
+    },
     FetchMySocialAvatars {
         page: u32,
         count: u32,
@@ -2717,6 +2720,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                         (fetch_image_bytes(&client, &fetch_url).await, true)
                                     };
                                 let Some(bytes) = bytes_opt else {
+                                    let _ = gui_tx_clone.send(GuiEvent::StickerImageFailed { key });
+                                    ctx_clone.request_repaint();
                                     return;
                                 };
 
@@ -2726,6 +2731,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             // Corrupt cache entry: drop it so the next request refetches.
                                             let _ = std::fs::remove_file(&cache_path);
                                         }
+                                        let _ = gui_tx_clone.send(GuiEvent::StickerImageFailed { key });
+                                        ctx_clone.request_repaint();
                                         return;
                                     };
                                     if from_network {
@@ -3597,6 +3604,96 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     .await
                                     .map_err(|e| e.to_string());
                                 let _ = gui_tx_clone.send(GuiEvent::SocialProfileLoaded(res));
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::FetchGroupMembers { group_id } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                if let Ok((info_map, _)) = crate::chat::fetch_group_profiles(&s, &[group_id.clone()]).await {
+                                    if let Some(info) = info_map.get(&group_id) {
+                                        let mut member_uids: Vec<String> = Vec::new();
+                                        if let Some(arr) = info.get("memVerList").and_then(serde_json::Value::as_array) {
+                                            for item in arr {
+                                                if let Some(s_val) = item.as_str() {
+                                                    let uid = s_val.split('_').next().unwrap_or("").trim();
+                                                    if !uid.is_empty() && !member_uids.contains(&uid.to_string()) {
+                                                        member_uids.push(uid.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let creator_id = crate::chat::pick_str(info, &["creatorId"]).unwrap_or_default();
+                                        if !creator_id.is_empty() && !member_uids.contains(&creator_id) {
+                                            member_uids.insert(0, creator_id.clone());
+                                        }
+                                        let mut admin_ids: Vec<String> = Vec::new();
+                                        if let Some(admins) = info.get("adminIds").and_then(serde_json::Value::as_array) {
+                                            for a in admins {
+                                                if let Some(aid) = a.as_str() {
+                                                    let aid_s = aid.to_string();
+                                                    if !member_uids.contains(&aid_s) {
+                                                        member_uids.push(aid_s.clone());
+                                                    }
+                                                    if !admin_ids.contains(&aid_s) {
+                                                        admin_ids.push(aid_s);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let mut profiles = serde_json::Map::new();
+                                        for chunk in member_uids.chunks(50) {
+                                            if let Ok(mp) = crate::chat::get_mini_profiles(&s, chunk).await {
+                                                for (k, v) in mp {
+                                                    profiles.insert(k, v);
+                                                }
+                                            }
+                                        }
+                                        let mut members = Vec::new();
+                                        for uid in &member_uids {
+                                            let mut m_name = "Thành viên".to_string();
+                                            let mut m_ava = None;
+                                            if let Some(p) = profiles.get(uid) {
+                                                if let Some(n) = crate::chat::pick_str(p, &["displayName", "zaloName", "name"]) {
+                                                    if !n.is_empty() {
+                                                        m_name = n;
+                                                    }
+                                                }
+                                                if let Some(a) = crate::chat::pick_str(p, &["avatar", "avt"]) {
+                                                    if !a.is_empty() && !a.ends_with("/default") {
+                                                        m_ava = Some(a);
+                                                    }
+                                                }
+                                            }
+                                            let role = if uid == &creator_id {
+                                                "creator".to_string()
+                                            } else if admin_ids.contains(uid) {
+                                                "admin".to_string()
+                                            } else {
+                                                "member".to_string()
+                                            };
+                                            members.push(crate::chat::SidebarMember {
+                                                id: uid.clone(),
+                                                name: m_name,
+                                                avatar: m_ava,
+                                                role,
+                                            });
+                                        }
+                                        let _ = gui_tx_clone.send(GuiEvent::GroupMembersLoaded {
+                                            group_id,
+                                            members,
+                                        });
+                                        ctx_clone.request_repaint();
+                                        return;
+                                    }
+                                }
+                                let _ = gui_tx_clone.send(GuiEvent::GroupMembersLoaded {
+                                    group_id,
+                                    members: Vec::new(),
+                                });
                                 ctx_clone.request_repaint();
                             });
                         }

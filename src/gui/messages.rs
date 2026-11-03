@@ -753,6 +753,9 @@ pub(super) fn extract_clean_domain(url: &str) -> String {
 
 pub(super) fn extract_message_link_view(msg: &ChatMessage) -> Option<(String, String, String)> {
     if let Some(url) = msg.link_url.as_deref().filter(|u| !u.is_empty()) {
+        if crate::chat::is_zalo_photo_cdn_url(url) {
+            return None;
+        }
         let desc_trim = msg.link_desc.as_deref().unwrap_or("").trim();
         let title_trim = msg.link_title.as_deref().unwrap_or("").trim();
         let url_base = url.split('?').next().unwrap_or(url);
@@ -791,8 +794,8 @@ pub(super) fn extract_message_link_view(msg: &ChatMessage) -> Option<(String, St
     let pos = text.find("https://").or_else(|| text.find("http://"))?;
     let after = &text[pos..];
     let end = after.find(char::is_whitespace).unwrap_or(after.len());
-    let url = after[..end].trim_end_matches(|c: char| matches!(c, ')' | ']' | ',' | ';'));
-    if url.len() < 10 {
+    let url = after[..end].trim_end_matches(|c: char| matches!(c, ')' | ']' | ',' | ';' | '>'));
+    if url.len() < 10 || crate::chat::is_zalo_photo_cdn_url(url) {
         return None;
     }
     let caption = format!("{}{}", &text[..pos], &after[end..])
@@ -1047,6 +1050,89 @@ fn render_markdown_inline_rich(
             );
             rest = &rest[rp_idx + 1..];
             continue;
+        }
+
+        // Render @All and @Name mentions as styled chips in Zalo Blue
+        if rest.starts_with('@') {
+            let after = &rest[1..];
+            let is_all = after.starts_with("All") || after.starts_with("all") || after.starts_with("ALL");
+            if is_all {
+                let all_len = 3;
+                let next_char = after[all_len..].chars().next();
+                if next_char.is_none()
+                    || next_char.unwrap().is_whitespace()
+                    || matches!(next_char.unwrap(), '.' | ',' | '!' | '?' | ':' | ';')
+                {
+                    let mention_text = &rest[..1 + all_len];
+                    job.append(
+                        mention_text,
+                        0.0,
+                        egui::TextFormat {
+                            font_id: FontId::proportional(base_size),
+                            color: if pal.is_dark {
+                                Color32::from_rgb(97, 175, 239)
+                            } else {
+                                Color32::from_rgb(0, 104, 255)
+                            },
+                            background: if pal.is_dark {
+                                Color32::from_rgba_unmultiplied(97, 175, 239, 45)
+                            } else {
+                                Color32::from_rgba_unmultiplied(0, 104, 255, 30)
+                            },
+                            ..Default::default()
+                        },
+                    );
+                    rest = &after[all_len..];
+                    continue;
+                }
+            }
+
+            let mut end_idx = 0;
+            let mut word_count = 0;
+            let mut prev_is_space = false;
+            for (idx, ch) in after.char_indices() {
+                if ch == '\n'
+                    || ch == '\r'
+                    || matches!(ch, ',' | '.' | '!' | '?' | ':' | ';' | '(' | ')' | '[' | ']' | '"' | '\'' | '`' | '<' | '>')
+                {
+                    break;
+                }
+                if ch.is_whitespace() {
+                    word_count += 1;
+                    if word_count >= 5 || prev_is_space {
+                        break;
+                    }
+                    prev_is_space = true;
+                } else {
+                    prev_is_space = false;
+                }
+                end_idx = idx + ch.len_utf8();
+            }
+            let candidate_name = after[..end_idx].trim_end();
+            if !candidate_name.is_empty() && candidate_name.chars().next().unwrap().is_alphanumeric() {
+                let mention_len = 1 + candidate_name.len();
+                let mention_str = &rest[..mention_len];
+                job.append(
+                    mention_str,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: FontId::proportional(base_size),
+                        color: if pal.is_dark {
+                            Color32::from_rgb(97, 175, 239)
+                        } else {
+                            Color32::from_rgb(0, 104, 255)
+                        },
+                        background: if pal.is_dark {
+                            Color32::from_rgba_unmultiplied(97, 175, 239, 40)
+                        } else {
+                            Color32::from_rgba_unmultiplied(0, 104, 255, 25)
+                        },
+                        ..Default::default()
+                    },
+                );
+                rest = &rest[mention_len..];
+                continue;
+            }
         }
 
         if rest.starts_with("**") {
@@ -1333,7 +1419,7 @@ pub(super) fn render_message_body(
             let open_target = msg
                 .link_url
                 .as_deref()
-                .filter(|u| !u.is_empty())
+                .filter(|u| !u.is_empty() && crate::chat::is_zalo_photo_cdn_url(u))
                 .unwrap_or(thumb_url)
                 .to_string();
             let title_label = msg
@@ -1341,44 +1427,78 @@ pub(super) fn render_message_body(
                 .as_deref()
                 .map(str::trim)
                 .filter(|t| {
-                    !t.is_empty() && !t.starts_with("http://") && !t.starts_with("https://")
+                    !t.is_empty()
+                        && !t.starts_with("http://")
+                        && !t.starts_with("https://")
+                        && !t.ends_with(".zdn.vn")
+                        && !t.ends_with(".zadn.vn")
+                        && !t.ends_with(".dlfl.vn")
+                        && !t.contains("zpcloud")
+                        && !t.contains("zpg-r")
+                        && !t.contains("photo-stal")
+                        && !t.contains("photo-zmp")
                 })
                 .unwrap_or("Hình ảnh")
                 .to_string();
+
             if let Some(tex) = sticker_textures.get(&key) {
                 let [tw, th] = tex.size();
-                let tw_f = (tw.max(1)) as f32;
-                let th_f = (th.max(1)) as f32;
-                let max_w = max_text_width.clamp(220.0, 360.0);
-                let max_h = 340.0_f32;
-                let scale = (max_w / tw_f).min(max_h / th_f).min(1.0);
-                let disp_w = (tw_f * scale).clamp(160.0, max_w);
-                let disp_h = (th_f * scale).clamp(120.0, max_h);
-                let img = egui::Image::new(tex)
-                    .fit_to_exact_size(Vec2::new(disp_w, disp_h))
-                    .rounding(Rounding::same(12.0))
-                    .sense(Sense::click());
-                let resp = ui
-                    .add(img)
-                    .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text("Bấm để xem ảnh trong ứng dụng");
-                ui.painter().rect_stroke(
-                    resp.rect,
-                    Rounding::same(12.0),
-                    Stroke::new(
-                        if resp.hovered() { 1.6_f32 } else { 1.0_f32 },
-                        if resp.hovered() {
-                            pal.primary
-                        } else {
-                            pal.border
-                        },
-                    ),
-                );
-                if resp.hovered() {
-                    ui.painter().rect_filled(
+                if tw <= 2 || th <= 2 {
+                    // Expired or empty tombstone image on Zalo CDN (e.g. 1x1 jpeg)
+                    let ph_w = max_text_width.clamp(180.0, 260.0);
+                    let ph_frame = egui::Frame::none()
+                        .fill(text_col.linear_multiply(0.05))
+                        .stroke(Stroke::new(1.0_f32, pal.border))
+                        .rounding(Rounding::same(12.0))
+                        .inner_margin(Margin::symmetric(16.0, 14.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ph_w);
+                            ui.vertical_centered(|ui| {
+                                let (ir, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
+                                draw_icon_image(ui.painter(), ir.center(), 22.0, text_col.linear_multiply(0.4));
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new("Ảnh đã hết hạn trên Zalo")
+                                        .size(12.5)
+                                        .color(text_col.linear_multiply(0.6)),
+                                );
+                            });
+                        });
+                    if ui
+                        .interact(
+                            ph_frame.response.rect,
+                            Id::new(("photo_exp_click", &msg.id, msg.ts)),
+                            Sense::click(),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Bấm để thử mở liên kết ảnh gốc")
+                        .clicked()
+                    {
+                        open_external_url(&open_target);
+                    }
+                } else {
+                    let tw_f = tw as f32;
+                    let th_f = th as f32;
+                    let max_w = max_text_width.clamp(220.0, 360.0);
+                    let max_h = 340.0_f32;
+                    let scale = (max_w / tw_f).min(max_h / th_f).min(1.0);
+                    let disp_w = (tw_f * scale).clamp(160.0, max_w);
+                    let disp_h = (th_f * scale).clamp(120.0, max_h);
+                    let img = egui::Image::new(tex)
+                        .fit_to_exact_size(Vec2::new(disp_w, disp_h))
+                        .rounding(Rounding::same(12.0))
+                        .sense(Sense::click());
+                    let resp = ui
+                        .add(img)
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Bấm để xem ảnh phóng to trong ứng dụng");
+                    ui.painter().rect_stroke(
                         resp.rect,
                         Rounding::same(12.0),
-                        Color32::from_rgba_unmultiplied(6, 10, 20, 88),
+                        Stroke::new(
+                            if resp.hovered() { 1.6_f32 } else { 1.0_f32 },
+                            if resp.hovered() { pal.primary } else { pal.border },
+                        ),
                     );
                     let pill_r = Rect::from_center_size(resp.rect.center(), Vec2::new(108.0, 26.0));
                     ui.painter().rect_filled(
@@ -1471,7 +1591,7 @@ pub(super) fn render_message_body(
                         Sense::click(),
                     )
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text("Bấm để xem hình ảnh")
+                    .on_hover_text("Đang tải ảnh · Bấm để xem ảnh phóng to")
                     .clicked()
                 {
                     body_action = Some(BubbleAction::OpenImagePopup {
@@ -1790,19 +1910,44 @@ pub(super) fn is_zalo_file_or_video_message(msg: &ChatMessage) -> bool {
 }
 
 pub(super) fn photo_primary_url(msg: &ChatMessage) -> Option<&str> {
-    msg.link_thumb
+    if let Some(th) = msg
+        .link_thumb
         .as_deref()
-        .filter(|u| !u.is_empty())
-        .or_else(|| msg.link_url.as_deref().filter(|u| !u.is_empty()))
-        .or_else(|| {
-            let t = msg.text.trim();
-            crate::chat::is_zalo_photo_cdn_url(t).then_some(t)
-        })
+        .filter(|u| !u.is_empty() && crate::chat::is_zalo_photo_cdn_url(u))
+    {
+        return Some(th);
+    }
+    if let Some(lu) = msg
+        .link_url
+        .as_deref()
+        .filter(|u| !u.is_empty() && crate::chat::is_zalo_photo_cdn_url(u))
+    {
+        return Some(lu);
+    }
+    let t = msg.text.trim();
+    if crate::chat::is_zalo_photo_cdn_url(t) {
+        return Some(t);
+    }
+    if let Some(pos) = t.find("https://").or_else(|| t.find("http://")) {
+        let after = &t[pos..];
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let candidate = after[..end].trim_end_matches(|c: char| matches!(c, ')' | ']' | ',' | ';' | '>'));
+        if crate::chat::is_zalo_photo_cdn_url(candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 pub(super) fn is_zalo_photo_message(msg: &ChatMessage) -> bool {
     if is_sticker_message(msg).is_some() || is_zalo_file_or_video_message(msg) {
         return false;
+    }
+    // If link_url points to a non-image webpage (e.g. YouTube, Google Docs, News), it is a rich link card, not a photo message.
+    if let Some(ref lu) = msg.link_url {
+        if !lu.is_empty() && !crate::chat::is_zalo_photo_cdn_url(lu) {
+            return false;
+        }
     }
     let trimmed = msg.text.trim();
     msg.link_src.as_deref() == Some("Hình ảnh Zalo")
@@ -1817,6 +1962,7 @@ pub(super) fn is_zalo_photo_message(msg: &ChatMessage) -> bool {
             .as_deref()
             .is_some_and(crate::chat::is_zalo_photo_cdn_url)
         || crate::chat::is_zalo_photo_cdn_url(trimmed)
+        || photo_primary_url(msg).is_some()
 }
 
 pub(super) fn extract_photo_user_caption(msg: &ChatMessage) -> Option<&str> {
@@ -1826,6 +1972,12 @@ pub(super) fn extract_photo_user_caption(msg: &ChatMessage) -> Option<&str> {
             && t != "[Hình ảnh]"
             && !t.starts_with("http://")
             && !t.starts_with("https://")
+            && !t.ends_with(".zdn.vn")
+            && !t.ends_with(".zadn.vn")
+            && !t.ends_with(".dlfl.vn")
+            && !t.contains("photo-stal")
+            && !t.contains("zpcloud")
+            && !t.contains("zpg-r")
             && Some(t) != msg.link_src.as_deref()
     };
     if let Some(desc) = msg.link_desc.as_deref().map(str::trim) {
@@ -1913,14 +2065,18 @@ pub(super) fn render_chat_bubble(
         let tkey = format!("thumb_{}", crate::crypto::md5_hex(thumb_u));
         let photo_w = if let Some(tex) = sticker_textures.get(&tkey) {
             let [tw, th] = tex.size();
-            let tw_f = (tw.max(1)) as f32;
-            let th_f = (th.max(1)) as f32;
-            let max_w = max_text_width.clamp(220.0, 360.0);
-            let max_h = 340.0_f32;
-            let scale = (max_w / tw_f).min(max_h / th_f).min(1.0);
-            (tw_f * scale).clamp(160.0, max_w).ceil()
+            if tw <= 2 || th <= 2 {
+                max_text_width.clamp(180.0, 260.0)
+            } else {
+                let tw_f = tw as f32;
+                let th_f = th as f32;
+                let max_w = max_text_width.clamp(220.0, 360.0);
+                let max_h = 340.0_f32;
+                let scale = (max_w / tw_f).min(max_h / th_f).min(1.0);
+                (tw_f * scale).clamp(160.0, max_w).ceil()
+            }
         } else {
-            240.0_f32
+            max_text_width.clamp(200.0, 280.0)
         };
         if let Some(cap_str) = photo_caption {
             let cap_w = ui.fonts(|f| {
@@ -2268,7 +2424,7 @@ pub(super) fn render_chat_bubble(
                         ui.with_layout(Layout::top_down(Align::Min), |ui| {
                             if show_group_sender {
                                 ui.label(
-                                    RichText::new(truncate_chars(&msg.sender, 22))
+                                    RichText::new(truncate_chars(display_sender, 22))
                                         .color(sender_accent)
                                         .size(12.0)
                                         .strong(),

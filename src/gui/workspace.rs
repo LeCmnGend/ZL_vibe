@@ -105,6 +105,8 @@ impl ZaloGuiApp {
         // -------------------------------------------------------------------
         // 3. COLLAPSIBLE RIGHT CONVERSATION INFO DRAWER (responsive width)
         // -------------------------------------------------------------------
+        let mut open_chat_member: Option<crate::chat::SidebarMember> = None;
+        let mut view_profile_member: Option<String> = None;
         let show_info_drawer = self.info_drawer_open && drawer_allowed;
         let drawer_w = (screen_w * 0.26).clamp(240.0, 310.0);
 
@@ -328,6 +330,187 @@ impl ZaloGuiApp {
 
                         ui.add(egui::Separator::default().spacing(1.0));
 
+                        // Group Members List (`Thành viên nhóm`)
+                        if d_is_group {
+                            let group_members = self
+                                .group_members_map
+                                .get(d_id)
+                                .cloned()
+                                .or_else(|| {
+                                    self.threads
+                                        .get(self.selected_thread_index)
+                                        .map(|t| t.presentation.members.clone())
+                                })
+                                .unwrap_or_default();
+                            let is_fetching = self.fetching_group_members.contains(d_id);
+
+                            egui::Frame::none()
+                                .inner_margin(Margin::symmetric(16.0, 14.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new("Thành viên nhóm")
+                                                .size(12.5)
+                                                .color(pal.text_primary)
+                                                .strong(),
+                                        );
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            let refresh_resp = ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        RichText::new(lucide::REFRESH)
+                                                            .size(11.5)
+                                                            .color(pal.text_secondary),
+                                                    )
+                                                    .fill(Color32::TRANSPARENT)
+                                                    .frame(false),
+                                                )
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Tải lại danh sách thành viên");
+                                            if refresh_resp.clicked() {
+                                                if let Some(tx) = WORKER_TX.get() {
+                                                    let _ = tx.send(WorkerCmd::FetchGroupMembers {
+                                                        group_id: d_id.clone(),
+                                                    });
+                                                }
+                                                self.fetching_group_members.insert(d_id.clone());
+                                            }
+
+                                            ui.label(
+                                                RichText::new(format!("({})", group_members.len()))
+                                                    .size(11.5)
+                                                    .color(pal.primary_hover),
+                                            );
+                                        });
+                                    });
+                                    ui.add_space(8.0);
+
+                                    if is_fetching && group_members.is_empty() {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label(
+                                                RichText::new("Đang tải danh sách thành viên…")
+                                                    .size(11.5)
+                                                    .color(pal.text_muted),
+                                            );
+                                        });
+                                    } else if group_members.is_empty() {
+                                        let load_btn = egui::Button::new(
+                                            RichText::new("Tải danh sách thành viên")
+                                                .size(11.5)
+                                                .color(pal.primary_hover),
+                                        )
+                                        .fill(pal.primary.linear_multiply(0.12))
+                                        .stroke(Stroke::new(1.0_f32, pal.primary))
+                                        .rounding(Rounding::same(6.0));
+                                        if ui.add(load_btn).clicked() {
+                                            if let Some(tx) = WORKER_TX.get() {
+                                                let _ = tx.send(WorkerCmd::FetchGroupMembers {
+                                                    group_id: d_id.clone(),
+                                                });
+                                            }
+                                            self.fetching_group_members.insert(d_id.clone());
+                                        }
+                                    } else {
+                                        if group_members.len() > 5 {
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut self.group_member_search)
+                                                    .hint_text("🔍 Tìm thành viên…")
+                                                    .margin(Margin::symmetric(6.0, 3.0)),
+                                            );
+                                            ui.add_space(4.0);
+                                        }
+
+                                        let q = self.group_member_search.trim().to_lowercase();
+                                        let filtered_members: Vec<&crate::chat::SidebarMember> = group_members
+                                            .iter()
+                                            .filter(|m| q.is_empty() || m.name.to_lowercase().contains(&q) || m.id.contains(&q))
+                                            .collect();
+
+                                        egui::ScrollArea::vertical()
+                                            .id_salt("info_drawer_members_scroll")
+                                            .max_height(200.0)
+                                            .auto_shrink([false, false])
+                                            .show(ui, |ui| {
+                                                ui.spacing_mut().item_spacing = Vec2::new(0.0, 5.0);
+                                                for m in filtered_members {
+                                                    ui.horizontal(|ui| {
+                                                        let (av_r, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
+                                                        paint_user_avatar(
+                                                            ui.painter(),
+                                                            av_r.center(),
+                                                            13.0,
+                                                            &m.name,
+                                                            false,
+                                                            m.avatar.as_deref(),
+                                                            &self.sticker_textures,
+                                                            &mut self.loading_stickers,
+                                                        );
+
+                                                        ui.add_space(4.0);
+                                                        ui.vertical(|ui| {
+                                                            ui.horizontal(|ui| {
+                                                                ui.label(
+                                                                    RichText::new(truncate_chars(&m.name, 16))
+                                                                        .size(12.0)
+                                                                        .color(pal.text_primary)
+                                                                        .strong(),
+                                                                );
+                                                                if m.role == "creator" {
+                                                                    ui.label(
+                                                                        RichText::new("Trưởng nhóm")
+                                                                            .size(9.5)
+                                                                            .color(Color32::from_rgb(245, 158, 11)),
+                                                                    );
+                                                                } else if m.role == "admin" {
+                                                                    ui.label(
+                                                                        RichText::new("Phó nhóm")
+                                                                            .size(9.5)
+                                                                            .color(pal.primary_hover),
+                                                                    );
+                                                                }
+                                                            });
+                                                        });
+
+                                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                            let chat_btn = ui.add(
+                                                                egui::Button::new(
+                                                                    RichText::new(lucide::SEND)
+                                                                        .size(11.0)
+                                                                        .color(pal.text_secondary),
+                                                                )
+                                                                .fill(Color32::TRANSPARENT)
+                                                                .frame(false),
+                                                            )
+                                                            .on_hover_cursor(CursorIcon::PointingHand)
+                                                            .on_hover_text("Nhắn tin riêng");
+                                                            if chat_btn.clicked() {
+                                                                open_chat_member = Some(m.clone());
+                                                            }
+
+                                                            let prof_btn = ui.add(
+                                                                egui::Button::new(
+                                                                    RichText::new("🪪")
+                                                                        .size(10.5)
+                                                                )
+                                                                .fill(Color32::TRANSPARENT)
+                                                                .frame(false),
+                                                            )
+                                                            .on_hover_cursor(CursorIcon::PointingHand)
+                                                            .on_hover_text("Xem trang cá nhân");
+                                                            if prof_btn.clicked() {
+                                                                view_profile_member = Some(m.id.clone());
+                                                            }
+                                                        });
+                                                    });
+                                                }
+                                            });
+                                    }
+                                });
+
+                            ui.add(egui::Separator::default().spacing(1.0));
+                        }
+
                         // Shared Media Grid (`Ảnh / Video đã chia sẻ`)
                         egui::Frame::none()
                             .inner_margin(Margin::symmetric(16.0, 14.0))
@@ -513,6 +696,44 @@ impl ZaloGuiApp {
             }
         }
 
+        if let Some(m) = open_chat_member {
+            if let Some(idx) = self.threads.iter().position(|t| t.id == m.id) {
+                self.selected_thread_index = idx;
+            } else {
+                self.threads.insert(
+                    0,
+                    Thread {
+                        presentation: Default::default(),
+                        unread: Default::default(),
+                        id: m.id.clone(),
+                        name: m.name.clone(),
+                        preview: "Bắt đầu cuộc trò chuyện".to_string(),
+                        time: crate::ui::clock(),
+                        avatar: m.avatar.clone(),
+                        is_group: false,
+                        messages: Vec::new(),
+                    },
+                );
+                self.selected_thread_index = 0;
+                self.persist_threads_async();
+            }
+            self.show_toast(format!("Đã mở cuộc trò chuyện với {}", m.name));
+        }
+
+        if let Some(uid) = view_profile_member {
+            self.feed_modal_open = true;
+            self.feed_modal_tab = FeedModalTab::Profile;
+            self.feed_target_uid = uid.clone();
+            self.feed_loading_profile = true;
+            self.feed_profile_error = None;
+            self.trigger_feed_timeline_load();
+            if let Some(tx) = WORKER_TX.get() {
+                let _ = tx.send(WorkerCmd::FetchSocialProfile {
+                    target_uid: uid,
+                });
+            }
+        }
+
         // -------------------------------------------------------------------
         // 4. CENTRAL CHAT AREA (Clean Header, Messages Stream, Icon Toolbar)
         // -------------------------------------------------------------------
@@ -536,6 +757,16 @@ impl ZaloGuiApp {
                         if let Some(tx) = WORKER_TX.get() {
                             let _ = tx.send(WorkerCmd::CheckFriendStatus {
                                 user_id: thread_id.clone(),
+                            });
+                        }
+                    }
+                    if is_group
+                        && !self.group_members_map.contains_key(&thread_id)
+                        && self.fetching_group_members.insert(thread_id.clone())
+                    {
+                        if let Some(tx) = WORKER_TX.get() {
+                            let _ = tx.send(WorkerCmd::FetchGroupMembers {
+                                group_id: thread_id.clone(),
                             });
                         }
                     }
@@ -687,11 +918,24 @@ impl ZaloGuiApp {
                                                     }
                                                 }
                                             };
-                                        ui.label(
-                                            RichText::new(sub_status_lbl)
-                                                .size(11.6)
-                                                .color(sub_status_col),
+                                        let sub_resp = ui.add(
+                                            egui::Label::new(
+                                                RichText::new(sub_status_lbl)
+                                                    .size(11.6)
+                                                    .color(sub_status_col),
+                                            )
+                                            .sense(if is_group { egui::Sense::click() } else { egui::Sense::hover() }),
                                         );
+                                        if is_group {
+                                            let sub_resp = sub_resp
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Xem thông tin và thành viên nhóm");
+                                            if sub_resp.clicked() {
+                                                self.info_drawer_open = true;
+                                                self.settings.info_drawer_open = true;
+                                                self.settings.save();
+                                            }
+                                        }
                                     },
                                 );
 
@@ -1504,15 +1748,37 @@ impl ZaloGuiApp {
                     }
                     let render_limit = self.chat_render_window.1;
                     let mut widen_window = false;
-                    // Group sender -> avatar, built once per frame instead of a scan per bubble.
-                    let avatar_by_name: HashMap<&str, &str> = if is_group {
-                        self.threads
-                            .iter()
-                            .filter(|th| !th.is_group)
-                            .filter_map(|th| Some((th.name.as_str(), th.avatar.as_deref()?)))
-                            .collect()
+                    // Group sender -> avatar and display name map, built once per frame
+                    let (member_avatar_by_key, member_name_by_uid): (HashMap<String, String>, HashMap<String, String>) = if is_group {
+                        let mut avas = HashMap::new();
+                        let mut names = HashMap::new();
+                        for th in self.threads.iter().filter(|th| !th.is_group) {
+                            if let Some(ref ava) = th.avatar {
+                                if !ava.is_empty() {
+                                    avas.insert(th.id.clone(), ava.clone());
+                                    avas.insert(th.name.clone(), ava.clone());
+                                }
+                            }
+                            names.insert(th.id.clone(), th.name.clone());
+                        }
+                        let empty_vec = Vec::new();
+                        let members = self.group_members_map.get(&thread_id).unwrap_or_else(|| {
+                            self.threads.get(self.selected_thread_index).map(|t| &t.presentation.members).unwrap_or(&empty_vec)
+                        });
+                        for m in members {
+                            if let Some(ref ava) = m.avatar {
+                                if !ava.is_empty() {
+                                    avas.insert(m.id.clone(), ava.clone());
+                                    avas.insert(m.name.clone(), ava.clone());
+                                }
+                            }
+                            if !m.name.is_empty() {
+                                names.insert(m.id.clone(), m.name.clone());
+                            }
+                        }
+                        (avas, names)
                     } else {
-                        HashMap::new()
+                        (HashMap::new(), HashMap::new())
                     };
                     let composer_lines = self
                         .input_message
@@ -1709,10 +1975,32 @@ impl ZaloGuiApp {
                                                     let is_latest_outgoing =
                                                         last_outgoing_idx == Some(idx);
 
+                                                    let s_id = if is_group {
+                                                        crate::chat::sidebar_sender_id(msg).or_else(|| {
+                                                            if msg.sender.chars().all(|c| c.is_ascii_digit()) {
+                                                                Some(msg.sender.clone())
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                    } else {
+                                                        None
+                                                    };
                                                     let sender_ava_opt = if !is_group {
                                                         thread_avatar.as_deref()
                                                     } else {
-                                                        avatar_by_name.get(msg.sender.as_str()).copied()
+                                                        s_id.as_deref()
+                                                            .and_then(|id| member_avatar_by_key.get(id))
+                                                            .or_else(|| member_avatar_by_key.get(msg.sender.as_str()))
+                                                            .map(|s| s.as_str())
+                                                    };
+                                                    let display_sender_fallback = if is_group {
+                                                        s_id.as_deref()
+                                                            .and_then(|id| member_name_by_uid.get(id))
+                                                            .map(|s| s.as_str())
+                                                            .unwrap_or(&thread_name)
+                                                    } else {
+                                                        &thread_name
                                                     };
                                                     if let Some(action) = render_chat_bubble(
                                                         ui,
@@ -1721,7 +2009,7 @@ impl ZaloGuiApp {
                                                         next_same_sender,
                                                         is_latest_outgoing,
                                                         is_group,
-                                                        &thread_name,
+                                                        display_sender_fallback,
                                                         sender_ava_opt,
                                                         pal,
                                                         &self.sticker_textures,

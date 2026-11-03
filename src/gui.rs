@@ -89,6 +89,9 @@ pub enum GuiEvent {
         key: String,
         image: egui::ColorImage,
     },
+    StickerImageFailed {
+        key: String,
+    },
     StickerStoreLoaded(Vec<crate::chat::StickerPackInfo>),
     StickerPackItemsLoaded {
         cate_id: u64,
@@ -105,6 +108,10 @@ pub enum GuiEvent {
         items: Vec<crate::chat::StickerItem>,
     },
     LinkPreviewReady(crate::chat::LinkMetadata),
+    GroupMembersLoaded {
+        group_id: String,
+        members: Vec<crate::chat::SidebarMember>,
+    },
     PhoneLookupSuccess(crate::chat::PhoneLookupResult),
     PhoneLookupFailed(String),
     FriendStatusChecked {
@@ -719,6 +726,9 @@ pub struct ZaloGuiApp {
     dismissed_link_preview_for: String,
     friend_status_map: HashMap<String, crate::chat::FriendshipStatus>,
     checking_friend_status: HashSet<String>,
+    group_members_map: HashMap<String, Vec<crate::chat::SidebarMember>>,
+    fetching_group_members: HashSet<String>,
+    group_member_search: String,
     user_online_map: HashMap<String, (bool, String)>,
     allow_quit: bool,
     settings_modal_open: bool,
@@ -1148,6 +1158,9 @@ impl ZaloGuiApp {
             dismissed_link_preview_for: String::new(),
             friend_status_map: HashMap::new(),
             checking_friend_status: HashSet::new(),
+            group_members_map: HashMap::new(),
+            fetching_group_members: HashSet::new(),
+            group_member_search: String::new(),
             user_online_map: HashMap::new(),
             allow_quit: false,
             settings_modal_open: false,
@@ -1747,6 +1760,9 @@ impl ZaloGuiApp {
                         self.sticker_textures.insert(key, texture);
                     }
                 }
+                GuiEvent::StickerImageFailed { key } => {
+                    self.loading_stickers.remove(&key);
+                }
                 GuiEvent::StickerStoreLoaded(packs) => {
                     self.sticker_store_loading = false;
                     let count = packs.len();
@@ -1850,6 +1866,33 @@ impl ZaloGuiApp {
                     if updated_any {
                         self.persist_threads_async();
                     }
+                }
+                GuiEvent::GroupMembersLoaded { group_id, members } => {
+                    self.fetching_group_members.remove(&group_id);
+                    for m in &members {
+                        if let Some(ref ava_url) = m.avatar {
+                            if ava_url.starts_with("http") {
+                                let file_or_base = crate::chat::avatar_file_key(Some(ava_url.as_str()))
+                                    .unwrap_or_else(|| ava_url.split('?').next().unwrap_or(ava_url).to_string());
+                                let key = format!("ava_{}", crate::crypto::md5_hex(&file_or_base));
+                                if !self.sticker_textures.contains_key(&key)
+                                    && self.loading_stickers.insert(key.clone())
+                                {
+                                    if let Some(tx) = WORKER_TX.get() {
+                                        let _ = tx.send(WorkerCmd::FetchStickerImage {
+                                            key,
+                                            url: ava_url.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(t) = self.threads.iter_mut().find(|th| th.id == group_id) {
+                        t.presentation.members = members.clone();
+                        t.presentation.member_count = Some(members.len() as u64);
+                    }
+                    self.group_members_map.insert(group_id, members);
                 }
                 GuiEvent::FriendStatusChecked {
                     user_id,
