@@ -637,13 +637,15 @@ pub fn sidebar_sender_id(message: &ChatMessage) -> Option<String> {
     (!id.is_empty() && id != "0" && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
 }
 
-/// Return `true` if a thread name is empty or a generic placeholder (`"Người dùng ..."`, `"Nhóm ..."`).
+/// Return `true` if a thread name is empty or a client placeholder (`"Người dùng <id>"`,
+/// `"Nhóm <id>"`, or a bare numeric ID). Real names such as `"Nhóm bạn thân"` are kept.
 pub fn is_generic_thread_name(name: &str) -> bool {
+    let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
     let t = name.trim();
     t.is_empty()
-        || t.starts_with("Người dùng ")
-        || t.starts_with("Nhóm ")
-        || t.chars().all(|c| c.is_ascii_digit())
+        || numeric(t)
+        || t.strip_prefix("Người dùng ").is_some_and(|rest| numeric(rest.trim()))
+        || t.strip_prefix("Nhóm ").is_some_and(|rest| numeric(rest.trim()))
 }
 
 /// Extract the stable avatar filename (e.g. `"00000000000000000000000000000001.jpg"`) from a Zalo CDN URL.
@@ -8054,5 +8056,19 @@ mod send_identity_tests {
                 checksum: "md5_123".into(),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod generic_name_tests {
+    use super::*;
+    #[test]
+    fn placeholders_are_generic_but_real_names_starting_with_nhom_are_kept() {
+        for name in ["", "  ", "12345", "Nhóm 6611225", "Người dùng 42"] {
+            assert!(is_generic_thread_name(name), "{name}");
+        }
+        for name in ["Nhóm bạn thân", "Nhóm 12A1 cũ", "Người dùng mới", "An"] {
+            assert!(!is_generic_thread_name(name), "{name}");
+        }
     }
 }
