@@ -990,11 +990,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     let mut st = cps.lock().await;
                                     crate::call::poll_control_events(&s_snap, &mut st).await
                                 };
-                                if let Ok((events, mute_evs, reaction_events, typing_evs, seen_evs)) = ctrl_res {
-                                    if !reaction_events.is_empty() {
-                                        let uin = s_snap.login.as_ref().map(|l| l.uin.clone()).unwrap_or_default();
-                                        let _ = gui_tx_ctrl.send(GuiEvent::ReactionsReceived { uin, events: reaction_events });
-                                    }
+                                if let Ok((events, mute_evs, typing_evs, seen_evs)) = ctrl_res {
                                     for ev in events {
                                         cb.handle_control_event(ev);
                                     }

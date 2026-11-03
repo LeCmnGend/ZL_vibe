@@ -3828,11 +3828,7 @@ pub(crate) async fn forward_message_with_client_id(
     };
 
     // Forward photo if message contains a photo CDN URL
-    if let Some(photo_url) = msg
-        .link_url
-        .as_deref()
-        .filter(|u| is_zalo_photo_cdn_url(u) && is_safe_external_image_url(u))
-    {
+    if let Some(photo_url) = msg.link_url.as_deref().filter(|u| is_zalo_photo_cdn_url(u)) {
         if let Ok(resp) = s.http.get(photo_url).send().await {
             if let Ok(bytes) = resp.bytes().await {
                 if !bytes.is_empty() {

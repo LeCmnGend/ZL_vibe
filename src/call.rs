@@ -1035,7 +1035,12 @@ pub fn extract_voip_controls(data_node: &Value) -> Vec<Value> {
 pub async fn poll_control_events(
     s: &Session,
     state: &mut CtrlPollState,
-) -> Result<(Vec<Value>, Vec<crate::chat::MuteControlEvent>, Vec<crate::reactions::ReactionEvent>, Vec<crate::chat::TypingEvent>, Vec<crate::chat::SeenEvent>)> {
+) -> Result<(
+    Vec<Value>,
+    Vec<crate::chat::MuteControlEvent>,
+    Vec<crate::chat::TypingEvent>,
+    Vec<crate::chat::SeenEvent>,
+)> {
     if s.login.is_none() {
         bail!("chưa đăng nhập");
     }
@@ -1101,7 +1106,7 @@ pub async fn poll_control_events(
                 ev_ms > 0 && now_ms.saturating_sub(ev_ms) <= 45_000
             })
             .collect();
-        return Ok((fresh_invites, mute_events, crate::reactions::parse_reaction_events(data_node), typing_events, seen_events));
+        return Ok((fresh_invites, mute_events, typing_events, seen_events));
     }
     let events = extract_voip_controls(data_node);
     if !events.is_empty() {
@@ -1115,12 +1120,12 @@ pub async fn poll_control_events(
             ),
         );
     }
-    Ok((events, mute_events, crate::reactions::parse_reaction_events(data_node), typing_events, seen_events))
+    Ok((events, mute_events, typing_events, seen_events))
 }
 
 /// Poll `lp_control` (`getControllFromPolling`, cmd `99101`) once and return any incoming VoIP control events.
 pub async fn poll_voip_controls(s: &Session, state: &mut CtrlPollState) -> Result<Vec<Value>> {
-    let (voip, _, _, _, _) = poll_control_events(s, state).await?;
+    let (voip, _, _, _) = poll_control_events(s, state).await?;
     Ok(voip)
 }
 

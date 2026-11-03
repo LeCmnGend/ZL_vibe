@@ -808,6 +808,10 @@ pub(super) fn draw_icon_image(painter: &egui::Painter, center: Pos2, size: f32, 
     draw_lucide_icon(painter, center, lucide::IMAGE, size, color);
 }
 
+pub(super) fn draw_icon_camera(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
+    draw_lucide_icon(painter, center, lucide::CAMERA, size, color);
+}
+
 pub(super) fn draw_icon_attachment(
     painter: &egui::Painter,
     center: Pos2,

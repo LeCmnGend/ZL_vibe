@@ -949,7 +949,13 @@ impl ZaloGuiApp {
                                                 .unwrap_or(false);
                                         let (sub_status_lbl, sub_status_col): (String, Color32) =
                                             if is_typing_now {
-                                                ("Đang nhập…".into(), pal.accent_online)
+                                                let who = self
+                                                    .typing_map
+                                                    .get(&thread_id)
+                                                    .map(|(name, _)| name.trim())
+                                                    .filter(|name| !name.is_empty())
+                                                    .unwrap_or("Đang");
+                                                (format!("✍ {who} đang soạn thảo…"), pal.accent_online)
                                             } else if is_group {
                                                 let count = self
                                                     .group_member_counts
