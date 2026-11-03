@@ -90,6 +90,10 @@ jobs:
             libgtk-3-dev
       - name: Run test suite
         run: cargo test --locked
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit known vulnerabilities
+        run: cargo audit
 
   # 1. Universal Linux packages built on Ubuntu 22.04 LTS (glibc 2.35, statically linked libopus + sqlite3 + rustls)
   # Produces: .deb (Debian/Ubuntu/Mint/Kali/Pop!_OS), .rpm (Fedora/RHEL/Rocky/Alma/openSUSE), .AppImage (all distros), .tar.gz (Arch/Void/Gentoo/any distro)
