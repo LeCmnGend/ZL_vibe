@@ -3735,6 +3735,10 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             use std::sync::atomic::Ordering;
                             if crate::history_sync::PHONE_SYNC_RUNNING.swap(true, Ordering::SeqCst)
                             {
+                                let _ = gui_tx.send(GuiEvent::StatusUpdate(
+                                    "⚠️ Tiến trình đồng bộ tin nhắn đang chạy ngầm, vui lòng chờ trong giây lát…".into(),
+                                ));
+                                egui_ctx.request_repaint();
                                 continue;
                             }
                             crate::history_sync::PHONE_SYNC_CANCEL.store(false, Ordering::Relaxed);

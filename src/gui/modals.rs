@@ -1981,7 +1981,7 @@ impl ZaloGuiApp {
                                                         ui.add_space(4.0);
                                                         ui.label(
                                                             RichText::new(
-                                                                "Mẹo: Hãy giữ ứng dụng Zalo trên điện thoại mở và kết nối mạng trong lúc đồng bộ (xác nhận trên điện thoại nếu Zalo hỏi).",
+                                                                "Lưu ý: Kéo tin nhắn 1-1 trực tiếp từ điện thoại qua mạng phụ thuộc giao thức xác thực thiết bị Zalo. Với tin nhắn nhóm và Cloud của tôi, bạn có thể bấm 'Đồng bộ Nhóm & Cloud ngay' bên dưới; hoặc dùng mục 'Nhập lịch sử' từ file sao lưu Zalo.",
                                                             )
                                                             .color(pal.text_secondary)
                                                             .size(12.2),
@@ -3218,6 +3218,7 @@ impl ZaloGuiApp {
                 });
             }
             self.show_toast("📲 Đang yêu cầu đồng bộ tin nhắn từ điện thoại…");
+            ctx.request_repaint();
         }
         if apply_proxy_now {
             let proxy_url = self.settings.proxy_url.trim().to_string();

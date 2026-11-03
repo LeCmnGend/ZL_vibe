@@ -220,7 +220,10 @@ where
             0.10,
             "📲 Đang gửi yêu cầu đồng bộ tới Zalo trên điện thoại (hãy mở Zalo trên điện thoại và bấm 'Đồng bộ ngay')…".to_string(),
         );
-        let _ = chat::request_phone_sync(s, &pub_key).await;
+        let requested = chat::request_phone_sync(s, &pub_key).await;
+        if requested.as_ref().map(|v| v.get("error_code").and_then(|c| c.as_i64()).unwrap_or(0) != 0).unwrap_or(true) {
+            on_progress(0.15, "Không gửi được yêu cầu đồng bộ điện thoại; tiếp tục kiểm tra đồng bộ.".to_string());
+        }
         let _ = chat::request_phone_sync_v2(s, &pub_key).await;
 
         // Wait for user to confirm on phone (up to 90 seconds)
