@@ -7,6 +7,7 @@
     all(target_os = "windows", not(debug_assertions)),
     windows_subsystem = "windows"
 )]
+mod sync_v1;
 
 use anyhow::Result;
 use session::Session;
