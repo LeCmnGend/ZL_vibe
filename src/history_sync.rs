@@ -222,7 +222,11 @@ where
         );
         let requested = chat::request_phone_sync(s, &pub_key).await;
         if requested.as_ref().map(|v| v.get("error_code").and_then(|c| c.as_i64()).unwrap_or(0) != 0).unwrap_or(true) {
-            on_progress(0.15, "Không gửi được yêu cầu đồng bộ điện thoại; tiếp tục kiểm tra đồng bộ.".to_string());
+            on_progress(
+                0.15,
+                "ℹ️ Máy chủ Zalo yêu cầu xác thực thiết bị Sync-V2; tiếp tục đồng bộ Cloud & Nhóm…"
+                    .to_string(),
+            );
         }
         let _ = chat::request_phone_sync_v2(s, &pub_key).await;
 
