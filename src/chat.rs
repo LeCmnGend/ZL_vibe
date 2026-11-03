@@ -2178,6 +2178,7 @@ pub async fn send_attachment(
 
     let data_node = last_up_dec.get("data").unwrap_or(&last_up_dec);
     let file_id = pick_str(data_node, &["fileId", "clientFileId"]).filter(|id| id != "-1");
+    let client_file_id = data_node.get("clientFileId").cloned().unwrap_or_else(|| json!(client_id));
     let mut file_url = pick_str(data_node, &["fileUrl", "url", "normalUrl"]).unwrap_or_default();
     if file_url.is_empty() && FILE_DONE_LISTENER_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(fid) = file_id.as_deref() {
@@ -2209,13 +2210,16 @@ pub async fn send_attachment(
         msg_obj.insert("checksum".into(), json!(checksum));
         msg_obj.insert("checksumSha".into(), json!(""));
         msg_obj.insert("extension".into(), json!(ext));
+        msg_obj.insert("extention".into(), json!(ext));
         msg_obj.insert("totalSize".into(), json!(total_size));
         msg_obj.insert("fileName".into(), json!(file_name));
-        msg_obj.insert("clientId".into(), json!(client_id));
+        msg_obj.insert("clientId".into(), client_file_id);
         msg_obj.insert("fType".into(), json!(if is_video { 2 } else { 1 }));
         msg_obj.insert("fileCount".into(), json!(0));
         msg_obj.insert("fdata".into(), json!("{}"));
         msg_obj.insert("imei".into(), json!(s.imei));
+        msg_obj.insert("zsource".into(), json!(-1));
+        msg_obj.insert("ttl".into(), json!(0));
         if is_group {
             msg_obj.insert("grid".into(), json!(clean_target));
         } else {
