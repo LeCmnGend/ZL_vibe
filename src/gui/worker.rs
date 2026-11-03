@@ -117,6 +117,11 @@ pub enum WorkerCmd {
     PrepareVideo {
         url: String,
     },
+    /// Abort an in-flight `DownloadAttachment` / `PrepareVideo` for `url`. The worker keeps one
+    /// [`crate::download::CancelFlag`] per URL; an unknown URL is a no-op.
+    CancelDownload {
+        url: String,
+    },
     /// "Đóng" on the missing-messages banner → `MessageStore::dismiss_missing_ranges`.
     DismissMissingRanges,
     /// Measure `paths::cache_dir()` → `GuiEvent::CacheSizeComputed`.
@@ -503,6 +508,8 @@ fn schedule_refresh_retry() {
     });
 }
 
+type CancelRegistry = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::download::CancelFlag>>>;
+
 pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: egui::Context) {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerCmd>();
     let _ = WORKER_TX.set(cmd_tx);
@@ -522,6 +529,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
     let poll_state = std::sync::Arc::new(tokio::sync::Mutex::new(saved.poll));
     let ctrl_poll_state =
         std::sync::Arc::new(tokio::sync::Mutex::new(crate::call::CtrlPollState::default()));
+    let cancels: CancelRegistry = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     std::thread::Builder::new()
         .name("zalo-worker".into())
@@ -3166,7 +3174,12 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             let session_clone = session.clone();
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
+                            let cancels_task = cancels.clone();
                             tokio::spawn(async move {
+                                let flag = crate::download::CancelFlag::new();
+                                if let Ok(mut map) = cancels_task.lock() {
+                                    map.insert(url.clone(), flag.clone());
+                                }
                                 let result = match crate::download::validate_target_dir(&dest_dir) {
                                     Err(e) => Err(e),
                                     Ok(dir) => {
@@ -3174,11 +3187,12 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                         let tx = gui_tx_clone.clone();
                                         let ctx = ctx_clone.clone();
                                         let key = url.clone();
-                                        crate::download::download_to_dir(
+                                        crate::download::download_to_dir_with_cancel(
                                             &client,
                                             &url,
                                             &suggested_name,
                                             &dir,
+                                            &flag,
                                             move |p| {
                                                 let _ = tx.send(GuiEvent::DownloadProgress {
                                                     url: key.clone(),
@@ -3191,10 +3205,19 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                         .await
                                     }
                                 };
+                                if let Ok(mut map) = cancels_task.lock() {
+                                    map.remove(&url);
+                                }
                                 match result {
                                     Ok(path) => {
                                         let _ = gui_tx_clone
                                             .send(GuiEvent::DownloadFinished { url, path });
+                                    }
+                                    Err(error)
+                                        if error == crate::download::CANCELLED_ERROR =>
+                                    {
+                                        let _ =
+                                            gui_tx_clone.send(GuiEvent::DownloadCancelled { url });
                                     }
                                     Err(error) => {
                                         crate::logger::log_error("gui::download", &error);
@@ -3209,6 +3232,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             let session_clone = session.clone();
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
+                            let cancels_task = cancels.clone();
                             tokio::spawn(async move {
                                 let dir = crate::paths::video_cache_dir();
                                 let name = format!("{}.mp4", crate::crypto::md5_hex(url.trim()));
@@ -3216,15 +3240,20 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 let result = if cached.is_file() {
                                     Ok(cached)
                                 } else {
+                                    let flag = crate::download::CancelFlag::new();
+                                    if let Ok(mut map) = cancels_task.lock() {
+                                        map.insert(url.clone(), flag.clone());
+                                    }
                                     let client = { session_clone.lock().await.clone().http };
                                     let tx = gui_tx_clone.clone();
                                     let ctx = ctx_clone.clone();
                                     let key = url.clone();
-                                    crate::download::download_to_dir(
+                                    let downloaded = crate::download::download_to_dir_with_cancel(
                                         &client,
                                         &url,
                                         &name,
                                         &dir,
+                                        &flag,
                                         move |p| {
                                             let _ = tx.send(GuiEvent::VideoProgress {
                                                 url: key.clone(),
@@ -3234,11 +3263,19 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             ctx.request_repaint();
                                         },
                                     )
-                                    .await
+                                    .await;
+                                    if let Ok(mut map) = cancels_task.lock() {
+                                        map.remove(&url);
+                                    }
+                                    downloaded
                                 };
                                 match result {
                                     Ok(path) => {
                                         let _ = gui_tx_clone.send(GuiEvent::VideoReady { url, path });
+                                    }
+                                    Err(error) if error == crate::download::CANCELLED_ERROR => {
+                                        let _ =
+                                            gui_tx_clone.send(GuiEvent::VideoCancelled { url });
                                     }
                                     Err(error) => {
                                         crate::logger::log_error("gui::video", &error);
@@ -3247,6 +3284,13 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 }
                                 ctx_clone.request_repaint();
                             });
+                        }
+                        WorkerCmd::CancelDownload { url } => {
+                            if let Ok(map) = cancels.lock() {
+                                if let Some(flag) = map.get(&url) {
+                                    flag.cancel();
+                                }
+                            }
                         }
                         WorkerCmd::DismissMissingRanges => {
                             let uin = session.lock().await.login.as_ref().map(|login| login.uin.clone()).unwrap_or_default();
@@ -3310,6 +3354,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                         WorkerCmd::LoginPassword { phone, pass } => {
                             let session_clone = session.clone();
                             let poll_clone = poll_state.clone();
+                            let wc_login = ws_cursors.clone();
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
                             tokio::spawn(async move {
