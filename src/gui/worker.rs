@@ -279,29 +279,40 @@ pub(super) fn resp_error_code(resp: &serde_json::Value) -> Option<i64> {
 /// Largest image accepted from the network or disk for stickers / thumbnails / avatars.
 pub(super) const MAX_IMAGE_BYTES: usize = 15 * 1024 * 1024;
 
-/// Zalo's own static/CDN hosts (`*.zalo.me`, `*.zaloapp.com`, `*.zdn.vn`, `*.zadn.vn`).
-fn is_zalo_cdn_host(host: &str) -> bool {
-    let h = host.trim_end_matches('.').to_ascii_lowercase();
-    crate::session::is_zalo_host(&h)
-        || h == "zdn.vn"
-        || h.ends_with(".zdn.vn")
-        || h == "zadn.vn"
-        || h.ends_with(".zadn.vn")
-}
-
 /// May this URL be fetched automatically to render an image?
 ///
-/// `https://` always; plain `http://` only for Zalo's own CDN hosts (some legacy stickers are
-/// still served that way). Anything else (`file:`, `ftp:`, other `http://` hosts) is refused.
+/// Only public HTTP(S) image URLs are allowed. Local paths use `local_image_path` instead.
 pub(super) fn image_url_allowed(url: &str) -> bool {
     let Ok(u) = reqwest::Url::parse(url.trim()) else {
         return false;
     };
-    match u.scheme() {
-        "https" => u.host_str().is_some(),
-        "http" => u.host_str().map(is_zalo_cdn_host).unwrap_or(false),
-        _ => false,
+    if !matches!(u.scheme(), "http" | "https") {
+        return false;
     }
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    let ip_host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = ip_host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(ip) => {
+                !ip.is_private()
+                    && !ip.is_loopback()
+                    && !ip.is_link_local()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+            }
+            std::net::IpAddr::V6(ip) => {
+                let first = ip.segments()[0];
+                !ip.is_loopback()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && (first & 0xfe00) != 0xfc00
+                    && (first & 0xffc0) != 0xfe80
+            }
+        };
+    }
+    crate::chat::is_safe_external_image_url(&format!("{}://{}", u.scheme(), host))
 }
 
 /// Resolve the path of a locally sent image (`local://<absolute path>` or an absolute path).
@@ -330,7 +341,15 @@ pub(super) async fn fetch_image_bytes(client: &reqwest::Client, url: &str) -> Op
     if !image_url_allowed(url) {
         return None;
     }
-    let mut resp = client.get(url).send().await.ok()?;
+    let mut resp = client
+        .get(url)
+        .header(
+            "Accept",
+            "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        )
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -2832,7 +2851,11 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     } else if !url.starts_with("http://")
                                         && !url.starts_with("https://")
                                     {
-                                        (local_image_path(&url).and_then(|path| std::fs::read(path).ok()), false)
+                                        (
+                                            local_image_path(&url)
+                                                .and_then(|path| std::fs::read(path).ok()),
+                                            false,
+                                        )
                                     } else {
                                         let client = { session_clone.lock().await.clone().http };
                                         let fetch_url = crate::store::jxl_to_jpg_url(&url);

@@ -951,9 +951,38 @@ impl ZaloGuiApp {
                                             if is_typing_now {
                                                 ("Đang nhập…".into(), pal.accent_online)
                                             } else if is_group {
-                                                let count = self.group_member_counts.get(&thread_id).map(|n| *n as u64)
-                                                    .or_else(|| self.threads.get(self.selected_thread_index).and_then(|t| t.presentation.member_count));
-                                                (count.map(|n| format!("{n} thành viên")).unwrap_or_else(|| "Nhóm trò chuyện".into()), pal.text_secondary)
+                                                let count = self
+                                                    .group_member_counts
+                                                    .get(&thread_id)
+                                                    .map(|count| *count as u64)
+                                                    .or_else(|| {
+                                                        self.threads
+                                                            .get(self.selected_thread_index)
+                                                            .and_then(|thread| {
+                                                                thread.presentation.member_count
+                                                            })
+                                                    })
+                                                    .or_else(|| {
+                                                        self.group_members_map
+                                                            .get(&thread_id)
+                                                            .map(|members| members.len() as u64)
+                                                    });
+                                                if let Some(count) = count {
+                                                    (
+                                                        format!("{count} thành viên"),
+                                                        pal.text_secondary,
+                                                    )
+                                                } else if self
+                                                    .fetching_group_members
+                                                    .contains(&thread_id)
+                                                {
+                                                    (
+                                                        "Đang tải thành viên…".into(),
+                                                        pal.primary_hover,
+                                                    )
+                                                } else {
+                                                    ("Nhóm trò chuyện".into(), pal.text_secondary)
+                                                }
                                             } else if is_cloud_thread {
                                                 ("Lưu trữ đám mây cá nhân".into(), pal.text_secondary)
                                             } else {

@@ -1954,6 +1954,9 @@ impl ZaloGuiApp {
                 GuiEvent::StickerImageFailed { key } => {
                     self.loading_stickers.remove(&key);
                 }
+                GuiEvent::StickerImageFailed { key } => {
+                    self.loading_stickers.remove(&key);
+                }
                 GuiEvent::StickerStoreLoaded(packs) => {
                     self.sticker_store_loading = false;
                     let count = packs.len();

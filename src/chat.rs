@@ -10462,4 +10462,20 @@ mod generic_name_tests {
         assert_eq!(existing.presentation.member_count, Some(42));
     }
 
+    #[test]
+    fn test_is_zalo_photo_cdn_url_comprehensive() {
+        // Direct images and Zalo CDNs
+        assert!(is_zalo_photo_cdn_url("https://photo-stal-6.zdn.vn/gr/jpg/beab7091ea123f4c6603/1WUpuktR2ex7c7iAAbWSyDORFc86tI59Rxwuy31ukJWzM6h8D9hN5HA66gJ2eFCzUBU.jpg"));
+        assert!(is_zalo_photo_cdn_url("https://f16-zpcloud.zdn.vn/4755838023238443440/415f16b28c720c2c5563.jpg"));
+        assert!(is_zalo_photo_cdn_url("https://b-f65-zpg-r.zdn.vn/1913892508530765023/24acd63939f9b9a7e0e8.jpg"));
+        assert!(is_zalo_photo_cdn_url("https://res-zalo.zadn.vn/upload/media/2020/2/7/2x_ecardsn_1581058405234_716426.png"));
+        assert!(is_zalo_photo_cdn_url("https://example.com/banner.webp?w=500"));
+        assert!(is_zalo_photo_cdn_url("local:///Users/mac/test.png"));
+
+        // Non-images
+        assert!(!is_zalo_photo_cdn_url("https://file-stal-10.dlfl.vn/gr/1d5605655a9c8fc2d68d/document.pdf"));
+        assert!(!is_zalo_photo_cdn_url("https://www.youtube.com/watch?v=F1c8-nNze3U"));
+        assert!(!is_zalo_photo_cdn_url("https://docs.google.com/spreadsheets/d/123/edit"));
+        assert!(!is_zalo_photo_cdn_url("https://f16-zpc.zdn.vn/renewMedia?p=abc"));
+    }
 }

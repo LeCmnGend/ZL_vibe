@@ -1473,6 +1473,13 @@ pub(super) fn render_message_body(
                         .add(img)
                         .on_hover_cursor(CursorIcon::PointingHand)
                         .on_hover_text("Bấm để xem ảnh phóng to trong ứng dụng");
+                    if resp.hovered() {
+                        ui.painter().rect_filled(
+                            resp.rect,
+                            Rounding::same(12.0),
+                            Color32::from_rgba_unmultiplied(6, 10, 20, 88),
+                        );
+                    }
                     ui.painter().rect_stroke(
                         resp.rect,
                         Rounding::same(12.0),
@@ -1545,8 +1552,13 @@ pub(super) fn render_message_body(
                         ui.horizontal(|ui| {
                             let (ir, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
                             draw_icon_image(ui.painter(), ir.center(), 18.0, text_col);
+                            let placeholder_label = if title_label == "Hình ảnh" {
+                                "Đang tải hình ảnh..."
+                            } else {
+                                title_label.as_str()
+                            };
                             ui.label(
-                                RichText::new(&title_label)
+                                RichText::new(placeholder_label)
                                     .size(13.5)
                                     .color(text_col)
                                     .strong(),
