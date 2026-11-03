@@ -361,12 +361,12 @@ impl MessageStore {
             // *oldest* rows, so a thread longer than the limit reopened on stale messages.
             "SELECT msg_id, thread_id, sender_id, sender_name, text, msg_type, ts, is_outgoing, raw_json
              FROM (
-                 SELECT msg_id, thread_id, sender_id, sender_name, text, msg_type, ts, is_outgoing, raw_json
+                 SELECT msg_id, thread_id, sender_id, sender_name, text, msg_type, ts, is_outgoing, raw_json, rowid AS sort_rowid
                  FROM messages
                  WHERE thread_id = ?1
-                 ORDER BY ts DESC
+                 ORDER BY ts DESC, rowid DESC
                  LIMIT ?2
-             ) ORDER BY ts ASC",
+             ) ORDER BY ts ASC, sort_rowid ASC",
         )?;
 
         let rows = stmt.query_map(params![thread_id, limit as i64], |row| {
