@@ -1878,20 +1878,7 @@ impl ZaloGuiApp {
                                     self.forward_filter.clear();
                                 }
                                 BubbleAction::React(r) => {
-                                    if let Some(real) = self
-                                        .threads
-                                        .get_mut(self.selected_thread_index)
-                                        .and_then(|t| t.messages.get_mut(idx))
-                                    {
-                                        if real.reactions.contains(&r.to_string()) {
-                                            real.reactions.clear();
-                                            self.status_msg = "Đã bỏ cảm xúc".into();
-                                        } else {
-                                            real.reactions = vec![r.to_string()];
-                                            self.status_msg = format!("Đã thả cảm xúc {r}");
-                                        }
-                                    }
-                                    self.persist_threads_async();
+                                    self.status_msg = format!("Đã gửi cảm xúc {r}");
                                     if let Some(tx) = WORKER_TX.get() {
                                         let _ = tx.send(WorkerCmd::React {
                                             to_id: thread_id.clone(),

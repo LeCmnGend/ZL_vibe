@@ -1656,20 +1656,7 @@ impl ZaloGuiApp {
                         if changed { self.persist_threads_async(); }
                     }
                 }
-                GuiEvent::Reacted {
-                    thread_id,
-                    msg_id,
-                    ts,
-                    reaction,
-                } => {
-                    if let Some(t) = self.threads.iter_mut().find(|t| t.id == thread_id) {
-                        if let Some(m) = t.messages.iter_mut().find(|m| {
-                            (!m.id.is_empty() && m.id == msg_id) || (m.id.is_empty() && m.ts == ts)
-                        }) {
-                            m.reactions = vec![reaction];
-                        }
-                        self.persist_threads_async();
-                    }
+                GuiEvent::Reacted { .. } => {
                     self.status_msg = "Đã thả cảm xúc".into();
                 }
                 GuiEvent::MessageDeleted {
