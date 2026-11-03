@@ -3726,30 +3726,18 @@ pub async fn send_reaction(
         .unwrap_or(0);
 
     let (r_icon, r_type) = reaction_code_and_type(reaction);
-    let is_local_id =
-        msg.id.is_empty() || msg.id.starts_with("out_") || msg.id.starts_with("local_");
-    let g_msg_id_val = if is_local_id {
-        json!("")
-    } else {
-        json!(msg.id)
-    };
-    let c_msg_id = if msg.ts > 0 {
-        msg.ts as u64
-    } else {
-        msg.id.parse::<u64>().unwrap_or(now)
-    };
-
+    let is_local_id = msg.id.is_empty() || msg.id.starts_with("out_") || msg.id.starts_with("local_");
+    let g_msg_id = if is_local_id { 0 } else { msg.id.parse::<u64>().unwrap_or(0) };
+    let c_msg_id = msg.client_message_id.parse::<u64>().ok().filter(|id| *id > 0)
+        .or_else(|| (msg.ts > 0).then_some(msg.ts as u64))
+        .unwrap_or(g_msg_id);
+    let msg_type = if msg.sticker_id.is_some() { 5 } else if is_zalo_photo_cdn_url(msg.link_url.as_deref().unwrap_or("")) || msg.link_src.as_deref() == Some("Hình ảnh Zalo") { 32 } else { 1 };
     let inner_msg = json!({
-        "rMsg": [{
-            "gMsgID": g_msg_id_val,
-            "cMsgID": c_msg_id,
-            "msgType": if msg.sticker_id.is_some() { 5 } else { 1 }
-        }],
+        "rMsg": [{ "gMsgID": g_msg_id, "cMsgID": c_msg_id, "msgType": msg_type }],
         "rIcon": r_icon,
         "rType": r_type,
         "source": 6
-    })
-    .to_string();
+    }).to_string();
 
     let react_list = json!([{
         "message": inner_msg,
