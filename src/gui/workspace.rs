@@ -863,6 +863,10 @@ impl ZaloGuiApp {
                                                     });
                                             }
                                         });
+                                        let is_typing_now = self.settings.show_typing_indicator
+                                            && self.typing_map.get(&thread_id)
+                                                .map(|(_, until)| *until > std::time::Instant::now())
+                                                .unwrap_or(false);
                                         let (sub_status_lbl, sub_status_col): (String, Color32) =
                                             if is_group {
                                                 let count = self.group_member_counts.get(&thread_id).map(|n| *n as u64)
@@ -2245,10 +2249,13 @@ impl ZaloGuiApp {
                                         .get_mut(self.selected_thread_index)
                                         .and_then(|t| t.messages.get_mut(idx))
                                     {
-                                        real.text = "[Tin nhắn đã thu hồi]".into();
-                                        real.sticker_id = None;
-                                        real.link_url = None;
-                                        real.link_thumb = None;
+                                        if !real.text.starts_with("[Đã thu hồi]") {
+                                            if real.text.trim().is_empty() {
+                                                real.text = "[Tin nhắn đã thu hồi]".into();
+                                            } else {
+                                                real.text = format!("[Đã thu hồi] {}", real.text);
+                                            }
+                                        }
                                     }
                                     self.persist_threads_async();
                                     if let Some(tx) = WORKER_TX.get() {
@@ -2378,6 +2385,30 @@ impl ZaloGuiApp {
                         }
                         if cancel {
                             self.replying_to = None;
+                        }
+                    }
+                    // 3b-2. Live Typing Indicator Banner
+                    if self.settings.show_typing_indicator {
+                        if let Some((typing_who, until)) = self.typing_map.get(&thread_id) {
+                            if *until > std::time::Instant::now() {
+                                egui::Frame::none()
+                                    .fill(pal.bg_elevated)
+                                    .inner_margin(Margin::symmetric(14.0, 5.0))
+                                    .rounding(Rounding::same(8.0))
+                                    .stroke(Stroke::new(1.0_f32, pal.primary.linear_multiply(0.4)))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("✍  {typing_who} đang soạn thảo…"))
+                                                    .size(12.5)
+                                                    .italics()
+                                                    .color(pal.primary),
+                                            );
+                                        });
+                                    });
+                                ui.add_space(3.0);
+                                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                            }
                         }
                     }
                     // 3c. Clipboard Image Preview Banner (`Ctrl+V` / `Shift+Insert` screenshot or image file paste)
@@ -2538,11 +2569,23 @@ impl ZaloGuiApp {
                                         images_only: false,
                                         caption: String::new(),
                                         preset_path: Some(dpath),
+                                        original_hd: self.send_hd_original,
                                     });
                                 }
                             }
 
                             let is_ime_busy = self.ime_active || self.ime_just_committed;
+                            let trigger_screenshot_hotkey = ui.input(|i| {
+                                (i.modifiers.alt && i.key_pressed(Key::A))
+                                    || ((i.modifiers.command || i.modifiers.ctrl) && i.modifiers.shift && i.key_pressed(Key::A))
+                                    || ((i.modifiers.command || i.modifiers.ctrl) && i.modifiers.shift && i.key_pressed(Key::X))
+                            });
+                            if trigger_screenshot_hotkey {
+                                if let Some(tx) = WORKER_TX.get() {
+                                    let _ = tx.send(WorkerCmd::TriggerScreenshot);
+                                    self.show_toast("Đang bật chế độ chụp màn hình… Kéo chuột để chọn vùng cần chụp");
+                                }
+                            }
                             let is_cmd_enter_mode = self.settings.send_message_key == "cmd_enter";
                             let (send_via_enter, insert_newline_via_enter) = ui.input(|i| {
                                 let ent = i.key_pressed(Key::Enter) && !is_ime_busy;
@@ -2653,8 +2696,69 @@ impl ZaloGuiApp {
                                                             images_only: true,
                                                             caption: cap,
                                                             preset_path: None,
+                                                            original_hd: self.send_hd_original,
                                                         });
                                                 }
+                                            }
+
+                                            // HD Original Quality Toggle Button
+                                            let hd_active = self.send_hd_original;
+                                            let (hd_rect, hd_resp) = ui.allocate_exact_size(
+                                                Vec2::new(32.0, 24.0),
+                                                Sense::click(),
+                                            );
+                                            let hd_bg = if hd_active {
+                                                if hd_resp.hovered() {
+                                                    pal.primary_hover
+                                                } else {
+                                                    pal.primary
+                                                }
+                                            } else if hd_resp.hovered() {
+                                                pal.bg_hover
+                                            } else {
+                                                pal.bg_input
+                                            };
+                                            let hd_text_col = if hd_active {
+                                                Color32::WHITE
+                                            } else {
+                                                pal.text_secondary
+                                            };
+                                            ui.painter().rect_filled(
+                                                hd_rect,
+                                                Rounding::same(6.0),
+                                                hd_bg,
+                                            );
+                                            if !hd_active {
+                                                ui.painter().rect_stroke(
+                                                    hd_rect,
+                                                    Rounding::same(6.0),
+                                                    Stroke::new(1.0_f32, pal.border),
+                                                );
+                                            }
+                                            ui.painter().text(
+                                                hd_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "HD",
+                                                FontId::proportional(11.0),
+                                                hd_text_col,
+                                            );
+                                            let hd_tooltip = if hd_active {
+                                                "Chế độ gửi ảnh gốc Original / HD: ĐANG BẬT (Ảnh không bị nén, giữ nguyên 100% chất lượng)"
+                                            } else {
+                                                "Chế độ gửi ảnh gốc Original / HD: Đang TẮT (Bấm để bật gửi ảnh chất lượng cao không nén)"
+                                            };
+                                            if hd_resp
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text(hd_tooltip)
+                                                .clicked()
+                                            {
+                                                self.send_hd_original = !self.send_hd_original;
+                                                let msg = if self.send_hd_original {
+                                                    "Đã BẬT gửi ảnh gốc Original / HD (không nén)"
+                                                } else {
+                                                    "Đã TẮT gửi ảnh gốc Original (chế độ thường)"
+                                                };
+                                                self.show_toast(msg.to_string());
                                             }
 
                                             // 3) Compact File Upload Icon Button
@@ -2694,7 +2798,41 @@ impl ZaloGuiApp {
                                                             images_only: false,
                                                             caption: cap,
                                                             preset_path: None,
+                                                            original_hd: self.send_hd_original,
                                                         });
+                                                }
+                                            }
+
+                                            // 4) Screenshot Icon Button (Chụp ảnh màn hình)
+                                            let (cam_rect, cam_resp) = ui.allocate_exact_size(
+                                                Vec2::new(34.0, 34.0),
+                                                Sense::click(),
+                                            );
+                                            if cam_resp.hovered() {
+                                                ui.painter().rect_filled(
+                                                    cam_rect,
+                                                    Rounding::same(8.0),
+                                                    pal.bg_hover,
+                                                );
+                                            }
+                                            draw_icon_camera(
+                                                ui.painter(),
+                                                cam_rect.center(),
+                                                18.0,
+                                                if cam_resp.hovered() {
+                                                    pal.primary_hover
+                                                } else {
+                                                    pal.text_secondary
+                                                },
+                                            );
+                                            if cam_resp
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Chụp ảnh màn hình (Alt+A hoặc click)")
+                                                .clicked()
+                                            {
+                                                if let Some(tx) = WORKER_TX.get() {
+                                                    let _ = tx.send(WorkerCmd::TriggerScreenshot);
+                                                    self.show_toast("Đang bật chế độ chụp màn hình… Kéo chuột để chọn vùng cần chụp");
                                                 }
                                             }
 
@@ -2944,6 +3082,18 @@ impl ZaloGuiApp {
                                             ui.ctx(),
                                             std::iter::once(self.input_message.as_str()),
                                         );
+                                        if !self.input_message.trim().is_empty()
+                                            && self.last_typing_ping_at.elapsed()
+                                                > std::time::Duration::from_secs(3)
+                                        {
+                                            self.last_typing_ping_at = std::time::Instant::now();
+                                            if let Some(tx) = WORKER_TX.get() {
+                                                let _ = tx.send(WorkerCmd::SendTyping {
+                                                    to_id: thread_id.clone(),
+                                                    is_group,
+                                                });
+                                            }
+                                        }
                                     }
                                     if self.composer_focus_pending {
                                         response.request_focus();
@@ -3048,6 +3198,7 @@ impl ZaloGuiApp {
                                                     images_only: true,
                                                     caption: cap,
                                                     preset_path: Some(clip_path),
+                                                    original_hd: self.send_hd_original,
                                                 });
                                             }
                                         }

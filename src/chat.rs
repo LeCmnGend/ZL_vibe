@@ -1015,10 +1015,14 @@ pub fn merge_thread_into(
                 existing_msg.time = msg.time;
             }
             if msg.text.trim() == "[Tin nhắn đã thu hồi]" {
-                existing_msg.text = "[Tin nhắn đã thu hồi]".to_string();
-                existing_msg.sticker_id = None;
-                existing_msg.link_url = None;
-                existing_msg.link_thumb = None;
+                if !existing_msg.text.starts_with("[Đã thu hồi]") {
+                    if existing_msg.text.trim().is_empty() {
+                        existing_msg.text = "[Tin nhắn đã thu hồi]".to_string();
+                    } else {
+                        existing_msg.text = format!("[Đã thu hồi] {}", existing_msg.text);
+                    }
+                }
+                // Anti-recall: Retain sticker, link_url, link_thumb so user can still view recalled photos & media!
             }
             if existing_msg.sticker_id.is_none() && msg.sticker_id.is_some() {
                 existing_msg.sticker_id = msg.sticker_id;
@@ -1055,6 +1059,20 @@ pub fn merge_thread_into(
 
     target.messages.retain(|m| m.text != "sendBubbleMessage");
     target.messages.sort_by_key(|m| m.ts);
+
+    let mut latest_incoming_ts = 0i64;
+    for m in target.messages.iter() {
+        if !m.is_outgoing && m.ts > latest_incoming_ts {
+            latest_incoming_ts = m.ts;
+        }
+    }
+    if latest_incoming_ts > 0 {
+        for m in target.messages.iter_mut() {
+            if m.is_outgoing && m.ts <= latest_incoming_ts {
+                m.delivery = crate::message_model::DeliveryState::Read;
+            }
+        }
+    }
 
     if let Some(newest) = target.messages.last() {
         if !newest.text.is_empty() {
@@ -1896,6 +1914,17 @@ pub async fn send_attachment(
     file_path: &std::path::Path,
     caption: &str,
 ) -> Result<(Value, ChatMessage)> {
+    send_attachment_ext(s, to_id, is_group, file_path, caption, true).await
+}
+
+pub async fn send_attachment_ext(
+    s: &Session,
+    to_id: &str,
+    is_group: bool,
+    file_path: &std::path::Path,
+    caption: &str,
+    is_original_hd: bool,
+) -> Result<(Value, ChatMessage)> {
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
@@ -1990,6 +2019,8 @@ pub async fn send_attachment(
             pick_str(data_node, &["normalUrl", "hdUrl", "oriUrl", "url"]).unwrap_or_default();
         let hd_url = pick_str(data_node, &["hdUrl", "normalUrl", "oriUrl"])
             .unwrap_or_else(|| normal_url.clone());
+        let ori_url = pick_str(data_node, &["oriUrl", "hdUrl", "normalUrl"])
+            .unwrap_or_else(|| normal_url.clone());
         let thumb_url = pick_str(data_node, &["thumbUrl", "normalUrl", "hdUrl"])
             .unwrap_or_else(|| normal_url.clone());
 
@@ -2012,9 +2043,12 @@ pub async fn send_attachment(
             send_obj.insert("rawUrl".into(), json!(normal_url));
             send_obj.insert("hdUrl".into(), json!(hd_url));
             send_obj.insert("thumbUrl".into(), json!(thumb_url));
-            send_obj.insert("oriUrl".into(), json!(normal_url));
+            send_obj.insert("oriUrl".into(), json!(if is_original_hd { &ori_url } else { &normal_url }));
             send_obj.insert("normalUrl".into(), json!(normal_url));
-            send_obj.insert("hdSize".into(), json!(total_size));
+            send_obj.insert("hdSize".into(), json!(if is_original_hd { total_size } else { 0 }));
+            send_obj.insert("isHD".into(), json!(if is_original_hd { 1 } else { 0 }));
+            send_obj.insert("hd".into(), json!(if is_original_hd { 1 } else { 0 }));
+            send_obj.insert("isOriginal".into(), json!(if is_original_hd { 1 } else { 0 }));
             send_obj.insert("zsource".into(), json!(-1));
             send_obj.insert("jcp".into(), json!("{\"convertible\":true}"));
             send_obj.insert("imei".into(), json!(s.imei));
@@ -2073,8 +2107,12 @@ pub async fn send_attachment(
         } else {
             format!("local://{}", file_path.display())
         };
-        let final_url = if !hd_url.is_empty() {
+        let final_url = if is_original_hd && !ori_url.is_empty() {
+            ori_url
+        } else if !hd_url.is_empty() {
             hd_url
+        } else if !normal_url.is_empty() {
+            normal_url
         } else {
             file_path.display().to_string()
         };
@@ -3775,10 +3813,36 @@ pub(crate) async fn forward_message_with_client_id(
             .await;
         }
     }
-    if target_is_group {
-        send_group_message_with_client_id(s, target_id, &msg.text, now).await
+    // Clean text if message was previously marked as recalled
+    let clean_text = if let Some(stripped) = msg.text.strip_prefix("[Đã thu hồi] ") {
+        stripped
     } else {
-        send_message_with_client_id(s, target_id, &msg.text, now).await
+        &msg.text
+    };
+
+    // Forward photo if message contains a photo CDN URL
+    if let Some(photo_url) = msg.link_url.as_deref().filter(|u| is_zalo_photo_cdn_url(u)) {
+        if let Ok(resp) = s.http.get(photo_url).send().await {
+            if let Ok(bytes) = resp.bytes().await {
+                if !bytes.is_empty() {
+                    let temp_path = std::env::temp_dir().join(format!("zalo_fwd_{now}.jpg"));
+                    if std::fs::write(&temp_path, &bytes).is_ok() {
+                        let caption = if clean_text == "[Hình ảnh]" { "" } else { clean_text };
+                        let res = send_attachment(s, target_id, target_is_group, &temp_path, caption).await;
+                        let _ = std::fs::remove_file(&temp_path);
+                        if let Ok((resp_v, _)) = res {
+                            return Ok(resp_v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if target_is_group {
+        send_group_message_with_client_id(s, target_id, clean_text, now).await
+    } else {
+        send_message_with_client_id(s, target_id, clean_text, now).await
     }
 }
 
@@ -6623,6 +6687,8 @@ pub fn merge_previews(threads: &mut Vec<Thread>, resp: &Value) {
                 if thread_is_group {
                     t.is_group = true;
                 }
+                let is_incoming = !parsed.is_outgoing;
+                let parsed_ts = parsed.ts;
                 if let Some(row) = identities.find(&t.messages, &parsed) {
                     let existing = &mut t.messages[row];
                     identities.remove(existing, row);
@@ -6638,10 +6704,13 @@ pub fn merge_previews(threads: &mut Vec<Thread>, resp: &Value) {
                         existing.time = parsed.time;
                     }
                     if parsed.text.trim() == "[Tin nhắn đã thu hồi]" {
-                        existing.text = "[Tin nhắn đã thu hồi]".to_string();
-                        existing.sticker_id = None;
-                        existing.link_url = None;
-                        existing.link_thumb = None;
+                        if !existing.text.starts_with("[Đã thu hồi]") {
+                            if existing.text.trim().is_empty() {
+                                existing.text = "[Tin nhắn đã thu hồi]".to_string();
+                            } else {
+                                existing.text = format!("[Đã thu hồi] {}", existing.text);
+                            }
+                        }
                     }
                     if existing.sticker_id.is_none() && parsed.sticker_id.is_some() {
                         existing.sticker_id = parsed.sticker_id;
@@ -6672,6 +6741,13 @@ pub fn merge_previews(threads: &mut Vec<Thread>, resp: &Value) {
                 } else {
                     identities.insert(&parsed, t.messages.len());
                     t.messages.push(parsed);
+                }
+                if is_incoming {
+                    for em in t.messages.iter_mut() {
+                        if em.is_outgoing && (em.ts <= parsed_ts || parsed_ts == 0) {
+                            em.delivery = crate::message_model::DeliveryState::Read;
+                        }
+                    }
                 }
             } else {
                 // New thread detected from incoming message!
@@ -7558,6 +7634,203 @@ pub fn extract_mute_controls(data_node: &Value, now_unix: i64) -> Vec<MuteContro
     out
 }
 
+/// Real-time typing notification event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypingEvent {
+    pub thread_id: String,
+    pub uid: String,
+    pub is_typing: bool,
+}
+
+/// Real-time message read receipt / seen event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenEvent {
+    pub thread_id: String,
+    pub uid: String,
+    pub seen_ts: i64,
+}
+
+/// Parse `act_type: "typing"` and `act_type: "seen"` controls from WebSocket `ev.payload` or `lp_control`.
+pub fn extract_typing_and_seen_controls(
+    data_node: &Value,
+) -> (Vec<TypingEvent>, Vec<SeenEvent>) {
+    let mut typing_events = Vec::new();
+    let mut seen_events = Vec::new();
+    let mut candidates: Vec<&Value> = Vec::new();
+
+    if let Some(arr) = data_node.get("controls").and_then(Value::as_array) {
+        candidates.extend(arr.iter());
+    } else if let Some(arr) = data_node.as_array() {
+        for item in arr {
+            if let Some(sub) = item.get("controls").and_then(Value::as_array) {
+                candidates.extend(sub.iter());
+            } else {
+                candidates.push(item);
+            }
+        }
+    } else {
+        candidates.push(data_node);
+    }
+
+    for item in candidates {
+        let c = item.get("content").unwrap_or(item);
+        let act_type = c.get("act_type").and_then(Value::as_str).unwrap_or_default();
+        let act = c.get("act").and_then(Value::as_str).unwrap_or_default();
+
+        let raw_data = c.get("data").unwrap_or(c);
+        let parsed_data: Value;
+        let d = if let Some(s) = raw_data.as_str() {
+            if let Ok(v) = serde_json::from_str::<Value>(s) {
+                parsed_data = v;
+                &parsed_data
+            } else {
+                continue;
+            }
+        } else {
+            raw_data
+        };
+
+        if act_type == "typing" || act == "typing" {
+            let from_uid = d
+                .get("fromUid")
+                .or_else(|| d.get("uid"))
+                .or_else(|| d.get("from"))
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                })
+                .unwrap_or_default();
+
+            let grid = d.get("grid").and_then(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
+
+            let to_id = d.get("toid").or_else(|| d.get("toId")).and_then(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
+
+            let thread_id = if let Some(g) = grid {
+                if g.starts_with('g') || g.starts_with('G') {
+                    g
+                } else {
+                    format!("g{g}")
+                }
+            } else if !from_uid.is_empty() {
+                from_uid.clone()
+            } else if let Some(t) = to_id {
+                t
+            } else {
+                continue;
+            };
+
+            let is_typing = d
+                .get("status")
+                .and_then(Value::as_i64)
+                .map(|s| s != 0)
+                .unwrap_or(true);
+
+            typing_events.push(TypingEvent {
+                thread_id,
+                uid: from_uid,
+                is_typing,
+            });
+        } else if act_type == "seen" || act_type == "read" || act == "seen" {
+            let from_uid = d
+                .get("fromUid")
+                .or_else(|| d.get("uid"))
+                .or_else(|| d.get("from"))
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                })
+                .unwrap_or_default();
+
+            let grid = d.get("grid").and_then(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
+
+            let to_id = d.get("toid").or_else(|| d.get("toId")).and_then(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
+
+            let thread_id = if let Some(g) = grid {
+                if g.starts_with('g') || g.starts_with('G') {
+                    g
+                } else {
+                    format!("g{g}")
+                }
+            } else if !from_uid.is_empty() {
+                from_uid.clone()
+            } else if let Some(t) = to_id {
+                t
+            } else {
+                continue;
+            };
+
+            let seen_ts = d
+                .get("seenTime")
+                .or_else(|| d.get("ts"))
+                .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
+                .unwrap_or(0);
+
+            seen_events.push(SeenEvent {
+                thread_id,
+                uid: from_uid,
+                seen_ts,
+            });
+        }
+    }
+
+    (typing_events, seen_events)
+}
+
+/// Send typing indicator signal to recipient or group (`/api/message/typing` or `/api/group/typing`).
+pub async fn send_typing(s: &Session, to_id: &str, is_group: bool) -> Result<Value> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let host = if s.domains.conversation.is_empty() {
+        "https://tt-conversation-wpa.zaloapp.com"
+    } else {
+        s.domains.conversation.trim_end_matches('/')
+    };
+    let clean_target = if is_group {
+        to_id
+            .trim_start_matches("group_")
+            .trim_start_matches('g')
+            .trim_start_matches('G')
+    } else {
+        to_id
+    };
+    let ep = if is_group {
+        "/api/group/typing"
+    } else {
+        "/api/message/typing"
+    };
+    let mut m = serde_json::Map::new();
+    m.insert("status".into(), json!(1));
+    m.insert("imei".into(), json!(s.imei));
+    if is_group {
+        m.insert("grid".into(), json!(clean_target));
+    } else {
+        m.insert("toid".into(), json!(clean_target));
+    }
+    let params = s.encoded_params(&Value::Object(m))?;
+    let url = format!("{host}{ep}?{}", s.common_params());
+    let r = s.post_form(&url, format!("params={params}")).await?;
+    Ok(s.maybe_decrypt(r, s.session_key_bytes()).await)
+}
+
 /// Request mobile message sync (`pullMobileMsg` @ `app.asar`, cmd `12000`, `file` endpoint, #68, #73).
 /// Sends a wake-up/sync signal with a 2048-bit RSA SPKI DER public key to the user's phone Zalo client.
 pub async fn request_phone_sync(s: &Session, public_key: &str) -> Result<Value> {
@@ -7988,6 +8261,94 @@ mod tests {
         .unwrap();
         assert_eq!(message.time, expected);
         assert_eq!(message.ts, 1793467800000_i64);
+    }
+
+    #[test]
+    fn anti_recall_merging_retains_original_text_and_media() {
+        let mut target = Thread {
+            id: "t1".into(),
+            name: "Test".into(),
+            is_group: false,
+            preview: "Ảnh đẹp nè".into(),
+            time: "10:00".into(),
+            messages: vec![ChatMessage {
+                id: "m1".into(),
+                client_message_id: "c1".into(),
+                sender: "Friend".into(),
+                text: "Ảnh đẹp nè".into(),
+                time: "10:00".into(),
+                is_outgoing: false,
+                ts: 1000,
+                link_url: Some("https://res-zalo.zadn.vn/photo.jpg".into()),
+                link_thumb: Some("https://res-zalo.zadn.vn/thumb.jpg".into()),
+                sticker_id: Some(123),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let incoming = Thread {
+            id: "t1".into(),
+            name: "Test".into(),
+            is_group: false,
+            preview: "[Tin nhắn đã thu hồi]".into(),
+            time: "10:05".into(),
+            messages: vec![ChatMessage {
+                id: "m1".into(),
+                client_message_id: "c1".into(),
+                sender: "Friend".into(),
+                text: "[Tin nhắn đã thu hồi]".into(),
+                time: "10:05".into(),
+                is_outgoing: false,
+                ts: 1005,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        merge_thread_into(&mut target, incoming, true);
+        let m = &target.messages[0];
+        assert_eq!(m.text, "[Đã thu hồi] Ảnh đẹp nè");
+        assert_eq!(m.link_url.as_deref(), Some("https://res-zalo.zadn.vn/photo.jpg"));
+        assert_eq!(m.link_thumb.as_deref(), Some("https://res-zalo.zadn.vn/thumb.jpg"));
+        assert_eq!(m.sticker_id, Some(123));
+    }
+
+    #[test]
+    fn extract_typing_and_seen_controls_parses_events() {
+        let payload = json!({
+            "controls": [
+                {
+                    "content": {
+                        "act_type": "typing",
+                        "act": "typing",
+                        "data": {
+                            "fromUid": "u123",
+                            "grid": "g456",
+                            "status": 1
+                        }
+                    }
+                },
+                {
+                    "content": {
+                        "act_type": "seen",
+                        "act": "seen",
+                        "data": {
+                            "fromUid": "u789",
+                            "toid": "u789",
+                            "seenTime": 1700000000
+                        }
+                    }
+                }
+            ]
+        });
+        let (typing, seen) = extract_typing_and_seen_controls(&payload);
+        assert_eq!(typing.len(), 1);
+        assert_eq!(typing[0].thread_id, "g456");
+        assert_eq!(typing[0].uid, "u123");
+        assert!(typing[0].is_typing);
+
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].thread_id, "u789");
+        assert_eq!(seen[0].seen_ts, 1700000000);
     }
 
     #[test]

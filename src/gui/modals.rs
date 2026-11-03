@@ -5835,7 +5835,7 @@ impl ZaloGuiApp {
             .map(|t| (t.id.clone(), t.name.clone(), t.is_group))
             .collect();
         let mut open = true;
-        let mut chosen: Option<(String, bool)> = None;
+        let mut chosen: Option<(String, bool, String)> = None;
         egui::Window::new("Chuyển tiếp tin nhắn")
             .open(&mut open)
             .collapsible(false)
@@ -5871,19 +5871,22 @@ impl ZaloGuiApp {
                                 .on_hover_cursor(CursorIcon::PointingHand)
                                 .clicked()
                             {
-                                chosen = Some((id.clone(), *is_group));
+                                chosen = Some((id.clone(), *is_group, name.clone()));
                             }
                         }
                     });
             });
-        if let Some((target_id, target_is_group)) = chosen {
+        if let Some((target_id, target_is_group, target_name)) = chosen {
             if let (Some(msg), Some(tx)) = (self.forward_msg.take(), WORKER_TX.get()) {
                 let _ = tx.send(WorkerCmd::Forward {
                     target_id,
                     target_is_group,
                     msg,
+                    target_name: target_name.clone(),
                 });
-                self.status_msg = "Đang chuyển tiếp…".into();
+                self.show_toast(format!("Đang chuyển tiếp tới {target_name}…"));
+                self.status_msg = format!("Đang chuyển tiếp tới {target_name}…");
+                ctx.request_repaint();
             }
         } else if !open {
             self.forward_msg = None;

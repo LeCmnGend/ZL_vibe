@@ -686,7 +686,32 @@ pub(super) fn read_clipboard_image_to_png(
             None
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("zalo_mac_clip_{now}.png"));
+        let tmp_str = tmp.to_str().unwrap_or("/tmp/zalo_mac_clip.png");
+        let script = format!(
+            "try\nset img to the clipboard as «class PNGf»\nset fp to open for access (POSIX file \"{tmp_str}\") with write permission\nset eof fp to 0\nwrite img to fp\nclose access fp\nreturn \"ok\"\non error\nreturn \"none\"\nend try"
+        );
+        if let Ok(out) = std::process::Command::new("osascript").args(["-e", &script]).output() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if s.trim() == "ok" && tmp.exists() {
+                if let Ok(bytes) = std::fs::read(&tmp) {
+                    let _ = std::fs::remove_file(&tmp);
+                    if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                        return finalize_clipboard_rgba_image(dyn_img.to_rgba8());
+                    }
+                }
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         // Wayland (`wl-paste --type image/png`) or X11 (`xclip -selection clipboard -t image/png -o`)
         for (prog, args) in [
@@ -1395,6 +1420,19 @@ pub(super) fn render_message_body(
         return None;
     }
 
+    if trimmed_text.starts_with("[Đã thu hồi]") {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{} Đã thu hồi", lucide::BAN))
+                    .color(Color32::from_rgb(239, 68, 68))
+                    .italics()
+                    .strong()
+                    .size(12.0),
+            );
+        });
+        ui.add_space(2.0);
+    }
+
     let sender_label = if msg.is_outgoing {
         "Bạn".to_string()
     } else if !msg.sender.is_empty() && msg.sender != "0" {
@@ -1747,7 +1785,12 @@ pub(super) fn render_message_body(
     }
 
     let Some((caption, url, domain)) = extract_message_link_view(msg) else {
-        render_chat_markdown_block(ui, &msg.text, text_col, pal);
+        let display_text = if let Some(stripped) = msg.text.strip_prefix("[Đã thu hồi] ") {
+            stripped
+        } else {
+            &msg.text
+        };
+        render_chat_markdown_block(ui, display_text, text_col, pal);
         return None;
     };
 
@@ -1985,7 +2028,10 @@ pub(super) fn extract_photo_user_caption(msg: &ChatMessage) -> Option<&str> {
             return Some(desc);
         }
     }
-    let trimmed = msg.text.trim();
+    let mut trimmed = msg.text.trim();
+    if let Some(s) = trimmed.strip_prefix("[Đã thu hồi]") {
+        trimmed = s.trim();
+    }
     let stripped = trimmed
         .strip_prefix("[Hình ảnh]")
         .map(str::trim)
@@ -2166,6 +2212,8 @@ pub(super) fn render_chat_bubble(
     } else {
         let display_str = if msg.text.trim() == "[Tin nhắn đã thu hồi]" {
             "  Tin nhắn đã được thu hồi".to_string()
+        } else if let Some(stripped) = msg.text.strip_prefix("[Đã thu hồi] ") {
+            strip_markdown_syntax_for_width(stripped)
         } else {
             strip_markdown_syntax_for_width(&msg.text)
         };
@@ -2324,13 +2372,26 @@ pub(super) fn render_chat_bubble(
                             render_reactions(ui, msg, pal, emoji_textures);
                             if show_timestamp && !has_sticker && !is_frameless_photo {
                                 ui.add_space(3.5);
-                                let ts_txt = if is_latest_outgoing {
-                                    format!("{} · Đã nhận", msg.time)
+                                let (status_str, status_col) = if is_latest_outgoing {
+                                    match msg.delivery {
+                                        crate::message_model::DeliveryState::Read => {
+                                            (format!("{} · Đã xem", msg.time), pal.primary)
+                                        }
+                                        crate::message_model::DeliveryState::Pending => {
+                                            (format!("{} · Đang gửi…", msg.time), pal.text_muted)
+                                        }
+                                        crate::message_model::DeliveryState::Failed => {
+                                            (format!("{} · Lỗi gửi", msg.time), Color32::from_rgb(239, 68, 68))
+                                        }
+                                        _ => {
+                                            (format!("{} · Đã nhận", msg.time), pal.bubble_out_meta)
+                                        }
+                                    }
                                 } else {
-                                    msg.time.clone()
+                                    (msg.time.clone(), pal.bubble_out_meta)
                                 };
                                 ui.label(
-                                    RichText::new(ts_txt).size(11.0).color(pal.bubble_out_meta),
+                                    RichText::new(status_str).size(11.0).color(status_col),
                                 );
                             }
                         });
@@ -3468,7 +3529,7 @@ pub(super) fn bubble_context_menu(
             ui.close_menu();
         }
         ui.separator();
-        if msg.is_outgoing && msg.text.trim() != "[Tin nhắn đã thu hồi]" {
+        if msg.is_outgoing && msg.text.trim() != "[Tin nhắn đã thu hồi]" && !msg.text.starts_with("[Đã thu hồi]") {
             if ui
                 .button(
                     RichText::new("Thu hồi với mọi người").color(Color32::from_rgb(249, 115, 22)),

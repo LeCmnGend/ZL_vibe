@@ -144,6 +144,18 @@ pub enum GuiEvent {
         msg_id: String,
         ts: i64,
     },
+    ForwardFinished {
+        target_name: String,
+        error: Option<String>,
+    },
+    ScreenshotCaptured {
+        path: std::path::PathBuf,
+        width: u32,
+        height: u32,
+        image: egui::ColorImage,
+    },
+    TypingEventsReceived(Vec<crate::chat::TypingEvent>),
+    SeenEventsReceived(Vec<crate::chat::SeenEvent>),
     SendFailed {
         thread_id: String,
         text: String,
@@ -659,6 +671,9 @@ pub struct ZaloGuiApp {
     forward_msg: Option<ChatMessage>,
     forward_filter: String,
     filter_starred_only: bool,
+    pub(crate) send_hd_original: bool,
+    pub(crate) typing_map: HashMap<String, (String, std::time::Instant)>,
+    pub(crate) last_typing_ping_at: std::time::Instant,
     active_call: Option<ActiveCallOverlay>,
     image_viewer: Option<ImageViewerModal>,
     /// In-app media windows (video player); see `gui/media_view.rs`.
@@ -1096,6 +1111,9 @@ impl ZaloGuiApp {
             forward_msg: None,
             forward_filter: String::new(),
             filter_starred_only: false,
+            send_hd_original: true,
+            typing_map: HashMap::new(),
+            last_typing_ping_at: std::time::Instant::now(),
             active_call: None,
             image_viewer: None,
             media: media_view::MediaViewState::default(),
@@ -1739,17 +1757,90 @@ impl ZaloGuiApp {
                             (!msg_id.is_empty() && m.id == msg_id)
                                 || (msg_id.is_empty() && m.ts == ts)
                         }) {
-                            m.text = "[Tin nhắn đã thu hồi]".into();
-                            m.sticker_id = None;
-                            m.link_url = None;
-                            m.link_thumb = None;
+                            if !m.text.starts_with("[Đã thu hồi]") {
+                                if m.text.trim().is_empty() {
+                                    m.text = "[Tin nhắn đã thu hồi]".into();
+                                } else {
+                                    m.text = format!("[Đã thu hồi] {}", m.text);
+                                }
+                            }
+                            // Anti-recall: Preserve sticker_id, link_url, link_thumb so user can still see media!
                         }
                         if let Some(last) = t.messages.last() {
                             t.preview = last.text.clone();
                         }
                         self.persist_threads_async();
                     }
-                    self.status_msg = "Đã thu hồi tin nhắn với mọi người".into();
+                    self.status_msg = "Có tin nhắn vừa bị thu hồi (đã lưu lại)".into();
+                }
+                GuiEvent::ForwardFinished { target_name, error } => {
+                    match error {
+                        None => {
+                            self.show_toast(format!("Đã chuyển tiếp tới {target_name}"));
+                            self.status_msg = format!("Đã chuyển tiếp tới {target_name}");
+                        }
+                        Some(err) => {
+                            self.show_toast(format!("Chuyển tiếp tới {target_name} thất bại: {err}"));
+                            self.status_msg = format!("Chuyển tiếp thất bại: {err}");
+                        }
+                    }
+                }
+                GuiEvent::ScreenshotCaptured { path, width, height, image } => {
+                    let tex = ctx.load_texture(
+                        format!("clip_preview_{}", crate::login::unix_now()),
+                        image,
+                        TextureOptions::LINEAR,
+                    );
+                    self.pending_clipboard_image = Some((path, width, height, tex));
+                    self.composer_focus_pending = true;
+                    self.show_toast(format!(
+                        "Đã chụp ảnh màn hình ({width}×{height} px) — nhấn Enter để gửi"
+                    ));
+                    self.status_msg = format!("Đã chụp ảnh màn hình ({width}×{height} px)");
+                }
+                GuiEvent::TypingEventsReceived(evs) => {
+                    for ev in evs {
+                        if ev.is_typing {
+                            let name = if let Some(t) = self.threads.iter().find(|t| t.id == ev.thread_id) {
+                                if t.is_group {
+                                    self.group_members_map
+                                        .get(&t.id)
+                                        .and_then(|members| members.iter().find(|m| m.id == ev.uid))
+                                        .map(|m| m.name.clone())
+                                        .unwrap_or_else(|| {
+                                            if ev.uid.is_empty() {
+                                                "Thành viên".to_string()
+                                            } else {
+                                                format!("Người dùng {}", ev.uid)
+                                            }
+                                        })
+                                } else {
+                                    t.name.clone()
+                                }
+                            } else {
+                                "Đối phương".to_string()
+                            };
+                            self.typing_map.insert(
+                                ev.thread_id,
+                                (name, std::time::Instant::now() + std::time::Duration::from_secs(6)),
+                            );
+                        } else {
+                            self.typing_map.remove(&ev.thread_id);
+                        }
+                    }
+                    ctx.request_repaint();
+                }
+                GuiEvent::SeenEventsReceived(evs) => {
+                    for ev in evs {
+                        if let Some(t) = self.threads.iter_mut().find(|t| t.id == ev.thread_id) {
+                            for m in t.messages.iter_mut().filter(|m| m.is_outgoing) {
+                                if ev.seen_ts == 0 || m.ts <= ev.seen_ts * 1000 + 5000 {
+                                    m.delivery = crate::message_model::DeliveryState::Read;
+                                }
+                            }
+                        }
+                    }
+                    ctx.request_repaint();
                 }
                 GuiEvent::StickerImageReady { key, image } => {
                     self.loading_stickers.remove(&key);
