@@ -1077,12 +1077,24 @@ fn render_markdown_inline_rich(
             continue;
         }
 
-        // Render @All and @Name mentions as styled chips in Zalo Blue
+        // Render @All and @Name mentions as styled chips/links in Zalo Blue
         if rest.starts_with('@') {
             let after = &rest[1..];
-            let is_all = after.starts_with("All") || after.starts_with("all") || after.starts_with("ALL");
+            let is_all = after.starts_with("All")
+                || after.starts_with("all")
+                || after.starts_with("ALL")
+                || after.starts_with("Tất cả")
+                || after.starts_with("tất cả")
+                || after.starts_with("Tat ca")
+                || after.starts_with("tat ca");
             if is_all {
-                let all_len = 3;
+                let all_len = if after.starts_with("Tất cả") || after.starts_with("tất cả") {
+                    "Tất cả".len()
+                } else if after.starts_with("Tat ca") || after.starts_with("tat ca") {
+                    6
+                } else {
+                    3
+                };
                 let next_char = after[all_len..].chars().next();
                 if next_char.is_none()
                     || next_char.unwrap().is_whitespace()
@@ -1104,6 +1116,14 @@ fn render_markdown_inline_rich(
                             } else {
                                 Color32::from_rgba_unmultiplied(0, 104, 255, 30)
                             },
+                            underline: Stroke::new(
+                                1.0_f32,
+                                if pal.is_dark {
+                                    Color32::from_rgba_unmultiplied(97, 175, 239, 120)
+                                } else {
+                                    Color32::from_rgba_unmultiplied(0, 104, 255, 100)
+                                },
+                            ),
                             ..Default::default()
                         },
                     );
@@ -1152,6 +1172,14 @@ fn render_markdown_inline_rich(
                         } else {
                             Color32::from_rgba_unmultiplied(0, 104, 255, 25)
                         },
+                        underline: Stroke::new(
+                            1.0_f32,
+                            if pal.is_dark {
+                                Color32::from_rgba_unmultiplied(97, 175, 239, 110)
+                            } else {
+                                Color32::from_rgba_unmultiplied(0, 104, 255, 90)
+                            },
+                        ),
                         ..Default::default()
                     },
                 );
@@ -2339,6 +2367,7 @@ pub(super) fn render_chat_bubble(
 
                 let mut card_action = None;
                 let mut quote_action = None;
+                let mut reaction_action = None;
                 let fr = egui::Frame::none()
                     .fill(fill)
                     .stroke(stroke)
@@ -2369,7 +2398,9 @@ pub(super) fn render_chat_bubble(
                                     downloads,
                                 );
                             }
-                            render_reactions(ui, msg, pal, emoji_textures);
+                            if let Some(act) = render_reactions(ui, msg, pal, emoji_textures) {
+                                reaction_action = Some(act);
+                            }
                             if show_timestamp && !has_sticker && !is_frameless_photo {
                                 ui.add_space(3.5);
                                 let (status_str, status_col) = if is_latest_outgoing {
@@ -2399,18 +2430,36 @@ pub(super) fn render_chat_bubble(
                 if fr.response.double_clicked() {
                     return Some(BubbleAction::Reply);
                 }
-                quote_action.or(card_action).or_else(|| {
-                    bubble_context_menu(
-                        ui,
-                        &fr.response,
+                let is_hovered = fr.response.hovered()
+                    || ui.rect_contains_pointer(fr.response.rect.expand2(Vec2::new(24.0, 4.0)));
+                if is_hovered {
+                    if let Some(act) = render_hover_reaction_bar(
+                        ui.ctx(),
+                        fr.response.rect,
                         msg,
                         idx,
+                        true,
                         pal,
                         emoji_textures,
-                        has_interactive_card,
-                        "Bạn",
-                    )
-                })
+                    ) {
+                        return Some(act);
+                    }
+                }
+                reaction_action
+                    .or(quote_action)
+                    .or(card_action)
+                    .or_else(|| {
+                        bubble_context_menu(
+                            ui,
+                            &fr.response,
+                            msg,
+                            idx,
+                            pal,
+                            emoji_textures,
+                            has_interactive_card,
+                            "Bạn",
+                        )
+                    })
             });
 
             row_resp.inner
@@ -2475,6 +2524,7 @@ pub(super) fn render_chat_bubble(
                 ui.set_max_width(total_bubble_w);
                 let mut card_action = None;
                 let mut quote_action = None;
+                let mut reaction_action = None;
                 let fr = egui::Frame::none()
                     .fill(fill)
                     .stroke(stroke)
@@ -2514,7 +2564,9 @@ pub(super) fn render_chat_bubble(
                                     downloads,
                                 );
                             }
-                            render_reactions(ui, msg, pal, emoji_textures);
+                            if let Some(act) = render_reactions(ui, msg, pal, emoji_textures) {
+                                reaction_action = Some(act);
+                            }
                             if show_timestamp && !has_sticker && !is_frameless_photo {
                                 ui.add_space(3.5);
                                 ui.label(
@@ -2528,18 +2580,36 @@ pub(super) fn render_chat_bubble(
                 if fr.response.double_clicked() {
                     return Some(BubbleAction::Reply);
                 }
-                quote_action.or(card_action).or_else(|| {
-                    bubble_context_menu(
-                        ui,
-                        &fr.response,
+                let is_hovered = fr.response.hovered()
+                    || ui.rect_contains_pointer(fr.response.rect.expand2(Vec2::new(24.0, 4.0)));
+                if is_hovered {
+                    if let Some(act) = render_hover_reaction_bar(
+                        ui.ctx(),
+                        fr.response.rect,
                         msg,
                         idx,
+                        false,
                         pal,
                         emoji_textures,
-                        has_interactive_card,
-                        display_sender,
-                    )
-                })
+                    ) {
+                        return Some(act);
+                    }
+                }
+                reaction_action
+                    .or(quote_action)
+                    .or(card_action)
+                    .or_else(|| {
+                        bubble_context_menu(
+                            ui,
+                            &fr.response,
+                            msg,
+                            idx,
+                            pal,
+                            emoji_textures,
+                            has_interactive_card,
+                            display_sender,
+                        )
+                    })
             })
             .inner
         })
@@ -3729,20 +3799,163 @@ pub(super) fn render_quote_block(
     clicked.then(|| BubbleAction::JumpToQuoted(reference.unwrap_or_default()))
 }
 
+pub(super) fn render_hover_reaction_bar(
+    ctx: &egui::Context,
+    bubble_rect: Rect,
+    msg: &ChatMessage,
+    idx: usize,
+    outgoing: bool,
+    pal: &ThemePalette,
+    emoji_textures: &HashMap<String, TextureHandle>,
+) -> Option<BubbleAction> {
+    let bar_w = 236.0_f32;
+    let x = if outgoing {
+        (bubble_rect.left() - bar_w - 6.0).max(8.0)
+    } else {
+        (bubble_rect.right() + 6.0).min(ctx.screen_rect().right() - bar_w - 8.0)
+    };
+    let y = (bubble_rect.top() - 6.0).max(48.0);
+    let pos = Pos2::new(x, y);
+
+    let mut action = None;
+
+    egui::Area::new(Id::new(("hover_reaction_bar", idx, msg.ts, &msg.id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(if pal.is_dark {
+                    Color32::from_rgb(33, 37, 43)
+                } else {
+                    Color32::WHITE
+                })
+                .stroke(Stroke::new(1.0_f32, pal.border))
+                .rounding(Rounding::same(16.0))
+                .shadow(egui::epaint::Shadow {
+                    offset: Vec2::new(0.0, 3.0),
+                    blur: 10.0,
+                    spread: 0.0,
+                    color: Color32::from_black_alpha(if pal.is_dark { 110 } else { 35 }),
+                })
+                .inner_margin(Margin::symmetric(8.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+
+                        for &(code, key, tooltip) in &REACTION_LIST {
+                            let (r_rect, r_resp) =
+                                ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                            if r_resp.hovered() {
+                                ui.painter().circle_filled(
+                                    r_rect.center(),
+                                    13.0,
+                                    pal.bg_hover,
+                                );
+                            }
+                            let img_size = if r_resp.hovered() { 22.0 } else { 19.0 };
+                            if let Some(tex) = emoji_textures.get(key) {
+                                ui.painter().image(
+                                    tex.id(),
+                                    Rect::from_center_size(r_rect.center(), Vec2::splat(img_size)),
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            } else {
+                                ui.painter().text(
+                                    r_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    code,
+                                    FontId::proportional(if r_resp.hovered() { 16.0 } else { 14.0 }),
+                                    Color32::WHITE,
+                                );
+                            }
+                            if r_resp
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                                .on_hover_text(tooltip)
+                                .clicked()
+                            {
+                                action = Some(BubbleAction::React(code));
+                            }
+                        }
+
+                        let (sep_rect, _) =
+                            ui.allocate_exact_size(Vec2::new(6.0, 16.0), Sense::hover());
+                        ui.painter().line_segment(
+                            [sep_rect.center_top(), sep_rect.center_bottom()],
+                            Stroke::new(1.0_f32, pal.border),
+                        );
+
+                        // Quick Reply (Quote)
+                        let (reply_rect, reply_resp) =
+                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                        if reply_resp.hovered() {
+                            ui.painter().circle_filled(
+                                reply_rect.center(),
+                                12.0,
+                                pal.bg_hover,
+                            );
+                        }
+                        ui.painter().text(
+                            reply_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "💬",
+                            FontId::proportional(12.5),
+                            if reply_resp.hovered() { pal.primary_hover } else { pal.text_secondary },
+                        );
+                        if reply_resp
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Trả lời (Quote tin nhắn)")
+                            .clicked()
+                        {
+                            action = Some(BubbleAction::Reply);
+                        }
+
+                        // Quick Forward
+                        let (fwd_rect, fwd_resp) =
+                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                        if fwd_resp.hovered() {
+                            ui.painter().circle_filled(
+                                fwd_rect.center(),
+                                12.0,
+                                pal.bg_hover,
+                            );
+                        }
+                        ui.painter().text(
+                            fwd_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "↗",
+                            FontId::proportional(14.0),
+                            if fwd_resp.hovered() { pal.primary_hover } else { pal.text_secondary },
+                        );
+                        if fwd_resp
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Chuyển tiếp tin nhắn")
+                            .clicked()
+                        {
+                            action = Some(BubbleAction::Forward);
+                        }
+                    });
+                });
+        });
+
+    action
+}
+
 pub(super) fn render_reactions(
     ui: &mut egui::Ui,
     msg: &ChatMessage,
     pal: &ThemePalette,
     emoji_textures: &HashMap<String, TextureHandle>,
-) {
+) -> Option<BubbleAction> {
     let has_pin = msg.is_pinned;
     let has_star = msg.is_starred;
     let has_react = !msg.reactions.is_empty();
 
     if !has_pin && !has_star && !has_react {
-        return;
+        return None;
     }
 
+    let mut action = None;
     ui.add_space(3.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(4.0, 2.0);
@@ -3780,26 +3993,53 @@ pub(super) fn render_reactions(
         }
 
         if has_react {
-            egui::Frame::none()
-                .fill(pal.bg_elevated)
-                .stroke(Stroke::new(1.0_f32, pal.border))
-                .rounding(Rounding::same(12.0))
-                .inner_margin(Margin::symmetric(6.0, 2.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
-                        for r in &msg.reactions {
-                            let key = emoji_to_tex_key(r);
-                            if let Some(tex) = emoji_textures.get(key) {
-                                ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::splat(18.0)));
-                            } else {
-                                ui.label(RichText::new(r).size(13.0));
-                            }
+            for r in &msg.reactions {
+                let key = emoji_to_tex_key(r);
+                let (btn_rect, btn_resp) =
+                    ui.allocate_exact_size(Vec2::new(28.0, 22.0), Sense::click());
+                if btn_resp.hovered() {
+                    ui.painter().rect_filled(btn_rect, Rounding::same(11.0), pal.bg_hover);
+                } else {
+                    ui.painter().rect_filled(btn_rect, Rounding::same(11.0), pal.bg_elevated);
+                }
+                ui.painter().rect_stroke(
+                    btn_rect,
+                    Rounding::same(11.0),
+                    Stroke::new(1.0_f32, if btn_resp.hovered() { pal.primary } else { pal.border }),
+                );
+                if let Some(tex) = emoji_textures.get(key) {
+                    ui.painter().image(
+                        tex.id(),
+                        Rect::from_center_size(btn_rect.center(), Vec2::splat(16.0)),
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                } else {
+                    ui.painter().text(
+                        btn_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        r,
+                        FontId::proportional(12.0),
+                        pal.text_primary,
+                    );
+                }
+                if btn_resp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text("Bấm để thả hoặc bỏ cảm xúc này")
+                    .clicked()
+                {
+                    for &(code, k, _) in &REACTION_LIST {
+                        if k == key || code == r.as_str() {
+                            action = Some(BubbleAction::React(code));
+                            break;
                         }
-                    });
-                });
+                    }
+                }
+            }
         }
     });
+
+    action
 }
 
 #[cfg(test)]

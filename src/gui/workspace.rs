@@ -1703,6 +1703,89 @@ impl ZaloGuiApp {
                     }
 
                     // 2. Scrollable Messages Area
+                    let active_mention_info = if self.settings.suggest_mentions {
+                        extract_active_mention_query(&self.input_message)
+                            .map(|(pos, q)| (pos, q.to_string()))
+                    } else {
+                        None
+                    };
+                    let mut mention_candidates: Vec<MentionCandidate> = Vec::new();
+                    if let Some((_, ref query)) = active_mention_info {
+                        if &self.dismissed_mention_suggest_for != query {
+                            let q_trim = query.trim();
+                            let q_fold = crate::chat::strip_vn_for_sticker_kw(q_trim);
+
+                            if is_group {
+                                if q_trim.is_empty()
+                                    || "all".contains(&q_fold)
+                                    || "tat ca".contains(&q_fold)
+                                    || "nhom".contains(&q_fold)
+                                {
+                                    mention_candidates.push(MentionCandidate {
+                                        id: "-1".to_string(),
+                                        name: "All".to_string(),
+                                        avatar: None,
+                                        role: "Nhắc cả nhóm (@All)".to_string(),
+                                        is_all: true,
+                                    });
+                                }
+
+                                if let Some(members) = self.group_members_map.get(&thread_id) {
+                                    for m in members {
+                                        if m.name.trim().is_empty() {
+                                            continue;
+                                        }
+                                        if q_trim.is_empty() {
+                                            mention_candidates.push(MentionCandidate {
+                                                id: m.id.clone(),
+                                                name: m.name.clone(),
+                                                avatar: m.avatar.clone(),
+                                                role: m.role.clone(),
+                                                is_all: false,
+                                            });
+                                        } else {
+                                            let m_fold = crate::chat::strip_vn_for_sticker_kw(&m.name);
+                                            if m.name.to_lowercase().contains(&q_trim.to_lowercase())
+                                                || m_fold.contains(&q_fold)
+                                            {
+                                                mention_candidates.push(MentionCandidate {
+                                                    id: m.id.clone(),
+                                                    name: m.name.clone(),
+                                                    avatar: m.avatar.clone(),
+                                                    role: m.role.clone(),
+                                                    is_all: false,
+                                                });
+                                            }
+                                        }
+                                    }
+                                } else if self.fetching_group_members.insert(thread_id.clone()) {
+                                    if let Some(tx) = WORKER_TX.get() {
+                                        let _ = tx.send(WorkerCmd::FetchGroupMembers {
+                                            group_id: thread_id.clone(),
+                                        });
+                                    }
+                                }
+                            } else {
+                                let p_name = thread_name.clone();
+                                if !p_name.is_empty() {
+                                    let p_fold = crate::chat::strip_vn_for_sticker_kw(&p_name);
+                                    if q_trim.is_empty()
+                                        || p_name.to_lowercase().contains(&q_trim.to_lowercase())
+                                        || p_fold.contains(&q_fold)
+                                    {
+                                        mention_candidates.push(MentionCandidate {
+                                            id: thread_id.clone(),
+                                            name: p_name,
+                                            avatar: thread_avatar.clone(),
+                                            role: "Bạn bè".to_string(),
+                                            is_all: false,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let contextual_stickers = self.resolve_contextual_sticker_suggestions(ctx);
                     let composer_link_preview = self.resolve_composer_link_preview(ctx);
                     // Do NOT subtract `contextual_stickers` height from `picker_reserve`!
@@ -3148,7 +3231,34 @@ impl ZaloGuiApp {
                                         }
                                     });
 
-                                    if !contextual_stickers.is_empty() && response.has_focus() {
+                                    let mut chosen_mention = None;
+                                    if !mention_candidates.is_empty() && response.has_focus() {
+                                        let len = mention_candidates.len();
+                                        if self.composer_mention_selected >= len {
+                                            self.composer_mention_selected = 0;
+                                        }
+                                        if ui.input(|i| i.key_pressed(Key::ArrowUp)) {
+                                            self.composer_mention_selected =
+                                                (self.composer_mention_selected + len - 1) % len;
+                                        } else if ui.input(|i| i.key_pressed(Key::ArrowDown)) {
+                                            self.composer_mention_selected =
+                                                (self.composer_mention_selected + 1) % len;
+                                        } else if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                            if let Some((_, ref q)) = active_mention_info {
+                                                self.dismissed_mention_suggest_for = q.clone();
+                                            }
+                                        } else if ui.input(|i| i.key_pressed(Key::Tab))
+                                            || (send_via_enter
+                                                && !is_ime_busy
+                                                && (response.has_focus() || response.lost_focus()))
+                                        {
+                                            if let Some(cand) =
+                                                mention_candidates.get(self.composer_mention_selected)
+                                            {
+                                                chosen_mention = Some(cand.name.clone());
+                                            }
+                                        }
+                                    } else if !contextual_stickers.is_empty() && response.has_focus() {
                                         let len = contextual_stickers.len();
                                         if ui.input(|i| i.key_pressed(Key::ArrowUp)) {
                                             self.composer_sticker_selected = Some(0);
@@ -3167,8 +3277,24 @@ impl ZaloGuiApp {
                                         self.composer_sticker_selected = None;
                                     }
 
-                                    let enter_pressed = (response.lost_focus()
-                                        || response.has_focus())
+                                    if let Some(ref m_name) = chosen_mention {
+                                        if let Some((at_pos, _)) = active_mention_info {
+                                            let prefix = &self.input_message[..at_pos];
+                                            self.input_message = format!("{}@{} ", prefix, m_name);
+                                            self.composer_mention_selected = 0;
+                                            self.dismissed_mention_suggest_for.clear();
+                                            response.request_focus();
+                                        }
+                                    }
+
+                                    let is_ime_busy = self.ime_active || self.ime_just_committed;
+                                    if is_ime_busy && response.lost_focus() {
+                                        response.request_focus();
+                                    }
+
+                                    let enter_pressed = chosen_mention.is_none()
+                                        && (response.lost_focus()
+                                            || response.has_focus())
                                         && send_via_enter
                                         && !is_ime_busy;
                                     if enter_pressed {
@@ -3251,8 +3377,19 @@ impl ZaloGuiApp {
                         composer_frame.response.rect.top(),
                         Stroke::new(1.0_f32, pal.border),
                     );
-                    // 4b. Floating Contextual Sticker Suggestion Popover (`egui::Area`, rendered AFTER composer bar)
-                    if !contextual_stickers.is_empty() && !self.sticker_picker_open {
+                    // 4a. Floating Mention Suggestion Popover (`egui::Area`, rendered AFTER composer bar)
+                    let mut click_chosen_mention = None;
+                    if !mention_candidates.is_empty() {
+                        if let Some(chosen) = self.render_mention_suggestion_popover(
+                            ctx,
+                            composer_frame.response.rect,
+                            &mention_candidates,
+                            self.composer_mention_selected,
+                            pal,
+                        ) {
+                            click_chosen_mention = Some(chosen);
+                        }
+                    } else if !contextual_stickers.is_empty() && !self.sticker_picker_open {
                         self.render_contextual_sticker_popover(
                             ctx,
                             composer_frame.response.rect,
@@ -3263,13 +3400,25 @@ impl ZaloGuiApp {
                         );
                     }
                     if let Some(ref link_meta) = composer_link_preview {
-                        if contextual_stickers.is_empty() && !self.sticker_picker_open {
+                        if mention_candidates.is_empty()
+                            && contextual_stickers.is_empty()
+                            && !self.sticker_picker_open
+                        {
                             self.render_composer_link_preview_popover(
                                 ctx,
                                 composer_frame.response.rect,
                                 link_meta,
                                 pal,
                             );
+                        }
+                    }
+                    if let Some(mention_name) = click_chosen_mention {
+                        if let Some((at_pos, _)) = active_mention_info {
+                            let prefix = &self.input_message[..at_pos];
+                            self.input_message = format!("{}@{} ", prefix, mention_name);
+                            self.composer_mention_selected = 0;
+                            self.dismissed_mention_suggest_for.clear();
+                            self.composer_focus_pending = true;
                         }
                     }
                 } else {
@@ -3309,6 +3458,200 @@ fn render_quote_target(ui: &egui::Ui, rect: egui::Rect, scroll_pending: bool, co
     }
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(100));
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MentionCandidate {
+    #[allow(dead_code)]
+    pub id: String,
+    pub name: String,
+    pub avatar: Option<String>,
+    pub role: String,
+    pub is_all: bool,
+}
+
+pub(crate) fn extract_active_mention_query(text: &str) -> Option<(usize, &str)> {
+    let at_idx = text.rfind('@')?;
+    if at_idx > 0 {
+        let prev_char = text[..at_idx].chars().next_back()?;
+        if !prev_char.is_whitespace() && !matches!(prev_char, '(' | '[' | '{' | '"' | '\'' | '<' | '`') {
+            return None;
+        }
+    }
+    let after = &text[at_idx + 1..];
+    if after.contains('\n') || after.contains('\r') || after.contains(';') {
+        return None;
+    }
+    if after.split_whitespace().count() > 3 {
+        return None;
+    }
+    Some((at_idx, after))
+}
+
+impl ZaloGuiApp {
+    pub(super) fn render_mention_suggestion_popover(
+        &mut self,
+        ctx: &egui::Context,
+        composer_rect: Rect,
+        candidates: &[MentionCandidate],
+        selected_idx: usize,
+        pal: &ThemePalette,
+    ) -> Option<String> {
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let max_visible = 6;
+        let item_h = 36.0_f32;
+        let header_h = 28.0_f32;
+        let footer_h = 24.0_f32;
+        let visible_items = candidates.len().min(max_visible);
+        let content_h = (visible_items as f32 * item_h) + header_h + footer_h + 16.0;
+        let popover_w = composer_rect.width().clamp(280.0, 380.0);
+        let pos = Pos2::new(
+            composer_rect.left() + 8.0,
+            (composer_rect.top() - content_h - 4.0).max(48.0),
+        );
+
+        let mut chosen = None;
+
+        egui::Area::new(Id::new("zalo_composer_mention_popover"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(if pal.is_dark {
+                        Color32::from_rgb(33, 37, 43)
+                    } else {
+                        Color32::WHITE
+                    })
+                    .stroke(Stroke::new(1.0_f32, pal.border))
+                    .rounding(Rounding::same(10.0))
+                    .shadow(egui::epaint::Shadow {
+                        offset: Vec2::new(0.0, -4.0),
+                        blur: 16.0,
+                        spread: 0.0,
+                        color: Color32::from_black_alpha(if pal.is_dark { 120 } else { 35 }),
+                    })
+                    .inner_margin(Margin::symmetric(10.0, 8.0))
+                    .show(ui, |ui| {
+                        ui.set_width(popover_w - 20.0);
+
+                        // Header
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("👥  NHẮC ĐẾN THÀNH VIÊN (@mention)")
+                                    .size(11.0)
+                                    .color(pal.primary)
+                                    .strong(),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(2.0);
+
+                        // Candidates List
+                        let scroll_max_h = (visible_items as f32 * item_h) + 2.0;
+                        egui::ScrollArea::vertical()
+                            .id_salt("mention_candidates_scroll")
+                            .max_height(scroll_max_h)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                for (idx, cand) in candidates.iter().enumerate() {
+                                    let is_sel = idx == selected_idx;
+                                    let (row_rect, row_resp) = ui.allocate_exact_size(
+                                        Vec2::new(ui.available_width(), item_h),
+                                        Sense::click(),
+                                    );
+
+                                    if is_sel || row_resp.hovered() {
+                                        ui.painter().rect_filled(
+                                            row_rect,
+                                            Rounding::same(6.0),
+                                            if is_sel { pal.bg_selected } else { pal.bg_hover },
+                                        );
+                                    }
+
+                                    // Avatar
+                                    let ava_center = Pos2::new(row_rect.left() + 18.0, row_rect.center().y);
+                                    if cand.is_all {
+                                        ui.painter().circle_filled(ava_center, 12.0, pal.primary);
+                                        ui.painter().text(
+                                            ava_center,
+                                            egui::Align2::CENTER_CENTER,
+                                            "@",
+                                            FontId::proportional(12.0),
+                                            Color32::WHITE,
+                                        );
+                                    } else {
+                                        paint_user_avatar(
+                                            ui.painter(),
+                                            ava_center,
+                                            12.0,
+                                            &cand.name,
+                                            false,
+                                            cand.avatar.as_deref(),
+                                            &self.sticker_textures,
+                                            &mut self.loading_stickers,
+                                        );
+                                    }
+
+                                    // Name
+                                    let name_left = row_rect.left() + 38.0;
+                                    let name_text = if cand.is_all {
+                                        "@All".to_string()
+                                    } else {
+                                        truncate_chars(&cand.name, 24).to_string()
+                                    };
+                                    ui.painter().text(
+                                        Pos2::new(name_left, row_rect.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        name_text,
+                                        FontId::proportional(13.0),
+                                        if is_sel { pal.primary } else { pal.text_primary },
+                                    );
+
+                                    // Role or subtitle tag
+                                    if !cand.role.is_empty() {
+                                        let role_str = match cand.role.as_str() {
+                                            "creator" | "Trưởng nhóm" => "Trưởng nhóm",
+                                            "admin" | "Phó nhóm" => "Phó nhóm",
+                                            other => other,
+                                        };
+                                        let role_col = match cand.role.as_str() {
+                                            "creator" | "Trưởng nhóm" => Color32::from_rgb(234, 179, 8),
+                                            "admin" | "Phó nhóm" => pal.primary,
+                                            _ => pal.text_muted,
+                                        };
+                                        ui.painter().text(
+                                            Pos2::new(row_rect.right() - 8.0, row_rect.center().y),
+                                            egui::Align2::RIGHT_CENTER,
+                                            role_str,
+                                            FontId::proportional(11.0),
+                                            role_col,
+                                        );
+                                    }
+
+                                    if row_resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                        chosen = Some(cand.name.clone());
+                                    }
+                                }
+                            });
+
+                        // Footer hint
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new("↑↓ duyệt · Enter/Tab chèn · Esc huỷ")
+                                .size(10.5)
+                                .color(pal.text_muted),
+                        );
+                    });
+            });
+
+        chosen
+    }
 }
 
 #[cfg(test)]
