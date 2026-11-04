@@ -2142,7 +2142,22 @@ impl ZaloGuiApp {
                                 BubbleAction::RevealDownloaded(path) => {
                                     self.reveal_downloaded_path(&path);
                                 }
-                                BubbleAction::Reply => self.replying_to = Some(m),
+                                BubbleAction::Reply => {
+                                    self.replying_to = Some(m);
+                                    self.composer_focus_pending = true;
+                                }
+                                BubbleAction::Mention(name) => {
+                                    let tag = format!("@{} ", name);
+                                    if !self.input_message.contains(&tag) {
+                                        if !self.input_message.is_empty()
+                                            && !self.input_message.ends_with(' ')
+                                        {
+                                            self.input_message.push(' ');
+                                        }
+                                        self.input_message.push_str(&tag);
+                                    }
+                                    self.composer_focus_pending = true;
+                                }
                                 BubbleAction::JumpToQuoted(reference) => {
                                     let index = self
                                         .threads
