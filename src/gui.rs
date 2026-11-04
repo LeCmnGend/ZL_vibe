@@ -216,6 +216,7 @@ pub enum GuiEvent {
         >,
     ),
     MuteSnapshotSynced(HashMap<String, i64>),
+    PinnedSnapshotSynced(Vec<String>),
     MuteEventsReceived(Vec<crate::chat::MuteControlEvent>),
     PhoneSyncProgress {
         progress: f32,
@@ -2285,6 +2286,24 @@ impl ZaloGuiApp {
                     }
                     self.persist_threads_async();
                 }
+                GuiEvent::PinnedSnapshotSynced(pinned_ids) => {
+                    for pid in &pinned_ids {
+                        let clean = pid
+                            .trim_start_matches("group_")
+                            .trim_start_matches('g')
+                            .trim_start_matches('G')
+                            .trim_start_matches('u')
+                            .trim_start_matches('U')
+                            .trim()
+                            .to_string();
+                        if !clean.is_empty() && !self.settings.pinned_threads.contains(&clean) {
+                            self.settings.pinned_threads.push(clean);
+                        }
+                    }
+                    crate::chat::apply_pinned_threads(&mut self.threads, &pinned_ids);
+                    self.settings.save();
+                    self.persist_threads_async();
+                }
                 GuiEvent::MuteEventsReceived(events) => {
                     let mut changed = false;
                     for ev in events {
@@ -2325,13 +2344,33 @@ impl ZaloGuiApp {
                     self.phone_sync_progress = 0.0;
                     if !threads.is_empty() {
                         for nt in threads {
+                            let is_pinned = nt.presentation.pinned
+                                || self.settings.pinned_threads.contains(&nt.id)
+                                || crate::chat::is_pinned_in_list(&nt.id, nt.is_group, &self.settings.pinned_threads);
+                            if is_pinned {
+                                let clean = nt.id
+                                    .trim_start_matches("group_")
+                                    .trim_start_matches('g')
+                                    .trim_start_matches('G')
+                                    .trim_start_matches('u')
+                                    .trim_start_matches('U')
+                                    .trim()
+                                    .to_string();
+                                if !clean.is_empty() && !self.settings.pinned_threads.contains(&clean) {
+                                    self.settings.pinned_threads.push(clean);
+                                }
+                            }
                             if let Some(existing) = self.threads.iter_mut().find(|t| t.id == nt.id)
                             {
                                 crate::chat::merge_thread_into(existing, nt, true);
+                                if is_pinned {
+                                    existing.presentation.pinned = true;
+                                }
                             } else if !nt.id.is_empty() && nt.id != "0" {
                                 self.threads.push(nt);
                             }
                         }
+                        self.settings.save();
                         self.persist_threads_async();
                     }
                     let msg = phone_sync_completion_message(

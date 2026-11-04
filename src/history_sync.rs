@@ -272,6 +272,10 @@ where
             }
         }
     }
+    if let Ok(value) = chat::get_pinned(s).await {
+        let ids = chat::parse_pinned_conversations(&value);
+        chat::apply_pinned_threads(threads, &ids);
+    }
     // Phase 2: Drain `lp_chat` multi-batch action queues (`getChatFromPolling`)
     on_progress(
         0.22,

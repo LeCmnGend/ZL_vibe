@@ -1425,6 +1425,11 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                                 );
                                                             }
                                                         }
+                                                        if let Ok(pinned_resp) = crate::chat::get_pinned(&s).await {
+                                                            let pids = crate::chat::parse_pinned_conversations(&pinned_resp);
+                                                            crate::chat::apply_pinned_threads(&mut list, &pids);
+                                                            let _ = gui_tx_clone.send(GuiEvent::PinnedSnapshotSynced(pids));
+                                                        }
                                                         let sync_snapshot = list.clone();
                                                         let _ = gui_tx_clone
                                                             .send(account_threads_event(&s, list));
@@ -1671,6 +1676,11 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     }
                                     send_conversation_activity(&gui_tx_clone, &ctx_clone, s.login.as_ref().map(|l| l.uin.as_str()).unwrap_or_default());
                                     send_new_gaps(&gui_tx_clone, &ctx_clone, s.login.as_ref().map(|l| l.uin.as_str()).unwrap_or_default());
+                                    if let Ok(pinned_resp) = crate::chat::get_pinned(&s).await {
+                                        let pids = crate::chat::parse_pinned_conversations(&pinned_resp);
+                                        crate::chat::apply_pinned_threads(&mut list, &pids);
+                                        let _ = gui_tx_clone.send(GuiEvent::PinnedSnapshotSynced(pids));
+                                    }
                                     let total_msgs: usize =
                                         list.iter().map(|t| t.messages.len()).sum();
                                     let n_threads = list.len();

@@ -987,6 +987,9 @@ pub fn merge_thread_into(
     if let Some(count) = incoming.presentation.member_count {
         target.presentation.member_count = Some(count);
     }
+    target.presentation.pinned = target.presentation.pinned || incoming.presentation.pinned;
+    target.presentation.muted = target.presentation.muted || incoming.presentation.muted;
+    target.presentation.hidden = target.presentation.hidden || incoming.presentation.hidden;
 
     // Repeated text and timestamps are not identities. Keep ambiguous keys instead of
     // choosing the first candidate, especially when multiple pending sends collide.
@@ -4181,12 +4184,143 @@ pub async fn get_pinned(s: &Session) -> Result<Value> {
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
-    let url = format!(
-        "{}/api/pinconvers/list?{}",
-        s.domains.conversation,
-        s.common_params()
-    );
-    s.get(&url).await
+    let path = format!("/api/pinconvers/list?{}", s.common_params());
+    let resp = match s.get_endpoint("conversation", &path).await {
+        Ok(v) => v,
+        Err(_) => {
+            let url = format!(
+                "{}/api/pinconvers/list?{}",
+                s.domains.conversation,
+                s.common_params()
+            );
+            s.get(&url).await?
+        }
+    };
+    Ok(s.maybe_decrypt(resp, s.session_key_bytes()).await)
+}
+
+fn extract_pinned_id_from_value(item: &Value) -> Option<String> {
+    if let Some(s) = item.as_str() {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(n) = item.as_i64() {
+        if n > 0 {
+            return Some(n.to_string());
+        }
+    }
+    if let Some(obj) = item.as_object() {
+        for key in ["convId", "id", "conversId", "threadId", "grid", "uid", "targetId"] {
+            if let Some(v) = obj.get(key) {
+                if let Some(s) = v.as_str() {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+                if let Some(n) = v.as_i64() {
+                    if n > 0 {
+                        return Some(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse list of pinned conversation IDs from `/api/pinconvers/list` response (#87).
+pub fn parse_pinned_conversations(resp: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let data_node = if let Some(s) = resp.get("data").and_then(Value::as_str) {
+        serde_json::from_str::<Value>(s.trim())
+            .unwrap_or_else(|_| resp.get("data").cloned().unwrap_or_else(|| resp.clone()))
+    } else {
+        resp.get("data").cloned().unwrap_or_else(|| resp.clone())
+    };
+
+    let mut check_array = |arr: &[Value]| {
+        for item in arr {
+            if let Some(id) = extract_pinned_id_from_value(item) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+    };
+
+    if let Some(arr) = data_node.as_array() {
+        check_array(arr);
+    } else if let Some(obj) = data_node.as_object() {
+        for key in ["conversations", "pins", "pinned", "convs", "data", "list", "items"] {
+            if let Some(arr) = obj.get(key).and_then(Value::as_array) {
+                check_array(arr);
+            }
+        }
+        if out.is_empty() {
+            for (_, val) in obj {
+                if let Some(id) = extract_pinned_id_from_value(val) {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Determine whether `thread_id` matches any pinned conversation identifier in `pinned_ids`.
+///
+/// Handles Zalo's prefix conventions:
+/// - Group threads (`is_group: true`) match `g{id}`, `group_{id}`, or unadorned `{id}` (when not starting with `u`).
+/// - 1-1 User threads (`is_group: false`) match `u{id}` or unadorned `{id}` (when not starting with `g`).
+pub fn is_pinned_in_list(thread_id: &str, is_group: bool, pinned_ids: &[String]) -> bool {
+    let clean = thread_id
+        .trim_start_matches("group_")
+        .trim_start_matches('g')
+        .trim_start_matches('G')
+        .trim_start_matches('u')
+        .trim_start_matches('U')
+        .trim();
+    if clean.is_empty() {
+        return false;
+    }
+    pinned_ids.iter().any(|pid| {
+        let p_trimmed = pid.trim();
+        if p_trimmed == thread_id {
+            return true;
+        }
+        let p_clean = p_trimmed
+            .trim_start_matches("group_")
+            .trim_start_matches('g')
+            .trim_start_matches('G')
+            .trim_start_matches('u')
+            .trim_start_matches('U')
+            .trim();
+        if p_clean == clean {
+            if is_group {
+                !p_trimmed.starts_with('u') && !p_trimmed.starts_with('U')
+            } else {
+                !p_trimmed.starts_with('g')
+                    && !p_trimmed.starts_with('G')
+                    && !p_trimmed.starts_with("group_")
+            }
+        } else {
+            false
+        }
+    })
+}
+
+/// Apply server pinned status to threads.
+pub fn apply_pinned_threads(threads: &mut [Thread], pinned_ids: &[String]) {
+    for t in threads.iter_mut() {
+        if is_pinned_in_list(&t.id, t.is_group, pinned_ids) {
+            t.presentation.pinned = true;
+        }
+    }
 }
 
 /// `GET /api/group/history` (cmd 11240) — group message history.
@@ -10027,6 +10161,112 @@ mod send_identity_tests {
                 checksum: "md5_123".into(),
             }
         );
+    }
+
+    #[test]
+    fn test_parse_pinned_conversations_various_formats() {
+        // Format 1: Direct array of string IDs
+        let v1 = json!({
+            "error_code": 0,
+            "data": ["u10001", "g20002", "30003"]
+        });
+        assert_eq!(
+            parse_pinned_conversations(&v1),
+            vec!["u10001".to_string(), "g20002".to_string(), "30003".to_string()]
+        );
+
+        // Format 2: Object with "conversations" or "pins" key
+        let v2 = json!({
+            "error_code": 0,
+            "data": {
+                "conversations": ["u10001", "g20002"]
+            }
+        });
+        assert_eq!(
+            parse_pinned_conversations(&v2),
+            vec!["u10001".to_string(), "g20002".to_string()]
+        );
+
+        // Format 3: Array of objects with convId / id
+        let v3 = json!({
+            "error_code": 0,
+            "data": [
+                {"convId": "u10001", "pinned": true},
+                {"id": "g20002", "pinned": true}
+            ]
+        });
+        assert_eq!(
+            parse_pinned_conversations(&v3),
+            vec!["u10001".to_string(), "g20002".to_string()]
+        );
+
+        // Format 4: Stringified JSON in data
+        let v4 = json!({
+            "error_code": 0,
+            "data": "[\"u999\", \"g888\"]"
+        });
+        assert_eq!(
+            parse_pinned_conversations(&v4),
+            vec!["u999".to_string(), "g888".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_is_pinned_in_list_handles_prefixes_and_types() {
+        let pinned = vec!["u10001".to_string(), "g20002".to_string(), "30003".to_string()];
+
+        // 1-1 user thread (is_group = false)
+        assert!(is_pinned_in_list("10001", false, &pinned));
+        assert!(is_pinned_in_list("u10001", false, &pinned));
+        assert!(!is_pinned_in_list("20002", false, &pinned)); // g20002 should not match user 20002
+
+        // Group thread (is_group = true)
+        assert!(is_pinned_in_list("20002", true, &pinned));
+        assert!(is_pinned_in_list("g20002", true, &pinned));
+        assert!(is_pinned_in_list("group_20002", true, &pinned));
+        assert!(!is_pinned_in_list("10001", true, &pinned)); // u10001 should not match group 10001
+
+        // Plain ID matches both if unadorned
+        assert!(is_pinned_in_list("30003", false, &pinned));
+        assert!(is_pinned_in_list("30003", true, &pinned));
+    }
+
+    #[test]
+    fn test_apply_pinned_threads_and_merge() {
+        let t1 = Thread {
+            id: "10001".into(),
+            is_group: false,
+            ..Default::default()
+        };
+        let t2 = Thread {
+            id: "20002".into(),
+            is_group: true,
+            ..Default::default()
+        };
+        let t3 = Thread {
+            id: "40004".into(),
+            is_group: false,
+            ..Default::default()
+        };
+        let mut threads = vec![t1, t2, t3];
+        let pinned = vec!["u10001".to_string(), "g20002".to_string()];
+
+        apply_pinned_threads(&mut threads, &pinned);
+        assert!(threads[0].presentation.pinned);
+        assert!(threads[1].presentation.pinned);
+        assert!(!threads[2].presentation.pinned);
+
+        // Verify merge_thread_into preserves pinned status
+        let incoming_pinned = Thread {
+            id: "40004".into(),
+            presentation: SidebarPresentation {
+                pinned: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        merge_thread_into(&mut threads[2], incoming_pinned, true);
+        assert!(threads[2].presentation.pinned);
     }
 }
 
