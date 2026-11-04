@@ -3764,18 +3764,25 @@ pub(super) fn render_hover_reaction_bar(
         bubble_rect.bottom() + 4.0
     };
     let bar_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bar_w, bar_h));
-    let hover_zone = bubble_rect.union(bar_rect).expand2(Vec2::splat(8.0));
+    let hover_zone = bubble_rect.union(bar_rect).expand2(Vec2::splat(10.0));
     let hover_id = Id::new("active_hover_reaction_bubble");
     let msg_key = format!("{}_{}", msg.id, msg.ts);
     let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
-    let in_hover_zone = pointer_pos.is_some_and(|pos| hover_zone.contains(pos));
+    let in_hover_zone = pointer_pos.map_or(false, |pos| hover_zone.contains(pos));
+    let in_bubble = pointer_pos.map_or(false, |pos| {
+        bubble_rect.expand2(Vec2::new(4.0, 4.0)).contains(pos)
+    });
     let active_key: Option<String> = ctx.data(|d| d.get_temp(hover_id));
-    let should_show = if in_hover_zone {
+    let should_show = if active_key.as_deref() == Some(&msg_key) {
+        if in_hover_zone {
+            true
+        } else {
+            ctx.data_mut(|d| d.remove::<String>(hover_id));
+            false
+        }
+    } else if in_bubble {
         ctx.data_mut(|d| d.insert_temp(hover_id, msg_key.clone()));
         true
-    } else if active_key.as_deref() == Some(&msg_key) {
-        ctx.data_mut(|d| d.remove::<String>(hover_id));
-        false
     } else {
         false
     };
