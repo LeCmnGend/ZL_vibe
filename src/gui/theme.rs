@@ -757,6 +757,11 @@ pub mod lucide {
     pub const ARROW_UP: &str = "\u{e04a}";
     pub const ELLIPSIS: &str = "\u{e0b6}";
     pub const HEART: &str = "\u{e0f2}";
+    pub const QUOTE: &str = "\u{e239}";
+    pub const FORWARD: &str = "\u{e229}";
+    pub const SHARE_2: &str = "\u{e156}";
+    pub const TRASH_2: &str = "\u{e18e}";
+    pub const INFO: &str = "\u{e0f9}";
 }
 
 pub(super) fn draw_lucide_icon(
