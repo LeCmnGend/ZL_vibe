@@ -2374,16 +2374,20 @@ pub(super) fn render_chat_bubble(
                 if fr.response.double_clicked() {
                     return Some(BubbleAction::Reply);
                 }
-                if let Some(act) = render_hover_reaction_bar(
-                    ui,
-                    fr.response.rect,
-                    msg,
-                    idx,
-                    true,
-                    pal,
-                    emoji_textures,
-                ) {
-                    return Some(act);
+                let is_hovered = fr.response.hovered()
+                    || ui.rect_contains_pointer(fr.response.rect.expand2(Vec2::new(24.0, 4.0)));
+                if is_hovered {
+                    if let Some(act) = render_hover_reaction_bar(
+                        ui.ctx(),
+                        fr.response.rect,
+                        msg,
+                        idx,
+                        true,
+                        pal,
+                        emoji_textures,
+                    ) {
+                        return Some(act);
+                    }
                 }
                 reaction_action
                     .or(quote_action)
@@ -2520,16 +2524,20 @@ pub(super) fn render_chat_bubble(
                 if fr.response.double_clicked() {
                     return Some(BubbleAction::Reply);
                 }
-                if let Some(act) = render_hover_reaction_bar(
-                    ui,
-                    fr.response.rect,
-                    msg,
-                    idx,
-                    false,
-                    pal,
-                    emoji_textures,
-                ) {
-                    return Some(act);
+                let is_hovered = fr.response.hovered()
+                    || ui.rect_contains_pointer(fr.response.rect.expand2(Vec2::new(24.0, 4.0)));
+                if is_hovered {
+                    if let Some(act) = render_hover_reaction_bar(
+                        ui.ctx(),
+                        fr.response.rect,
+                        msg,
+                        idx,
+                        false,
+                        pal,
+                        emoji_textures,
+                    ) {
+                        return Some(act);
+                    }
                 }
                 reaction_action
                     .or(quote_action)
@@ -3734,7 +3742,7 @@ pub(super) fn render_quote_block(
 }
 
 pub(super) fn render_hover_reaction_bar(
-    ui: &mut egui::Ui,
+    ctx: &egui::Context,
     bubble_rect: Rect,
     msg: &ChatMessage,
     idx: usize,
@@ -3742,71 +3750,27 @@ pub(super) fn render_hover_reaction_bar(
     pal: &ThemePalette,
     emoji_textures: &HashMap<String, TextureHandle>,
 ) -> Option<BubbleAction> {
-    // Suppress hover bar if any context menu is open
-    let ctx_menu_open: bool = ui.ctx().data(|d| {
+    let ctx_menu_open = ctx.data(|d| {
         d.get_temp::<(String, Pos2, usize)>(Id::new("active_bubble_context_menu")).is_some()
     });
-    if ctx_menu_open || ui.memory(|m| m.any_popup_open()) {
+    if ctx_menu_open || ctx.memory(|m| m.any_popup_open()) {
         return None;
     }
-
     let bar_w = 236.0_f32;
-    let bar_h = 32.0_f32;
-
-    let clip_right = ui.clip_rect().right();
-    let clip_left = ui.clip_rect().left();
-
     let x = if outgoing {
-        (bubble_rect.right() - bar_w).clamp(clip_left + 8.0, clip_right - bar_w - 8.0)
+        (bubble_rect.left() - bar_w - 6.0).max(8.0)
     } else {
-        let desired_x = (bubble_rect.right() - bar_w).max(bubble_rect.left());
-        desired_x.clamp(clip_left + 8.0, clip_right - bar_w - 8.0)
+        (bubble_rect.right() + 6.0).min(ctx.screen_rect().right() - bar_w - 8.0)
     };
-
-    // If there is enough room above the bubble, place above; otherwise place below
-    let y = if bubble_rect.top() >= bar_h + 6.0 {
-        bubble_rect.top() - bar_h - 4.0
-    } else {
-        bubble_rect.bottom() + 4.0
-    };
-
-    let bar_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bar_w, bar_h));
-    // The unified hover zone covers both the message bubble and the floating bar + 10px buffer
-    let hover_zone = bubble_rect.union(bar_rect).expand2(Vec2::new(10.0, 10.0));
-
-    let hover_id = Id::new("active_hover_reaction_bubble");
-    let msg_key = format!("{}_{}", msg.id, msg.ts);
-
-    let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
-    let in_hover_zone = pointer_pos.map_or(false, |p| hover_zone.contains(p));
-    let in_bubble = pointer_pos.map_or(false, |p| bubble_rect.expand2(Vec2::new(4.0, 4.0)).contains(p));
-
-    let active_key: Option<String> = ui.ctx().data(|d| d.get_temp(hover_id));
-
-    let should_show = if active_key.as_deref() == Some(&msg_key) {
-        if in_hover_zone {
-            true
-        } else {
-            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
-            false
-        }
-    } else if in_bubble {
-        ui.ctx().data_mut(|d| d.insert_temp(hover_id, msg_key.clone()));
-        true
-    } else {
-        false
-    };
-
-    if !should_show {
-        return None;
-    }
+    let y = (bubble_rect.top() - 6.0).max(48.0);
+    let pos = Pos2::new(x, y);
 
     let mut action = None;
 
     egui::Area::new(Id::new(("hover_reaction_bar", idx, msg.ts, &msg.id)))
         .order(egui::Order::Foreground)
-        .fixed_pos(Pos2::new(x, y))
-        .show(ui.ctx(), |ui| {
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
             egui::Frame::none()
                 .fill(if pal.is_dark {
                     Color32::from_rgb(33, 37, 43)
@@ -3824,26 +3788,40 @@ pub(super) fn render_hover_reaction_bar(
                 .inner_margin(Margin::symmetric(8.0, 4.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
 
                         for &(code, key, tooltip) in &REACTION_LIST {
-                            let btn_resp = if let Some(tex) = emoji_textures.get(key) {
-                                let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(20.0));
-                                ui.add(
-                                    egui::ImageButton::new(img)
-                                        .rounding(Rounding::same(6.0))
-                                )
+                            let (r_rect, r_resp) =
+                                ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                            if r_resp.hovered() {
+                                ui.painter().circle_filled(
+                                    r_rect.center(),
+                                    13.0,
+                                    pal.bg_hover,
+                                );
+                            }
+                            let img_size = if r_resp.hovered() { 22.0 } else { 19.0 };
+                            if let Some(tex) = emoji_textures.get(key) {
+                                ui.painter().image(
+                                    tex.id(),
+                                    Rect::from_center_size(r_rect.center(), Vec2::splat(img_size)),
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
                             } else {
-                                ui.add(
-                                    egui::Button::new(RichText::new(code).size(16.0))
-                                        .fill(Color32::TRANSPARENT)
-                                        .rounding(Rounding::same(6.0))
-                                )
-                            };
-
-                            let clicked = btn_resp.clicked();
-                            btn_resp.on_hover_text(tooltip);
-                            if clicked {
+                                ui.painter().text(
+                                    r_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    code,
+                                    FontId::proportional(if r_resp.hovered() { 16.0 } else { 14.0 }),
+                                    Color32::WHITE,
+                                );
+                            }
+                            if r_resp
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                                .on_hover_text(tooltip)
+                                .clicked()
+                            {
                                 action = Some(BubbleAction::React(code));
                             }
                         }
@@ -3856,46 +3834,57 @@ pub(super) fn render_hover_reaction_bar(
                         );
 
                         // Quick Reply (Quote)
-                        let reply_btn = egui::Button::new(
-                            RichText::new(lucide::QUOTE)
-                                .size(13.5)
-                                .color(pal.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(Vec2::splat(22.0))
-                        .rounding(Rounding::same(6.0));
-
-                        let r_resp = ui.add(reply_btn);
-                        let r_clicked = r_resp.clicked();
-                        r_resp.on_hover_text("Trả lời");
-                        if r_clicked {
+                        let (reply_rect, reply_resp) =
+                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                        if reply_resp.hovered() {
+                            ui.painter().circle_filled(
+                                reply_rect.center(),
+                                12.0,
+                                pal.bg_hover,
+                            );
+                        }
+                        ui.painter().text(
+                            reply_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "💬",
+                            FontId::proportional(12.5),
+                            if reply_resp.hovered() { pal.primary_hover } else { pal.text_secondary },
+                        );
+                        if reply_resp
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Trả lời (Quote tin nhắn)")
+                            .clicked()
+                        {
                             action = Some(BubbleAction::Reply);
                         }
 
-                        // Quick Forward / Share
-                        let fwd_btn = egui::Button::new(
-                            RichText::new(lucide::FORWARD)
-                                .size(13.5)
-                                .color(pal.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(Vec2::splat(22.0))
-                        .rounding(Rounding::same(6.0));
-
-                        let f_resp = ui.add(fwd_btn);
-                        let f_clicked = f_resp.clicked();
-                        f_resp.on_hover_text("Chia sẻ");
-                        if f_clicked {
+                        // Quick Forward
+                        let (fwd_rect, fwd_resp) =
+                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                        if fwd_resp.hovered() {
+                            ui.painter().circle_filled(
+                                fwd_rect.center(),
+                                12.0,
+                                pal.bg_hover,
+                            );
+                        }
+                        ui.painter().text(
+                            fwd_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "↗",
+                            FontId::proportional(14.0),
+                            if fwd_resp.hovered() { pal.primary_hover } else { pal.text_secondary },
+                        );
+                        if fwd_resp
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Chuyển tiếp tin nhắn")
+                            .clicked()
+                        {
                             action = Some(BubbleAction::Forward);
                         }
                     });
                 });
         });
-
-    if action.is_some() {
-        ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
-        ui.ctx().request_repaint();
-    }
 
     action
 }
