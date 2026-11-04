@@ -414,6 +414,8 @@ pub struct SavedSession {
     /// Optional HTTP/HTTPS/SOCKS5 proxy URL configured for this account/profile (#64).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub cookies: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -922,6 +924,11 @@ impl Session {
         if let (Some(li), Some(sek)) = (&mut saved_login, &latest_sek) {
             li.zpw_sek = sek.clone();
         }
+        let cookies = self
+            .live_cookies
+            .read()
+            .map(|m| m.clone())
+            .unwrap_or_default();
         let saved = SavedSession {
             imei: self.imei.clone(),
             computer_name: self.computer_name.clone(),
@@ -935,6 +942,7 @@ impl Session {
             domains: self.domains.clone(),
             expired_at: self.expired_at,
             proxy_url: self.proxy_url.clone(),
+            cookies,
         };
         let text = serde_json::to_string_pretty(&saved)?;
         crate::data_dir::write_private_atomic(std::path::Path::new(path), text.as_bytes())?;
@@ -996,6 +1004,21 @@ impl Session {
 
         self.login = saved.login;
 
+        if !saved.cookies.is_empty() {
+            if let Ok(mut map) = self.live_cookies.write() {
+                for (k, v) in &saved.cookies {
+                    map.insert(k.clone(), v.clone());
+                }
+            }
+            for host in ["https://chat.zalo.me", "https://zalo.me", "https://wpa.chat.zalo.me", "https://zaloapp.com"] {
+                if let Ok(url) = reqwest::Url::parse(host) {
+                    let domain = if host.contains("zaloapp.com") { ".zaloapp.com" } else { ".zalo.me" };
+                    for (k, v) in &saved.cookies {
+                        self.jar.add_cookie_str(&format!("{k}={v}; Path=/; Domain={domain}; Secure"), &url);
+                    }
+                }
+            }
+        }
         if let Some(s) = sek {
             self.set_zpw_sek(s);
         } else {
@@ -2002,6 +2025,16 @@ mod tests {
         assert_eq!(s.zpw_sek.as_deref(), Some("NEW_LOGIN_SESSION_SEK"));
         assert_eq!(
             s.live_cookies.read().unwrap().get("zpsid").map(String::as_str),
+            Some("SID_999")
+        );
+        let tmp = std::env::temp_dir().join("ctdozlite_test_cookies_roundtrip.json");
+        s.save_to_file(tmp.to_str().unwrap()).unwrap();
+        let mut restored = Session::new(false, false, false).unwrap();
+        restored.load_from_file(tmp.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(restored.current_zpw_sek().as_deref(), Some("NEW_LOGIN_SESSION_SEK"));
+        assert_eq!(
+            restored.live_cookies.read().unwrap().get("zpsid").map(String::as_str),
             Some("SID_999")
         );
     }
