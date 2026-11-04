@@ -2374,20 +2374,16 @@ pub(super) fn render_chat_bubble(
                 if fr.response.double_clicked() {
                     return Some(BubbleAction::Reply);
                 }
-                let is_hovered = fr.response.hovered()
-                    || ui.rect_contains_pointer(fr.response.rect.expand2(Vec2::new(24.0, 4.0)));
-                if is_hovered {
-                    if let Some(act) = render_hover_reaction_bar(
-                        ui.ctx(),
-                        fr.response.rect,
-                        msg,
-                        idx,
-                        true,
-                        pal,
-                        emoji_textures,
-                    ) {
-                        return Some(act);
-                    }
+                if let Some(act) = render_hover_reaction_bar(
+                    ui.ctx(),
+                    fr.response.rect,
+                    msg,
+                    idx,
+                    true,
+                    pal,
+                    emoji_textures,
+                ) {
+                    return Some(act);
                 }
                 reaction_action
                     .or(quote_action)
@@ -2524,20 +2520,16 @@ pub(super) fn render_chat_bubble(
                 if fr.response.double_clicked() {
                     return Some(BubbleAction::Reply);
                 }
-                let is_hovered = fr.response.hovered()
-                    || ui.rect_contains_pointer(fr.response.rect.expand2(Vec2::new(24.0, 4.0)));
-                if is_hovered {
-                    if let Some(act) = render_hover_reaction_bar(
-                        ui.ctx(),
-                        fr.response.rect,
-                        msg,
-                        idx,
-                        false,
-                        pal,
-                        emoji_textures,
-                    ) {
-                        return Some(act);
-                    }
+                if let Some(act) = render_hover_reaction_bar(
+                    ui.ctx(),
+                    fr.response.rect,
+                    msg,
+                    idx,
+                    false,
+                    pal,
+                    emoji_textures,
+                ) {
+                    return Some(act);
                 }
                 reaction_action
                     .or(quote_action)
@@ -3405,13 +3397,34 @@ fn menu_item(
     label: &str,
     text_color: Color32,
 ) -> egui::Response {
-    let text = RichText::new(format!("{icon}   {label}"))
-        .size(13.0)
-        .color(text_color);
-    let btn = egui::Button::new(text)
-        .fill(Color32::TRANSPARENT)
-        .min_size(Vec2::new(175.0, 26.0));
-    ui.add(btn)
+    let width = ui.available_width().max(180.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            Rounding::same(6.0),
+            ui.visuals().widgets.hovered.bg_fill,
+        );
+    }
+    let icon_rect = Rect::from_min_size(
+        Pos2::new(rect.min.x + 8.0, rect.min.y),
+        Vec2::new(20.0, rect.height()),
+    );
+    ui.painter().text(
+        icon_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        FontId::proportional(15.0),
+        text_color,
+    );
+    ui.painter().text(
+        Pos2::new(rect.min.x + 36.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(13.0),
+        text_color,
+    );
+    response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 /// Right-click menu on a chat bubble / row: quote/reply, forward/share, copy, pin, star, delete-for-me.
@@ -3757,12 +3770,39 @@ pub(super) fn render_hover_reaction_bar(
         return None;
     }
     let bar_w = 236.0_f32;
+    let bar_h = 32.0_f32;
+    let clip = ctx.screen_rect();
     let x = if outgoing {
-        (bubble_rect.left() - bar_w - 6.0).max(8.0)
+        (bubble_rect.right() - bar_w).clamp(clip.left() + 8.0, clip.right() - bar_w - 8.0)
     } else {
-        (bubble_rect.right() + 6.0).min(ctx.screen_rect().right() - bar_w - 8.0)
+        (bubble_rect.right() - bar_w)
+            .max(bubble_rect.left())
+            .clamp(clip.left() + 8.0, clip.right() - bar_w - 8.0)
     };
-    let y = (bubble_rect.top() - 6.0).max(48.0);
+    let y = if bubble_rect.top() >= bar_h + 6.0 {
+        bubble_rect.top() - bar_h - 4.0
+    } else {
+        bubble_rect.bottom() + 4.0
+    };
+    let bar_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bar_w, bar_h));
+    let hover_zone = bubble_rect.union(bar_rect).expand2(Vec2::splat(8.0));
+    let hover_id = Id::new("active_hover_reaction_bubble");
+    let msg_key = format!("{}_{}", msg.id, msg.ts);
+    let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
+    let in_hover_zone = pointer_pos.is_some_and(|pos| hover_zone.contains(pos));
+    let active_key: Option<String> = ctx.data(|d| d.get_temp(hover_id));
+    let should_show = if in_hover_zone {
+        ctx.data_mut(|d| d.insert_temp(hover_id, msg_key.clone()));
+        true
+    } else if active_key.as_deref() == Some(&msg_key) {
+        ctx.data_mut(|d| d.remove::<String>(hover_id));
+        false
+    } else {
+        false
+    };
+    if !should_show {
+        return None;
+    }
     let pos = Pos2::new(x, y);
 
     let mut action = None;
@@ -3800,7 +3840,7 @@ pub(super) fn render_hover_reaction_bar(
                                     pal.bg_hover,
                                 );
                             }
-                            let img_size = if r_resp.hovered() { 22.0 } else { 19.0 };
+                            let img_size = if r_resp.hovered() { 22.0 } else { 18.0 };
                             if let Some(tex) = emoji_textures.get(key) {
                                 ui.painter().image(
                                     tex.id(),
@@ -3822,6 +3862,7 @@ pub(super) fn render_hover_reaction_bar(
                                 .on_hover_text(tooltip)
                                 .clicked()
                             {
+                                ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                                 action = Some(BubbleAction::React(code));
                             }
                         }
@@ -3846,15 +3887,16 @@ pub(super) fn render_hover_reaction_bar(
                         ui.painter().text(
                             reply_rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            "💬",
-                            FontId::proportional(12.5),
-                            if reply_resp.hovered() { pal.primary_hover } else { pal.text_secondary },
+                            lucide::QUOTE,
+                            FontId::proportional(14.0),
+                            if reply_resp.hovered() { pal.primary } else { pal.text_muted },
                         );
                         if reply_resp
                             .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Trả lời (Quote tin nhắn)")
+                            .on_hover_text("Trả lời")
                             .clicked()
                         {
+                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                             action = Some(BubbleAction::Reply);
                         }
 
@@ -3871,21 +3913,26 @@ pub(super) fn render_hover_reaction_bar(
                         ui.painter().text(
                             fwd_rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            "↗",
+                            lucide::FORWARD,
                             FontId::proportional(14.0),
-                            if fwd_resp.hovered() { pal.primary_hover } else { pal.text_secondary },
+                            if fwd_resp.hovered() { pal.primary } else { pal.text_muted },
                         );
                         if fwd_resp
                             .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Chuyển tiếp tin nhắn")
+                            .on_hover_text("Chia sẻ")
                             .clicked()
                         {
+                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                             action = Some(BubbleAction::Forward);
                         }
                     });
                 });
         });
 
+    if action.is_some() {
+        ctx.data_mut(|d| d.remove::<String>(hover_id));
+        ctx.request_repaint();
+    }
     action
 }
 
