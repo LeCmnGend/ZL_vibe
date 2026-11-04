@@ -3447,40 +3447,19 @@ impl ZaloGuiApp {
 
 /// Right-click menu on a chat bubble: reactions, reply, forward, copy, delete-for-me.
 
-fn draw_context_menu_item(
+fn menu_item(
     ui: &mut egui::Ui,
     icon: &str,
     label: &str,
     text_color: Color32,
-    pal: &ThemePalette,
 ) -> egui::Response {
-    let w = ui.available_width().max(180.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, Rounding::same(6.0), pal.bg_hover);
-    }
-    // Icon column (center of 20px box, offset 8px from left)
-    let icon_rect = Rect::from_min_size(
-        Pos2::new(rect.min.x + 8.0, rect.min.y),
-        Vec2::new(20.0, rect.height()),
-    );
-    ui.painter().text(
-        icon_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        FontId::proportional(15.0),
-        text_color,
-    );
-    // Label (left-aligned 36px from left)
-    let label_pos = Pos2::new(rect.min.x + 36.0, rect.center().y);
-    ui.painter().text(
-        label_pos,
-        egui::Align2::LEFT_CENTER,
-        label,
-        FontId::proportional(13.0),
-        text_color,
-    );
-    resp.on_hover_cursor(CursorIcon::PointingHand)
+    let text = RichText::new(format!("{icon}   {label}"))
+        .size(13.0)
+        .color(text_color);
+    let btn = egui::Button::new(text)
+        .fill(Color32::TRANSPARENT)
+        .min_size(Vec2::new(175.0, 26.0));
+    ui.add(btn)
 }
 
 /// Right-click menu on a chat bubble / row: quote/reply, forward/share, copy, pin, star, delete-for-me.
@@ -3505,48 +3484,31 @@ pub(super) fn bubble_context_menu(
         return None;
     }
 
-    // Expand interaction rect horizontally so right-clicking anywhere on the chat line
-    // (the bubble, avatar, sender name, or blank space on that row) triggers the context menu.
-    let row_left = ui.clip_rect().left().max(0.0);
-    let row_right = ui.clip_rect().right();
-    let hit_rect = Rect::from_min_max(
-        Pos2::new(row_left, bubble.rect.min.y - 2.0),
-        Pos2::new(row_right, bubble.rect.max.y + 2.0),
-    );
-
     let resp = ui.interact(
-        hit_rect,
+        bubble.rect,
         Id::new(("bubble_ctx", idx, msg.ts, &msg.id)),
         Sense::click(),
     );
     let mut action = None;
 
-    let popup_id = resp.id.with("__context_menu");
-    let is_secondary = resp.secondary_clicked()
-        || (resp.clicked()
-            && ui.input(|i| i.modifiers.ctrl || i.modifiers.command));
-    if is_secondary {
-        ui.memory_mut(|m| m.open_popup(popup_id));
-    }
-
     resp.context_menu(|ui| {
-        ui.set_min_width(190.0);
-        ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
+        ui.set_min_width(185.0);
+        ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
 
         // 1. Trả lời (Quote)
-        if draw_context_menu_item(ui, lucide::QUOTE, "Trả lời", pal.text_primary, pal).clicked() {
+        if menu_item(ui, lucide::QUOTE, "Trả lời", pal.text_primary).clicked() {
             action = Some(BubbleAction::Reply);
             ui.close_menu();
         }
 
         // 2. Chia sẻ (Forward)
-        if draw_context_menu_item(ui, lucide::FORWARD, "Chia sẻ", pal.text_primary, pal).clicked() {
+        if menu_item(ui, lucide::FORWARD, "Chia sẻ", pal.text_primary).clicked() {
             action = Some(BubbleAction::Forward);
             ui.close_menu();
         }
 
         // 3. Copy tin nhắn
-        if draw_context_menu_item(ui, lucide::COPY, "Copy tin nhắn", pal.text_primary, pal).clicked() {
+        if menu_item(ui, lucide::COPY, "Copy tin nhắn", pal.text_primary).clicked() {
             ui.ctx().copy_text(msg.text.clone());
             ui.close_menu();
         }
@@ -3557,7 +3519,7 @@ pub(super) fn bubble_context_menu(
         } else {
             "Ghim tin nhắn"
         };
-        if draw_context_menu_item(ui, lucide::PIN, pin_label, pal.text_primary, pal).clicked() {
+        if menu_item(ui, lucide::PIN, pin_label, pal.text_primary).clicked() {
             action = Some(BubbleAction::TogglePin);
             ui.close_menu();
         }
@@ -3568,7 +3530,7 @@ pub(super) fn bubble_context_menu(
         } else {
             "Đánh dấu tin nhắn"
         };
-        if draw_context_menu_item(ui, lucide::STAR, star_label, pal.text_primary, pal).clicked() {
+        if menu_item(ui, lucide::STAR, star_label, pal.text_primary).clicked() {
             action = Some(BubbleAction::ToggleStar);
             ui.close_menu();
         }
@@ -3576,7 +3538,7 @@ pub(super) fn bubble_context_menu(
         // 6. Nếu là ảnh: Xem ảnh phóng to
         if is_zalo_photo_message(msg) {
             if let Some(thumb_url) = photo_primary_url(msg) {
-                if draw_context_menu_item(ui, lucide::SEARCH, "Xem ảnh phóng to", pal.text_primary, pal).clicked() {
+                if menu_item(ui, lucide::SEARCH, "Xem ảnh phóng to", pal.text_primary).clicked() {
                     action = Some(BubbleAction::OpenImagePopup {
                         tex_key: format!("thumb_{}", crate::crypto::md5_hex(thumb_url)),
                         full_url: msg
@@ -3614,11 +3576,11 @@ pub(super) fn bubble_context_menu(
                     url,
                 );
                 let label = if resolved_name.len() > 18 {
-                    format!("Lưu tập tin \"{}…\"", &resolved_name[..16])
+                    format!("Lưu \"{}…\"", &resolved_name[..16])
                 } else {
-                    format!("Lưu tập tin \"{resolved_name}\"")
+                    format!("Lưu \"{resolved_name}\"")
                 };
-                if draw_context_menu_item(ui, lucide::PAPERCLIP, &label, pal.text_primary, pal).clicked() {
+                if menu_item(ui, lucide::PAPERCLIP, &label, pal.text_primary).clicked() {
                     action = Some(BubbleAction::DownloadFile {
                         url: url.to_string(),
                         file_name: resolved_name,
@@ -3652,12 +3614,11 @@ pub(super) fn bubble_context_menu(
             && msg.text.trim() != "[Tin nhắn đã thu hồi]"
             && !msg.text.starts_with("[Đã thu hồi]")
         {
-            if draw_context_menu_item(
+            if menu_item(
                 ui,
                 lucide::BAN,
                 "Thu hồi",
                 Color32::from_rgb(249, 115, 22),
-                pal,
             ).clicked() {
                 action = Some(BubbleAction::RecallForEveryone);
                 ui.close_menu();
@@ -3665,12 +3626,11 @@ pub(super) fn bubble_context_menu(
         }
 
         // 9. Xóa chỉ ở phía tôi
-        if draw_context_menu_item(
+        if menu_item(
             ui,
             lucide::TRASH_2,
             "Xóa chỉ ở phía tôi",
             Color32::from_rgb(239, 68, 68),
-            pal,
         ).clicked() {
             action = Some(BubbleAction::DeleteForMe);
             ui.close_menu();
@@ -3827,41 +3787,24 @@ pub(super) fn render_hover_reaction_bar(
                 .inner_margin(Margin::symmetric(8.0, 4.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
 
                         for &(code, key, tooltip) in &REACTION_LIST {
-                            let (r_rect, r_resp) =
-                                ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-                            if r_resp.hovered() {
-                                ui.painter().circle_filled(
-                                    r_rect.center(),
-                                    13.0,
-                                    pal.bg_hover,
-                                );
-                            }
-                            let img_size = if r_resp.hovered() { 22.0 } else { 18.0 };
-                            if let Some(tex) = emoji_textures.get(key) {
-                                ui.painter().image(
-                                    tex.id(),
-                                    Rect::from_center_size(r_rect.center(), Vec2::splat(img_size)),
-                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
+                            let btn_resp = if let Some(tex) = emoji_textures.get(key) {
+                                let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(20.0));
+                                ui.add(
+                                    egui::ImageButton::new(img)
+                                        .rounding(Rounding::same(6.0))
+                                )
                             } else {
-                                ui.painter().text(
-                                    r_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    code,
-                                    FontId::proportional(if r_resp.hovered() { 16.0 } else { 14.0 }),
-                                    Color32::WHITE,
-                                );
-                            }
-                            if r_resp
-                                .on_hover_cursor(CursorIcon::PointingHand)
-                                .on_hover_text(tooltip)
-                                .clicked()
-                            {
-                                ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                                ui.add(
+                                    egui::Button::new(RichText::new(code).size(16.0))
+                                        .fill(Color32::TRANSPARENT)
+                                        .rounding(Rounding::same(6.0))
+                                )
+                            };
+
+                            if btn_resp.on_hover_text(tooltip).clicked() {
                                 action = Some(BubbleAction::React(code));
                             }
                         }
@@ -3874,54 +3817,30 @@ pub(super) fn render_hover_reaction_bar(
                         );
 
                         // Quick Reply (Quote)
-                        let (reply_rect, reply_resp) =
-                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-                        if reply_resp.hovered() {
-                            ui.painter().circle_filled(
-                                reply_rect.center(),
-                                12.0,
-                                pal.bg_hover,
-                            );
-                        }
-                        ui.painter().text(
-                            reply_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            lucide::QUOTE,
-                            FontId::proportional(14.0),
-                            if reply_resp.hovered() { pal.primary } else { pal.text_muted },
-                        );
-                        if reply_resp
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Trả lời")
-                            .clicked()
-                        {
-                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                        let reply_btn = egui::Button::new(
+                            RichText::new(lucide::QUOTE)
+                                .size(13.5)
+                                .color(pal.text_secondary),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(Vec2::splat(22.0))
+                        .rounding(Rounding::same(6.0));
+
+                        if ui.add(reply_btn).on_hover_text("Trả lời").clicked() {
                             action = Some(BubbleAction::Reply);
                         }
 
                         // Quick Forward / Share
-                        let (fwd_rect, fwd_resp) =
-                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-                        if fwd_resp.hovered() {
-                            ui.painter().circle_filled(
-                                fwd_rect.center(),
-                                12.0,
-                                pal.bg_hover,
-                            );
-                        }
-                        ui.painter().text(
-                            fwd_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            lucide::FORWARD,
-                            FontId::proportional(14.0),
-                            if fwd_resp.hovered() { pal.primary } else { pal.text_muted },
-                        );
-                        if fwd_resp
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Chia sẻ")
-                            .clicked()
-                        {
-                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                        let fwd_btn = egui::Button::new(
+                            RichText::new(lucide::FORWARD)
+                                .size(13.5)
+                                .color(pal.text_secondary),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(Vec2::splat(22.0))
+                        .rounding(Rounding::same(6.0));
+
+                        if ui.add(fwd_btn).on_hover_text("Chia sẻ").clicked() {
                             action = Some(BubbleAction::Forward);
                         }
                     });
