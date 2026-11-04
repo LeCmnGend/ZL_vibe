@@ -1407,6 +1407,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                                     ) {
                                                                         ex.avatar = gt.avatar;
                                                                     }
+                                                                    ex.presentation.posting_restricted = gt.presentation.posting_restricted;
                                                                     ex.is_group = true;
                                                                 } else {
                                                                     list.push(gt);
@@ -1613,6 +1614,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                     ) {
                                                         ex.avatar = gt.avatar;
                                                     }
+                                                    ex.presentation.posting_restricted = gt.presentation.posting_restricted;
                                                     ex.is_group = true;
                                                     if gt.presentation.member_count.is_some() {
                                                         ex.presentation.member_count = gt.presentation.member_count;
@@ -3579,6 +3581,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                             ) {
                                                                 ex.avatar = gt.avatar;
                                                             }
+                                                            ex.presentation.posting_restricted = gt.presentation.posting_restricted;
                                                             ex.is_group = true;
                                                         } else {
                                                             list.push(gt);

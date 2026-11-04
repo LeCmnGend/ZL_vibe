@@ -1713,6 +1713,8 @@ impl ZaloGuiApp {
                     }
 
                     // 2. Scrollable Messages Area
+                    let posting_restricted = self.threads.get(self.selected_thread_index)
+                        .is_some_and(|thread| thread.is_group && thread.presentation.posting_restricted == Some(true));
                     let active_mention_info = if self.settings.suggest_mentions {
                         extract_active_mention_query(&self.input_message)
                             .map(|(pos, q)| (pos, q.to_string()))
@@ -1796,19 +1798,19 @@ impl ZaloGuiApp {
                         }
                     }
 
-                    let contextual_stickers = self.resolve_contextual_sticker_suggestions(ctx);
-                    let composer_link_preview = self.resolve_composer_link_preview(ctx);
+                    let contextual_stickers = if posting_restricted { Vec::new() } else { self.resolve_contextual_sticker_suggestions(ctx) };
+                    let composer_link_preview = if posting_restricted { None } else { self.resolve_composer_link_preview(ctx) };
                     // Do NOT subtract `contextual_stickers` height from `picker_reserve`!
                     // The sticker strip is a true floating overlay (`egui::Area`) above the composer bar
                     // (matching Zalo PC's `PopoverIdentitiesDefine.STICKER_SUGGESTION`), so the message scroll
                     // area and composer input box never shift or lose IME focus while typing.
-                    let picker_reserve = (if self.sticker_picker_open { 268.0 } else { 0.0 })
+                    let picker_reserve = if posting_restricted { 0.0 } else { (if self.sticker_picker_open { 268.0 } else { 0.0 })
                         + (if self.replying_to.is_some() { 48.0 } else { 0.0 })
                         + (if self.pending_clipboard_image.is_some() {
                             64.0
                         } else {
                             0.0
-                        });
+                        }) };
                     let mut pending_action: Option<(usize, BubbleAction)> = None;
                     let mut load_older_clicked = false;
                     let mut custom_toast: Option<String> = None;
@@ -1882,7 +1884,7 @@ impl ZaloGuiApp {
                         .split('\n')
                         .count()
                         .clamp(1, 5);
-                    let composer_extra_h = (composer_lines.saturating_sub(1) as f32) * 20.0;
+                    let composer_extra_h = if posting_restricted { 0.0 } else { (composer_lines.saturating_sub(1) as f32) * 20.0 };
                     let typing_name = self.typing_indicators.get(&thread_id).cloned();
                     let typing_reserve = if typing_name.is_some() { 24.0 } else { 0.0 };
                     let msg_area_height = (ui.available_height()
@@ -2435,6 +2437,22 @@ impl ZaloGuiApp {
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
                     }
 
+                    if posting_restricted {
+                        egui::Frame::none()
+                            .fill(pal.bg_sidebar)
+                            .inner_margin(Margin::symmetric(14.0, 18.0))
+                            .stroke(Stroke::new(1.0_f32, pal.border))
+                            .show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    let notice = if self.settings.language == "English" {
+                                        "Only group owners and deputies can send messages to this group"
+                                    } else {
+                                        "Chỉ trưởng/phó nhóm được gửi tin nhắn vào nhóm"
+                                    };
+                                    ui.label(RichText::new(notice).color(pal.text_secondary).size(14.0));
+                                });
+                            });
+                    } else {
                     // 3. Optional Sticker Picker Drawer
                     if self.sticker_picker_open {
                         self.render_sticker_picker(ui, &thread_id, is_group, pal);
@@ -3430,6 +3448,7 @@ impl ZaloGuiApp {
                             self.dismissed_mention_suggest_for.clear();
                             self.composer_focus_pending = true;
                         }
+                    }
                     }
                 } else {
                     ui.vertical_centered(|ui| {

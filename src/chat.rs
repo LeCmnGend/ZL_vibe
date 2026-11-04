@@ -405,6 +405,8 @@ pub struct Thread {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct SidebarPresentation {
+    /// Whether the current user is restricted from posting in this group.
+    pub posting_restricted: Option<bool>,
     pub members: Vec<SidebarMember>,
     /// Server totalMember only; never inferred from message senders or avatar samples.
     pub member_count: Option<u64>,
@@ -972,6 +974,9 @@ pub fn merge_thread_into(
     incoming: Thread,
     incoming_id_is_authoritative: bool,
 ) {
+    if incoming.presentation.posting_restricted.is_some() {
+        target.presentation.posting_restricted = incoming.presentation.posting_restricted;
+    }
     if incoming_id_is_authoritative && !incoming.id.is_empty() && incoming.id != "0" {
         target.id = incoming.id;
     }
@@ -4609,6 +4614,19 @@ fn group_info_request_map(ids: &[String]) -> String {
     Value::Object(map).to_string()
 }
 
+fn group_posting_restricted(info: &Value, uid: &str) -> Option<bool> {
+    let locked = info.pointer("/setting/lockSendMsg")?.as_i64()? != 0;
+    if !locked {
+        return Some(false);
+    }
+    let creator = info.get("creatorId")?.as_str()?;
+    let admins = info.get("adminIds")?.as_array()?;
+    if uid.is_empty() {
+        return None;
+    }
+    Some(creator != uid && !admins.iter().any(|admin| admin.as_str() == Some(uid)))
+}
+
 /// `GET /api/group/getlg/v4` (cmd 12027) — list of all groups user belongs to.
 pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
     if s.login.is_none() {
@@ -4663,6 +4681,12 @@ pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
                 for g in &mut groups {
                     if let Some(info) = info_map.get(&g.id) {
                         g.apply_group_sidebar_metadata(info);
+                        let uid = s
+                            .login
+                            .as_ref()
+                            .map(|login| login.uin.as_str())
+                            .unwrap_or("");
+                        g.presentation.posting_restricted = group_posting_restricted(info, uid);
                         if let Some(name) = pick_str(info, &["name", "groupName", "displayName"]) {
                             g.name = name;
                         }
@@ -8478,6 +8502,29 @@ pub async fn delete_conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_posting_restriction_respects_member_roles() {
+        let info = serde_json::json!({
+            "setting": {"lockSendMsg": 1},
+            "creatorId": "owner-1",
+            "adminIds": ["admin-1"]
+        });
+        assert_eq!(group_posting_restricted(&info, "member-1"), Some(true));
+        assert_eq!(group_posting_restricted(&info, "owner-1"), Some(false));
+        assert_eq!(group_posting_restricted(&info, "admin-1"), Some(false));
+        assert_eq!(
+            group_posting_restricted(
+                &serde_json::json!({"setting": {"lockSendMsg": 0}}),
+                "member-1"
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            group_posting_restricted(&serde_json::json!({}), "member-1"),
+            None
+        );
+    }
 
     #[test]
     fn local_time_when_parsing_millisecond_timestamps() {
