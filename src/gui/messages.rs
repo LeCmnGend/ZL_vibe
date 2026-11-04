@@ -2556,7 +2556,6 @@ pub(super) fn render_chat_bubble(
 #[derive(Clone, PartialEq)]
 pub(super) enum BubbleAction {
     Reply,
-    #[allow(dead_code)]
     Mention(String),
     JumpToQuoted(String),
     Forward,
@@ -3416,14 +3415,18 @@ pub(super) fn bubble_context_menu(
     pal: &ThemePalette,
     _emoji_textures: &HashMap<String, TextureHandle>,
     _has_interactive_card: bool,
-    _display_sender: &str,
+    display_sender: &str,
 ) -> Option<BubbleAction> {
     let ctx_menu_key = Id::new("active_bubble_context_menu");
     let open_time_key = Id::new("bubble_context_menu_open_time");
     let this_key = format!("{}_{}", msg.id, msg.ts);
 
     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
-    let in_bubble = pointer_pos.map_or(false, |p| bubble.rect.contains(p));
+    let row_rect = Rect::from_min_max(
+        Pos2::new(ui.clip_rect().left().max(0.0), bubble.rect.min.y - 2.0),
+        Pos2::new(ui.clip_rect().right(), bubble.rect.max.y + 2.0),
+    );
+    let in_row = pointer_pos.map_or(false, |p| row_rect.contains(p));
 
     let secondary_clicked = ui.ctx().input(|i| {
         i.pointer.button_clicked(egui::PointerButton::Secondary)
@@ -3431,7 +3434,7 @@ pub(super) fn bubble_context_menu(
                 && (i.modifiers.ctrl || i.modifiers.command))
     });
 
-    if in_bubble && secondary_clicked {
+    if in_row && secondary_clicked {
         let click_pos = pointer_pos.unwrap_or(bubble.rect.left_top());
         let current_time = ui.input(|i| i.time);
         ui.ctx().data_mut(|d| {
@@ -3455,7 +3458,7 @@ pub(super) fn bubble_context_menu(
 
     let screen = ui.ctx().screen_rect();
     let menu_w = 190.0_f32;
-    let menu_h = 280.0_f32;
+    let menu_h = 310.0_f32;
     let pos = Pos2::new(
         menu_pos.x.clamp(screen.left() + 8.0, (screen.right() - menu_w - 8.0).max(screen.left() + 8.0)),
         menu_pos.y.clamp(screen.top() + 8.0, (screen.bottom() - menu_h - 8.0).max(screen.top() + 8.0)),
@@ -3488,6 +3491,20 @@ pub(super) fn bubble_context_menu(
                     if menu_item(ui, lucide::QUOTE, "Trả lời", pal.text_primary).clicked() {
                         action = Some(BubbleAction::Reply);
                         close_menu = true;
+                    }
+                    let mention_target = display_sender.trim();
+                    if !msg.is_outgoing && !mention_target.is_empty() && mention_target != "Bạn" {
+                        if menu_item(
+                            ui,
+                            "@",
+                            &format!("Nhắc đến @{mention_target}"),
+                            pal.text_primary,
+                        )
+                        .clicked()
+                        {
+                            action = Some(BubbleAction::Mention(mention_target.to_string()));
+                            close_menu = true;
+                        }
                     }
                     if let Some(url) = video_play_url(msg) {
                         if menu_item(ui, ICON_PLAY, "Xem video", pal.text_primary).clicked() {
