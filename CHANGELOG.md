@@ -7,6 +7,7 @@ Xem thêm quy ước tại [ADR 0003 — Chính sách Changelog & Release Notes]
 
 ### Fixed (Sửa lỗi)
 - **Gửi tập tin / video đính kèm thất bại với HTTP 405 ([#75](https://github.com/ctdoteam1110/ctdozlite/issues/75)):** `send_attachment` (`src/chat.rs`) chờ sự kiện điều khiển `file_done` (WebSocket `cmd 601`/`603` hoặc `lp_control`) để lấy `fileUrl` trước khi gọi `asyncfile/msg`, thay vì gửi thiếu `fileUrl` rồi rơi vào endpoint `sharefile_full` đã bị khai tử. Lỗi tải lên từng phần (chunk) nay được báo rõ thay vì bị bỏ qua.
+- **Clipboard Windows:** nhận thêm `CF_DIBV5`, giới hạn kích thước trước khi cấp phát và giải mã đúng bit mask màu/alpha của DIB 24/32-bit; nhả clipboard trước khi chuyển pixel.
 
 ## [0.0.7] - 2026-11-03
 
