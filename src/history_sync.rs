@@ -212,6 +212,15 @@ where
     let pub_key = generate_sync_public_key();
     let before_total: usize = threads.iter().map(|t| t.messages.len()).sum();
 
+    on_progress(
+        0.08,
+        "📌 Đang đồng bộ danh sách hội thoại đã ghim từ máy chủ Zalo…".to_string(),
+    );
+    if let Ok(value) = chat::get_pinned(s).await {
+        let ids = chat::parse_pinned_conversations(&value);
+        chat::apply_pinned_threads(threads, &ids);
+    }
+
     if send_phone_prompt {
         set_last_mobile_sync_status(None);
 
@@ -228,7 +237,13 @@ where
                     .to_string(),
             );
         }
-        let _ = chat::request_phone_sync_v2(s, &pub_key).await;
+        if let Err(err) = chat::request_phone_sync_v2(s, &pub_key).await {
+            crate::logger::log_error("history_sync::request_phone_sync_v2", &err.to_string());
+            on_progress(
+                0.15,
+                format!("ℹ️ Sync-V2 chưa khả dụng ({err}); vẫn tiếp tục đồng bộ Cloud & Nhóm…"),
+            );
+        }
 
         // Wait for user to confirm on phone (up to 90 seconds)
         let deadline = std::time::Instant::now() + Duration::from_secs(90);
@@ -275,10 +290,6 @@ where
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
-    }
-    if let Ok(value) = chat::get_pinned(s).await {
-        let ids = chat::parse_pinned_conversations(&value);
-        chat::apply_pinned_threads(threads, &ids);
     }
     // Phase 2: Drain `lp_chat` multi-batch action queues (`getChatFromPolling`)
     on_progress(

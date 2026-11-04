@@ -1140,8 +1140,12 @@ impl ZaloGuiApp {
         filtered.sort_by(|&a, &b| {
             let ta = &self.threads[a];
             let tb = &self.threads[b];
-            let pinned_a = self.settings.pinned_threads.contains(&ta.id) || ta.presentation.pinned;
-            let pinned_b = self.settings.pinned_threads.contains(&tb.id) || tb.presentation.pinned;
+            let pinned_a = self.settings.pinned_threads.contains(&ta.id)
+                || ta.presentation.pinned
+                || crate::chat::is_pinned_in_list(&ta.id, ta.is_group, &self.settings.pinned_threads);
+            let pinned_b = self.settings.pinned_threads.contains(&tb.id)
+                || tb.presentation.pinned
+                || crate::chat::is_pinned_in_list(&tb.id, tb.is_group, &self.settings.pinned_threads);
             if pinned_a != pinned_b { return pinned_b.cmp(&pinned_a); }
             let (ac, bc) = (Self::is_cloud_thread(ta), Self::is_cloud_thread(tb));
             self.thread_activity_ms(tb)
@@ -1216,7 +1220,9 @@ impl ZaloGuiApp {
                         self.paint_thread_avatar_cell(ui, pal, i, selected, unread)
                     };
                     let t = &self.threads[i];
-                    let is_user_pinned = self.settings.pinned_threads.contains(&t.id) || t.presentation.pinned;
+                    let is_user_pinned = self.settings.pinned_threads.contains(&t.id)
+                        || t.presentation.pinned
+                        || crate::chat::is_pinned_in_list(&t.id, t.is_group, &self.settings.pinned_threads);
                     let is_muted = self.settings.muted_threads.get(&t.id).map(|&until| until == -1 || until > now_unix).unwrap_or(false) || t.presentation.muted || t.unread.is_muted();
                     let is_hidden = self.settings.hidden_threads.contains(&t.id) || t.presentation.hidden;
                     let cur_label = self.settings.thread_labels.get(&t.id).cloned();

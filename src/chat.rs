@@ -8142,55 +8142,99 @@ pub async fn request_phone_sync_with_temp_key(
 /// Request transfer-sync v2 from phone (`requestSyncMessage` @ `app.asar`, cmd `12888`, `file` endpoint, #68, #73).
 /// Mirrors `requestSyncMessage(reqId, data)` in `main-startup.js:14372356` & `shared-worker.js:282247`
 /// plus WebSocket `cmd 592` (`REQUEST_MOBILE_WAKE_UP`) and `cmd 590` (`SYNC_MESSAGE.REQUEST`).
-pub async fn request_phone_sync_v2(s: &Session, _public_key: &str) -> Result<Value> {
+pub async fn request_phone_sync_v2(s: &Session, public_key: &str) -> Result<Value> {
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
+
+    let body = json!({
+        "pc_name": s.computer_name,
+        "public_key": public_key,
+        "version": 1,
+        "is_retry": 0,
+        "last_action_id": 0,
+        "last_group_action_id": 0,
+        "temp_key": "",
+        "imei": s.imei
+    });
+    let params = s.encoded_params(&body)?;
+    let path = format!(
+        "/api/transfer-sync-v2/request-sync?{}&params={params}",
+        s.common_params()
+    );
+    let mut last_error = "Sync-V2 HTTP endpoints unavailable".to_string();
+
+    for endpoint in ["conversation", "file"] {
+        match s.get_endpoint(endpoint, &path).await {
+            Ok(resp) => {
+                let response = s.maybe_decrypt(resp, s.session_key_bytes()).await;
+                if response.get("error_code").and_then(Value::as_i64) == Some(0) {
+                    return Ok(response);
+                }
+                last_error = format!("{endpoint} endpoint: {response}");
+            }
+            Err(err) => last_error = err.to_string(),
+        }
+    }
+
+    let post_url = format!(
+        "{}/api/transfer-sync-v2/request-sync?{}",
+        s.domains.file,
+        s.common_params()
+    );
+    match s.post_form(&post_url, format!("params={params}")).await {
+        Ok(resp) => {
+            let response = s.maybe_decrypt(resp, s.session_key_bytes()).await;
+            if response.get("error_code").and_then(Value::as_i64) == Some(0) {
+                return Ok(response);
+            }
+            last_error = format!("file POST endpoint: {response}");
+        }
+        Err(err) => last_error = err.to_string(),
+    }
+
+    // Preserve the existing WebSocket request as a fallback when the HTTP routes fail.
     let sync_id = crate::param_cipher::random_hex(32);
     let temp_key = crate::history_sync::latest_mobile_temp_key();
     let (ik_pub, ek_pub) = match crate::history_sync::generate_sync_v2_keys() {
-        Ok(k) => (k.ik_pub, k.ek_pub),
+        Ok(keys) => (keys.ik_pub, keys.ek_pub),
         Err(_) => (
             crate::history_sync::generate_sync_v2_ed25519_public_key(0xA1),
             crate::history_sync::generate_sync_v2_ed25519_public_key(0xB2),
         ),
     };
-    // 1. Wake up mobile master device over WebSocket (`cmd 592`)
     let _ = crate::socket::send_mobile_wakeup(&sync_id);
-
-    // 2. Build SyncFull v2 request payload matching `shared-worker.js:282247` & `314736`
     let sync_data = json!({
         "syncId": sync_id,
-        "syncType": 0, // No.d.SyncFull = 0
+        "syncType": 0,
         "ek": ek_pub,
         "ik": ik_pub,
-        "toDevice": 0, // No.c.Mobile = 0
+        "toDevice": 0,
         "tempKey": temp_key,
         "deviceName": s.computer_name,
         "req": {
             "type": "message",
             "priority": 1,
-            "queries": [
-                {
-                    "partition": "",
-                    "from": 0,
-                    "to": 9_007_199_254_740_991_i64,
-                    "limit": 2000
-                }
-            ],
+            "queries": [{
+                "partition": "",
+                "from": 0,
+                "to": 9_007_199_254_740_991_i64,
+                "limit": 2000
+            }],
             "batchSize": 2000
         },
         "ver": 1,
         "ussidx": 0
     });
-    let sent_ws = crate::socket::send_sync_message_ws_request(&sync_data);
-    Ok(json!({
-        "error_code": 0,
-        "data": {
-            "syncId": sync_id,
-            "ws_sent": sent_ws,
-        }
-    }))
+    if crate::socket::send_sync_message_ws_request(&sync_data) {
+        return Ok(json!({
+            "error_code": 0,
+            "data": { "syncId": sync_id, "ws_sent": true }
+        }));
+    }
+
+    crate::logger::log_error("chat::request_phone_sync_v2", &last_error);
+    Err(anyhow::anyhow!("Sync-V2 HTTP and WebSocket requests failed: {last_error}"))
 }
 
 /// Cancel an active mobile message sync request (`cancelTransferMessage` @ `app.asar:14372356`, cmd `12700`, #68).
