@@ -3397,34 +3397,13 @@ fn menu_item(
     label: &str,
     text_color: Color32,
 ) -> egui::Response {
-    let width = ui.available_width().max(180.0);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            Rounding::same(6.0),
-            ui.visuals().widgets.hovered.bg_fill,
-        );
-    }
-    let icon_rect = Rect::from_min_size(
-        Pos2::new(rect.min.x + 8.0, rect.min.y),
-        Vec2::new(20.0, rect.height()),
-    );
-    ui.painter().text(
-        icon_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        FontId::proportional(15.0),
-        text_color,
-    );
-    ui.painter().text(
-        Pos2::new(rect.min.x + 36.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        FontId::proportional(13.0),
-        text_color,
-    );
-    response.on_hover_cursor(CursorIcon::PointingHand)
+    let text = RichText::new(format!("{icon}   {label}"))
+        .size(13.0)
+        .color(text_color);
+    let button = egui::Button::new(text)
+        .fill(Color32::TRANSPARENT)
+        .min_size(Vec2::new(175.0, 26.0));
+    ui.add(button)
 }
 
 /// Right-click menu on a chat bubble / row: quote/reply, forward/share, copy, pin, star, delete-for-me.
@@ -3828,40 +3807,24 @@ pub(super) fn render_hover_reaction_bar(
                 .inner_margin(Margin::symmetric(8.0, 4.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
 
                         for &(code, key, tooltip) in &REACTION_LIST {
-                            let (r_rect, r_resp) =
-                                ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-                            if r_resp.hovered() {
-                                ui.painter().circle_filled(
-                                    r_rect.center(),
-                                    13.0,
-                                    pal.bg_hover,
-                                );
-                            }
-                            let img_size = if r_resp.hovered() { 22.0 } else { 18.0 };
-                            if let Some(tex) = emoji_textures.get(key) {
-                                ui.painter().image(
-                                    tex.id(),
-                                    Rect::from_center_size(r_rect.center(), Vec2::splat(img_size)),
-                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
+                            let button_response = if let Some(tex) = emoji_textures.get(key) {
+                                let image = egui::Image::new(tex)
+                                    .fit_to_exact_size(Vec2::splat(20.0));
+                                ui.add(
+                                    egui::ImageButton::new(image)
+                                        .rounding(Rounding::same(6.0)),
+                                )
                             } else {
-                                ui.painter().text(
-                                    r_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    code,
-                                    FontId::proportional(if r_resp.hovered() { 16.0 } else { 14.0 }),
-                                    Color32::WHITE,
-                                );
-                            }
-                            if r_resp
-                                .on_hover_cursor(CursorIcon::PointingHand)
-                                .on_hover_text(tooltip)
-                                .clicked()
-                            {
+                                ui.add(
+                                    egui::Button::new(RichText::new(code).size(16.0))
+                                        .fill(Color32::TRANSPARENT)
+                                        .rounding(Rounding::same(6.0)),
+                                )
+                            };
+                            if button_response.on_hover_text(tooltip).clicked() {
                                 ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                                 action = Some(BubbleAction::React(code));
                             }
@@ -3875,53 +3838,29 @@ pub(super) fn render_hover_reaction_bar(
                         );
 
                         // Quick Reply (Quote)
-                        let (reply_rect, reply_resp) =
-                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-                        if reply_resp.hovered() {
-                            ui.painter().circle_filled(
-                                reply_rect.center(),
-                                12.0,
-                                pal.bg_hover,
-                            );
-                        }
-                        ui.painter().text(
-                            reply_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            lucide::QUOTE,
-                            FontId::proportional(14.0),
-                            if reply_resp.hovered() { pal.primary } else { pal.text_muted },
-                        );
-                        if reply_resp
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Trả lời")
-                            .clicked()
-                        {
+                        let reply_button = egui::Button::new(
+                            RichText::new(lucide::QUOTE)
+                                .size(13.5)
+                                .color(pal.text_secondary),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(Vec2::splat(22.0))
+                        .rounding(Rounding::same(6.0));
+                        if ui.add(reply_button).on_hover_text("Trả lời").clicked() {
                             ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                             action = Some(BubbleAction::Reply);
                         }
 
                         // Quick Forward
-                        let (fwd_rect, fwd_resp) =
-                            ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-                        if fwd_resp.hovered() {
-                            ui.painter().circle_filled(
-                                fwd_rect.center(),
-                                12.0,
-                                pal.bg_hover,
-                            );
-                        }
-                        ui.painter().text(
-                            fwd_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            lucide::FORWARD,
-                            FontId::proportional(14.0),
-                            if fwd_resp.hovered() { pal.primary } else { pal.text_muted },
-                        );
-                        if fwd_resp
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text("Chia sẻ")
-                            .clicked()
-                        {
+                        let forward_button = egui::Button::new(
+                            RichText::new(lucide::FORWARD)
+                                .size(13.5)
+                                .color(pal.text_secondary),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(Vec2::splat(22.0))
+                        .rounding(Rounding::same(6.0));
+                        if ui.add(forward_button).on_hover_text("Chia sẻ").clicked() {
                             ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                             action = Some(BubbleAction::Forward);
                         }
