@@ -4143,7 +4143,7 @@ pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
                 }
                 if !need_mem_uids.is_empty() {
                     let mut all_profiles = serde_json::Map::new();
-                    for chunk in need_mem_uids.chunks(50) {
+                    for chunk in need_mem_uids.chunks(50).take(3) {
                         if let Ok(mp) = get_mini_profiles(s, chunk).await {
                             for (k, v) in mp {
                                 all_profiles.insert(k, v);
@@ -4306,7 +4306,7 @@ pub async fn resolve_thread_names(s: &Session, threads: &mut [Thread]) {
                 }
                 if !need_mem_uids.is_empty() {
                     let mut all_profiles = serde_json::Map::new();
-                    for mchunk in need_mem_uids.chunks(50) {
+                    for mchunk in need_mem_uids.chunks(50).take(2) {
                         if let Ok(mp) = get_mini_profiles(s, mchunk).await {
                             for (k, v) in mp {
                                 all_profiles.insert(k, v);
@@ -4707,9 +4707,8 @@ pub async fn poll_new_messages(
         .iter()
         .filter(|t| t.is_group && !t.id.is_empty() && t.messages.is_empty() && !t.preview.is_empty())
         .map(|t| t.id.clone())
-        .take(6)
         .collect();
-    for gid in group_ids {
+    for gid in group_ids.into_iter().take(5) {
         if let Ok(cm_resp) = get_cloud_messages(s, &gid, "0", false, 50).await {
             if let Some(t) = threads.iter_mut().find(|t| t.id == gid) {
                 merge_group_history(t, &cm_resp);
