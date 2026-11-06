@@ -783,6 +783,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             }
                                             if matches!(ev.cmd, crate::socket::CMD_PUSH_REACTION | crate::socket::CMD_PULL_REACT_1_1 | crate::socket::CMD_PULL_REACT_GROUP) {
                                                 send_reactions(&ev.payload, &s_snap, &gui_tx_ws, &ctx_ws);
+                                            } else {
+                                                send_reactions(data_node, &s_snap, &gui_tx_ws, &ctx_ws);
                                             }
                                             for sync_ev in
                                                 crate::chat::extract_mobile_sync_controls(data_node)
