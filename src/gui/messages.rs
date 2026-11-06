@@ -3949,28 +3949,30 @@ pub(super) fn render_reactions(
 
             for (emoji, count) in items {
                 let key = emoji_to_tex_key(&emoji);
-                let h_pad = 6.0;
+                let h_pad = if count > 1 { 6.0 } else { 4.5 };
                 let fr = egui::Frame::none()
                     .fill(pal.bg_elevated)
                     .stroke(Stroke::new(1.0_f32, pal.border))
                     .rounding(Rounding::same(11.0))
-                    .inner_margin(Margin::symmetric(h_pad, 2.5));
+                    .inner_margin(Margin::symmetric(h_pad, 2.0));
 
                 let fr_resp = fr.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        ui.spacing_mut().item_spacing = Vec2::new(3.5, 0.0);
                         if let Some(tex) = emoji_textures.get(key) {
-                            let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(16.0));
+                            let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(15.0));
                             ui.add(img);
                         } else {
                             ui.label(RichText::new(&emoji).size(13.0));
                         }
-                        ui.label(
-                            RichText::new(count.to_string())
-                                .size(11.5)
-                                .color(pal.text_primary)
-                                .strong(),
-                        );
+                        if count > 1 {
+                            ui.label(
+                                RichText::new(count.to_string())
+                                    .size(11.5)
+                                    .color(pal.text_primary)
+                                    .strong(),
+                            );
+                        }
                     });
                 });
 
