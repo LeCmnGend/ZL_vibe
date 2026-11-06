@@ -628,6 +628,10 @@ pub struct GuiTx {
 }
 
 impl GuiTx {
+    pub fn new(tx: Sender<GuiEvent>, ctx: egui::Context) -> Self {
+        Self { tx, ctx }
+    }
+
     /// Same contract as `Sender::send` (callers already `let _ =` it), plus the wake-up.
     #[allow(clippy::result_large_err)]
     pub fn send(&self, ev: GuiEvent) -> Result<(), std::sync::mpsc::SendError<GuiEvent>> {
