@@ -4279,16 +4279,8 @@ pub(crate) fn capture_screen_interactive(
     gui_tx: crate::gui::GuiTx,
     ctx: egui::Context,
 ) {
-    let now = crate::login::unix_now();
-    let _temp_path = std::env::temp_dir().join(format!("ctdozlite_screenshot_{now}.png"));
-
-    #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("/usr/sbin/screencapture")
-        .args(["-i", "-x", _temp_path.to_str().unwrap_or("")])
-        .status();
-
     #[cfg(target_os = "windows")]
-    let _status = {
+    {
         let _ = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", "Start-Process ms-screenclip:"])
             .status();
@@ -4296,34 +4288,41 @@ pub(crate) fn capture_screen_interactive(
             "Đã mở công cụ chụp ảnh màn hình — sau khi chụp hãy nhấn Ctrl+V để dán".into(),
         ));
         ctx.request_repaint();
-        return;
-    };
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let status = {
-        let temp_str = _temp_path.to_str().unwrap_or("");
-        std::process::Command::new("flameshot")
-            .args(["gui", "-r", "-p", temp_str])
-            .status()
-            .or_else(|_| {
-                std::process::Command::new("gnome-screenshot")
-                    .args(["-a", "-f", temp_str])
-                    .status()
-            })
-            .or_else(|_| {
-                std::process::Command::new("spectacle")
-                    .args(["-b", "-r", "-o", temp_str])
-                    .status()
-            })
-            .or_else(|_| {
-                std::process::Command::new("scrot")
-                    .args(["-s", temp_str])
-                    .status()
-            })
-    };
+    }
 
     #[cfg(not(target_os = "windows"))]
     {
+        let now = crate::login::unix_now();
+        let temp_path = std::env::temp_dir().join(format!("ctdozlite_screenshot_{now}.png"));
+
+        #[cfg(target_os = "macos")]
+        let status = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-i", "-x", temp_path.to_str().unwrap_or("")])
+            .status();
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let status = {
+            let temp_str = temp_path.to_str().unwrap_or("");
+            std::process::Command::new("flameshot")
+                .args(["gui", "-r", "-p", temp_str])
+                .status()
+                .or_else(|_| {
+                    std::process::Command::new("gnome-screenshot")
+                        .args(["-a", "-f", temp_str])
+                        .status()
+                })
+                .or_else(|_| {
+                    std::process::Command::new("spectacle")
+                        .args(["-b", "-r", "-o", temp_str])
+                        .status()
+                })
+                .or_else(|_| {
+                    std::process::Command::new("scrot")
+                        .args(["-s", temp_str])
+                        .status()
+                })
+        };
+
         if let Ok(st) = status {
             if st.success() && temp_path.exists() {
                 if let Ok(meta) = std::fs::metadata(&temp_path) {
