@@ -230,16 +230,19 @@ fn add(
 ) {
     let index = out
         .iter()
-        .position(|r| r.r_type == r_type && r.emoji == emoji);
+        .position(|r| r.emoji == emoji || (r_type.is_some() && r.r_type == r_type));
     let i = index.unwrap_or_else(|| {
         out.push(ReactionSummary {
-            emoji,
+            emoji: emoji.clone(),
             r_type,
             ..Default::default()
         });
         out.len() - 1
     });
     let summary = &mut out[i];
+    if summary.r_type.is_none() && r_type.is_some() {
+        summary.r_type = r_type;
+    }
     summary.count = summary.count.saturating_add(n);
     summary.count_is_lower_bound |= lower;
     if let Some(user) = user.filter(|s| !s.is_empty()) {

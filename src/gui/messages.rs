@@ -4003,16 +4003,24 @@ pub(super) fn render_reactions(
             if !msg.reaction_summaries.is_empty() {
                 for s in &msg.reaction_summaries {
                     if s.count > 0 {
-                        items.push((s.emoji.clone(), s.count));
+                        if let Some(pos) = items.iter().position(|(e, _)| e == &s.emoji) {
+                            items[pos].1 = items[pos].1.saturating_add(s.count);
+                        } else {
+                            items.push((s.emoji.clone(), s.count));
+                        }
                     }
                 }
             } else {
                 for r in &msg.reactions {
-                    items.push((r.clone(), 1));
+                    if let Some(pos) = items.iter().position(|(e, _)| e == r) {
+                        items[pos].1 = items[pos].1.saturating_add(1);
+                    } else {
+                        items.push((r.clone(), 1));
+                    }
                 }
             }
 
-            for (emoji, count) in items {
+            for (pill_idx, (emoji, count)) in items.into_iter().enumerate() {
                 let key = emoji_to_tex_key(&emoji);
                 let h_pad = 6.0;
                 let fr = egui::Frame::none()
@@ -4021,32 +4029,36 @@ pub(super) fn render_reactions(
                     .rounding(Rounding::same(11.0))
                     .inner_margin(Margin::symmetric(h_pad, 2.5));
 
-                let fr_resp = fr.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                        if let Some(tex) = emoji_textures.get(key) {
-                            let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(16.0));
-                            ui.add(img);
-                        } else {
-                            ui.label(RichText::new(&emoji).size(13.0));
-                        }
-                        ui.label(
-                            RichText::new(count.to_string())
-                                .size(11.5)
-                                .color(pal.text_primary)
-                                .strong(),
-                        );
-                    });
-                });
+                let fr_resp = ui.push_id(pill_idx, |ui| {
+                    fr.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            if let Some(tex) = emoji_textures.get(key) {
+                                let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(16.0));
+                                ui.add(img);
+                            } else {
+                                ui.label(RichText::new(&emoji).size(13.0));
+                            }
+                            ui.label(
+                                RichText::new(count.to_string())
+                                    .size(11.5)
+                                    .color(pal.text_primary)
+                                    .strong(),
+                            );
+                        });
+                    })
+                    .response
+                })
+                .inner;
 
                 let btn_resp = ui.interact(
-                    fr_resp.response.rect,
-                    Id::new(("react_pill", &msg.id, msg.ts, &emoji)),
+                    fr_resp.rect,
+                    Id::new(("react_pill", &msg.id, msg.ts, pill_idx, &emoji)),
                     Sense::click(),
                 );
                 if btn_resp.hovered() {
                     ui.painter().rect_stroke(
-                        fr_resp.response.rect,
+                        fr_resp.rect,
                         Rounding::same(11.0),
                         Stroke::new(1.2_f32, pal.primary),
                     );
