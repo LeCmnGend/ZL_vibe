@@ -302,10 +302,10 @@ jobs:
             dist/*.zip
 
   macos-dmg:
-    name: macOS (Apple Silicon arm64 + Intel x86_64 + Universal .dmg)
+    name: macOS (Intel x86_64 .dmg)
     needs: prepare
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full-package')
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -317,7 +317,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: Ensure CMake is available (without Homebrew dynamic libopus)
         run: |
@@ -325,33 +325,20 @@ jobs:
           cmake --version
       - name: Run test suite
         run: |
-          CMAKE_TOOLCHAIN_FILE="$PWD/packaging/macos/toolchain-arm64.cmake" \
-            cargo test --locked
-      - name: Build release binaries (Apple Silicon arm64 + Intel x86_64 + Universal) & .dmg packages
+          CMAKE_TOOLCHAIN_FILE="$PWD/packaging/macos/toolchain-x86_64.cmake" \
+            cargo test --locked --target x86_64-apple-darwin
+      - name: Build Intel x86_64 release binary and .dmg package
         run: |
           set -euo pipefail
           VER="${VERSION:-0.0.3}"
 
-          echo "=== [1/4] Building Apple Silicon (aarch64-apple-darwin) ==="
-          CMAKE_TOOLCHAIN_FILE="$PWD/packaging/macos/toolchain-arm64.cmake" \
-            cargo build --release --locked --target aarch64-apple-darwin --bin ctdozlite
-
-          echo "=== [2/4] Building Mac Intel (x86_64-apple-darwin) ==="
+          echo "=== Building Mac Intel (x86_64-apple-darwin) ==="
           CMAKE_TOOLCHAIN_FILE="$PWD/packaging/macos/toolchain-x86_64.cmake" \
             cargo build --release --locked --target x86_64-apple-darwin --bin ctdozlite
 
-          echo "=== [3/4] Creating Universal Binary (arm64 + x86_64) via lipo ==="
-          mkdir -p target/universal-apple-darwin/release
-          lipo -create \
-            target/aarch64-apple-darwin/release/ctdozlite \
-            target/x86_64-apple-darwin/release/ctdozlite \
-            -output target/universal-apple-darwin/release/ctdozlite
-          lipo -info target/universal-apple-darwin/release/ctdozlite
-
           echo "=== Verifying zero Homebrew dynamic library dependencies ==="
-          otool -L target/aarch64-apple-darwin/release/ctdozlite
           otool -L target/x86_64-apple-darwin/release/ctdozlite
-          if otool -L target/universal-apple-darwin/release/ctdozlite | grep -E '/opt/homebrew|/usr/local'; then
+          if otool -L target/x86_64-apple-darwin/release/ctdozlite | grep -E '/opt/homebrew|/usr/local'; then
             echo "ERROR: Binary still links against Homebrew dylib!"
             exit 1
           fi
@@ -377,11 +364,7 @@ jobs:
             mkdir -p "$stage_dir/ctdozlite.app/Contents/Resources"
             cp "$bin_path" "$stage_dir/ctdozlite.app/Contents/MacOS/ctdozlite"
             chmod +x "$stage_dir/ctdozlite.app/Contents/MacOS/ctdozlite"
-            case "$bin_path" in
-              target/aarch64-*) swift_targets="arm64-apple-macosx11.0" ;;
-              target/x86_64-*) swift_targets="x86_64-apple-macosx11.0" ;;
-              *) swift_targets="arm64-apple-macosx11.0,x86_64-apple-macosx11.0" ;;
-            esac
+            swift_targets="x86_64-apple-macosx11.0"
             # Public builds deliberately omit externally licensed codec JS/WASM.
             env -u HISTORY_CODEC_ASSETS SWIFT_TARGETS="$swift_targets" bash native/macos/build-native-helpers.sh "$stage_dir/ctdozlite.app"
             helper_arches="$(lipo -archs "$bin_path" | xargs | tr ' ' ',')"
@@ -409,10 +392,8 @@ jobs:
             test -f "$dmg_out"
           }
 
-          echo "=== [4/4] Packaging .dmg installers (Apple Silicon, Intel, Universal) ==="
-          package_dmg "target/aarch64-apple-darwin/release/ctdozlite" "dist/ctdozlite-${VER}-macos-arm64.dmg" "ctdozlite (Apple Silicon)"
+          echo "=== Packaging Intel .dmg installer ==="
           package_dmg "target/x86_64-apple-darwin/release/ctdozlite" "dist/ctdozlite-${VER}-macos-x86_64.dmg" "ctdozlite (Intel)"
-          package_dmg "target/universal-apple-darwin/release/ctdozlite" "dist/ctdozlite-${VER}-macos.dmg" "ctdozlite"
           python3 tests/native_packaging.py
           ls -lh dist/*.dmg
       - uses: actions/upload-artifact@v4
@@ -491,7 +472,7 @@ jobs:
           body: |
             > **Hướng dẫn cài đặt:** [docs/CAI_DAT.md](https://github.com/ctdoteam1110/ctdozlite/blob/main/docs/CAI_DAT.md) · **Tính năng & giới hạn:** [docs/TINH_NANG.md](https://github.com/ctdoteam1110/ctdozlite/blob/main/docs/TINH_NANG.md) · **Trang chủ:** https://ctdozlite.ctdo.net/
             >
-            > Chọn đúng gói trong mục **Assets** bên dưới cho hệ điều hành của bạn (hỗ trợ Linux `.deb`/`.rpm`/`.AppImage`/`.tar.gz`, Windows `.exe`, và macOS `.dmg` cho cả **Apple Silicon M1/M2/M3/M4 `arm64`**, **Mac Intel `x86_64`** & **Universal**).
+            > Chọn gói x86-64 trong mục **Assets** cho Linux, Windows hoặc macOS Intel.
 
             ### 🐛 Đã sửa lỗi trong v0.0.7 (Bug Fixes)
             - **Sửa lỗi gõ tiếng Việt Telex trên macOS bị nuốt dấu cách & lỗi phím Enter ([#71](https://github.com/ctdoteam1110/ctdozlite/issues/71)):** Bảo toàn ký tự khoảng trắng (`" "`) trong sự kiện `Event::Ime(ImeEvent::Commit(" "))` của macOS NSTextInputClient/egui trước đây bị lọc nhầm bởi `.is_empty()`, đồng thời gắn cờ `ime_preedit_active` để phím `Enter` chỉ xác nhận từ đang gõ dấu thay vì gửi tin nhắn sớm.

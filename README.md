@@ -129,11 +129,7 @@ src/ (59,199 lines across 46 files)
 
 Toàn bộ gói cài đặt cho từng hệ điều hành và bản phân phối Linux nằm tại **[GitHub Releases](https://github.com/ctdoteam1110/ctdozlite/releases)**. Trang này luôn hiển thị bản mới nhất, không cần sửa link khi phát hành phiên bản tiếp theo.
 
-Hướng dẫn cài đặt chi tiết (Linux, Windows, macOS Apple Silicon `arm64` / Intel `x86_64` / Universal `.dmg`, kiểm tra SHA-256 và gỡ cài đặt): **[docs/CAI_DAT.md](docs/CAI_DAT.md)**.
-
-> [!IMPORTANT]
-> **Phiên bản iOS — Dùng 1 tài khoản Zalo song song trên 2 máy (Sắp ra mắt):**
-> Bản iOS của `ctdozlite` hoạt động dưới dạng phiên phụ (`zpw_type=30`), cho phép đăng nhập và sử dụng **chung 1 tài khoản Zalo song song trên 2 máy điện thoại** mà không làm văng thiết bị chính. Hiện tại tài khoản Apple Developer của mình vừa bị Apple thu hồi chứng chỉ và phần giao diện cảm ứng chưa hoàn thiện trọn vẹn, nên gói `.ipa` sẽ sớm được bổ sung trong bản cập nhật tới.
+Hướng dẫn cài đặt chi tiết (Linux, Windows, macOS Intel `x86_64`, kiểm tra SHA-256 và gỡ cài đặt): **[docs/CAI_DAT.md](docs/CAI_DAT.md)**.
 
 ---
 
@@ -189,7 +185,7 @@ CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --release
 ```
 Binary đầu ra: `target/release/ctdozlite`
 
-### 4. macOS (Apple Silicon ARM64 & Intel x86_64)
+### 4. macOS (Intel x86_64)
 ```bash
 xcode-select --install
 brew install cmake ffmpeg
@@ -240,7 +236,7 @@ Workflow GitHub Actions tại [`.github/workflows/ci-release.yml`](.github/workf
   - `.AppImage` (gói thực thi độc lập chạy trên mọi bản Linux)
   - `.tar.gz` bản chuẩn và legacy (kèm script `install.sh` / `uninstall.sh`)
 - **Windows:** bộ cài `.exe` và bản portable `.exe` ([`packaging/windows/installer.iss`](packaging/windows/installer.iss))
-- **macOS (Apple Silicon + Intel + Universal):** `ctdozlite-<version>-macos-arm64.dmg` (Chip M1/M2/M3/M4), `ctdozlite-<version>-macos-x86_64.dmg` (Mac Intel), và `ctdozlite-<version>-macos.dmg` (Universal Binary `lipo`) ([`packaging/macos/Info.plist`](packaging/macos/Info.plist))
+- **macOS (Intel x86_64):** `ctdozlite-<version>-macos-x86_64.dmg` ([`packaging/macos/Info.plist`](packaging/macos/Info.plist))
 
 ---
 

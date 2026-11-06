@@ -89,11 +89,9 @@ Nếu Windows SmartScreen hoặc Microsoft Defender cảnh báo ứng dụng mã
   ctdozlite --check-update
   ```
 
-## macOS (Apple Silicon M1/M2/M3/M4 & Intel)
+## macOS (Intel x86_64)
 
-- **Mac Apple Silicon (Chip M1 / M2 / M3 / M4 — ARM64):** Tải `ctdozlite-<version>-macos-arm64.dmg`.
 - **Mac Intel (`x86_64`):** Tải `ctdozlite-<version>-macos-x86_64.dmg`.
-- **Bản Universal (chạy chung cho cả chip M & Intel):** Tải `ctdozlite-<version>-macos.dmg`.
 
 Mở file `.dmg` vừa tải và kéo `ctdozlite.app` vào `/Applications`.
 

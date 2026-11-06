@@ -33,7 +33,7 @@ class NativePackagingTests(unittest.TestCase):
         self.assertIn("--local-use", result.stderr)
 
     def test_relocated_bundle_architecture_matrix(self):
-        for arches in [{"arm64"}, {"x86_64"}, {"arm64", "x86_64"}]:
+        for arches in [{"x86_64"}]:
             with self.subTest(arches=arches), tempfile.TemporaryDirectory(prefix="native-package-test-") as temporary:
                 app = Path(temporary) / "Synthetic.app"
                 paths = dict(validator.HELPERS)
@@ -43,15 +43,12 @@ class NativePackagingTests(unittest.TestCase):
                     binary = BUILD / ("EmojiPreview" if name == "MainFixture" else name)
                     destination = app / "Contents" / path
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    if len(arches) == 1:
-                        subprocess.run(["lipo", str(binary), "-thin", next(iter(arches)), "-output", str(destination)], check=True)
-                    else:
-                        shutil.copy2(binary, destination)
+                    shutil.copy2(binary, destination)
                     destination.chmod(0o755)
                     subprocess.run(["codesign", "--force", "--sign", "-", str(destination)], capture_output=True, check=True)
                 licenses = app / "Contents/Resources/ThirdPartyLicenses"
                 licenses.mkdir()
-                shutil.copy2(BUILD / "zstd-1.5.7/arm64/source/LICENSE", licenses / "zstd-LICENSE")
+                shutil.copy2(BUILD / "zstd-1.5.7/x86_64/source/LICENSE", licenses / "zstd-LICENSE")
                 validator.validate(app, arches)
                 with self.assertRaisesRegex(AssertionError, "Architecture mismatch"):
                     validator.validate(app, {"invalid-architecture"})

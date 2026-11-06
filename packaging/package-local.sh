@@ -14,18 +14,10 @@ mkdir -p dist
 
 OS_NAME="$(uname -s)"
 if [[ "$OS_NAME" == "Darwin" ]]; then
-  ARCH="$(uname -m)"
-  if [[ "$ARCH" == "arm64" ]]; then
-    TARGET="aarch64-apple-darwin"
-    TOOLCHAIN="$ROOT_DIR/packaging/macos/toolchain-arm64.cmake"
-    SWIFT_TARGETS="arm64-apple-macosx11.0"
-    DMG_OUT="dist/ctdozlite-${VER}-macos-arm64.dmg"
-  else
-    TARGET="x86_64-apple-darwin"
-    TOOLCHAIN="$ROOT_DIR/packaging/macos/toolchain-x86_64.cmake"
-    SWIFT_TARGETS="x86_64-apple-macosx11.0"
-    DMG_OUT="dist/ctdozlite-${VER}-macos-x86_64.dmg"
-  fi
+  TARGET="x86_64-apple-darwin"
+  TOOLCHAIN="$ROOT_DIR/packaging/macos/toolchain-x86_64.cmake"
+  SWIFT_TARGETS="x86_64-apple-macosx11.0"
+  DMG_OUT="dist/ctdozlite-${VER}-macos-x86_64.dmg"
 
   MACOSX_DEPLOYMENT_TARGET="11.0" \
   LIBOPUS_STATIC="1" LIBOPUS_NO_PKG="1" OPUS_STATIC="1" OPUS_NO_PKG="1" \
@@ -65,6 +57,10 @@ if [[ "$OS_NAME" == "Darwin" ]]; then
   hdiutil create -volname "ctdozlite" -srcfolder "$STAGE_DIR" -ov -fs HFS+ -format UDZO "$DMG_OUT"
   echo "=== Built $DMG_OUT ==="
 else
+  if [[ "$(uname -m)" != "x86_64" ]]; then
+    echo "Only x86_64 Linux builds are supported" >&2
+    exit 1
+  fi
   cargo build --release --locked --bin ctdozlite
   strip target/release/ctdozlite || true
   STAGE="ctdozlite-${VER}-linux-x86_64"

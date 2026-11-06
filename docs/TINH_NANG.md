@@ -108,7 +108,6 @@ Cột **Issue** trỏ tới nơi đang theo dõi. Nếu issue đã đóng, tính
 | Chủ đề sáng / tối & Theme JSON tùy chỉnh | ✅ | Hỗ trợ ghi đè bảng màu qua `theme.json` (**Cài đặt → Giao diện**) | [#7](https://github.com/ctdoteam1110/ctdozlite/issues/7) |
 | Hiển thị tiếng Việt và tiếng Trung (CJK) | ✅ | Tự nạp font hệ thống đa ngôn ngữ + fallback Noto Sans CJK | [#6](https://github.com/ctdoteam1110/ctdozlite/issues/6), [#5](https://github.com/ctdoteam1110/ctdozlite/issues/5) |
 | Tự động kiểm tra & cập nhật phiên bản mới | ✅ | Kiểm tra qua GitHub Releases & `latest.json` kèm xác thực SHA-256 trước khi cài đặt | [#12](https://github.com/ctdoteam1110/ctdozlite/issues/12), [#29](https://github.com/ctdoteam1110/ctdozlite/issues/29) |
-| iOS (Sắp có) | 🟡 | Hoạt động dưới dạng phiên phụ (`zpw_type=30`), sẽ phát hành gói `.ipa` trong bản cập nhật tới | |
 
 ---
 

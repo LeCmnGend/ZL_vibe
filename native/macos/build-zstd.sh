@@ -3,8 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CACHE="${NATIVE_BUILD_DIR:-$ROOT/native/macos/build}/zstd-1.5.7"
-ARCH="${1:?Expected arm64 or x86_64}"
-case "$ARCH" in arm64|x86_64) ;; *) exit 2 ;; esac
+ARCH="${1:?Expected x86_64}"
+case "$ARCH" in x86_64) ;; *) exit 2 ;; esac
 SHA=37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3
 mkdir -p "$CACHE"
 ARCHIVE="$CACHE/source.tar.gz"

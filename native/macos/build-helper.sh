@@ -14,10 +14,10 @@ case "$HELPER" in
     *) printf 'Unknown helper: %s\n' "$HELPER" >&2; exit 2 ;;
 esac
 mkdir -p "$OUT"
-IFS=',' read -r -a TARGETS <<< "${SWIFT_TARGETS:-$(uname -m)-apple-macosx11.0}"
+IFS=',' read -r -a TARGETS <<< "${SWIFT_TARGETS:-x86_64-apple-macosx11.0}"
 BINARIES=()
 for target in "${TARGETS[@]}"; do
-    case "$target" in arm64-apple-macosx*|x86_64-apple-macosx*) ;; *) printf 'Unsupported Swift target: %s\n' "$target" >&2; exit 2 ;; esac
+    case "$target" in x86_64-apple-macosx*) ;; *) printf 'Unsupported Swift target: %s\n' "$target" >&2; exit 2 ;; esac
     EXTRA=()
     if [[ "$HELPER" == HistoryCodec ]]; then
         EXTRA+=("$(bash "$ROOT/native/macos/build-zstd.sh" "${target%%-*}")")
