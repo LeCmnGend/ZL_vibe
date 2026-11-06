@@ -259,37 +259,55 @@ pub fn parse_reactions(value: &Value) -> Vec<ReactionSummary> {
     let mut out = Vec::new();
     if let Some(users) = payload.as_object() {
         for (user, types) in users {
-            let Some(types) = types.as_object() else {
-                continue;
-            };
-            for (kind, value) in types {
-                let Ok(kind) = kind.parse::<i32>() else {
-                    continue;
-                };
-                if kind < 0 {
-                    continue;
+            if let Some(types_obj) = types.as_object() {
+                for (kind, value) in types_obj {
+                    let Ok(kind) = kind.parse::<i32>() else {
+                        continue;
+                    };
+                    if kind < 0 {
+                        continue;
+                    }
+                    if let Some((n, lower)) = count(value) {
+                        add(
+                            &mut out,
+                            Some(kind),
+                            emoji_for_type(kind).into(),
+                            n,
+                            lower,
+                            Some(user),
+                        );
+                    }
                 }
-                if let Some((n, lower)) = count(value) {
-                    add(
-                        &mut out,
-                        Some(kind),
-                        emoji_for_type(kind).into(),
-                        n,
-                        lower,
-                        Some(user),
-                    );
+            } else if let Ok(kind) = user.parse::<i32>() {
+                if kind >= 0 {
+                    if let Some((n, lower)) = count(types) {
+                        add(
+                            &mut out,
+                            Some(kind),
+                            emoji_for_type(kind).into(),
+                            n,
+                            lower,
+                            None,
+                        );
+                    }
                 }
             }
         }
     } else if let Some(items) = payload.as_array() {
         for item in items {
+            let r_type = item.get("rType").and_then(Value::as_i64).map(|t| t as i32);
             let icon = item
                 .as_str()
                 .or_else(|| item.get("rIcon").and_then(Value::as_str));
-            let Some(icon) = icon else { continue };
-            let kind = type_for_icon(icon);
-            let emoji = kind.map(emoji_for_type).unwrap_or(icon).to_owned();
-            // Legacy Vec<String> represented unique icons, never exact multiplicity.
+            let (kind, emoji) = if let Some(t) = r_type {
+                (Some(t), emoji_for_type(t).to_string())
+            } else if let Some(icon) = icon {
+                let k = type_for_icon(icon);
+                let e = k.map(emoji_for_type).unwrap_or(icon).to_owned();
+                (k, e)
+            } else {
+                continue;
+            };
             let n = item.get("count").and_then(count).unwrap_or((1, false));
             add(&mut out, kind, emoji, n.0, n.1, None);
         }
@@ -528,6 +546,17 @@ mod tests {
                 .count,
             2
         );
+        let six_reacts = parse_reactions(&json!({"reacts":{"reactions":[{"rIcon":":>","count":6}]}}));
+        assert_eq!(six_reacts[0].emoji, "😆");
+        assert_eq!(six_reacts[0].count, 6);
+        let rtype_reacts = parse_reactions(&json!({"reacts":{"reactions":[{"rType":0,"count":6}]}}));
+        assert_eq!(rtype_reacts[0].emoji, "😆");
+        assert_eq!(rtype_reacts[0].count, 6);
+        let direct_dict = parse_reactions(&json!({"reacts":{"reactions":{"0":6,"3":1}}}));
+        assert_eq!(direct_dict[0].emoji, "😆");
+        assert_eq!(direct_dict[0].count, 6);
+        assert_eq!(direct_dict[1].emoji, "👍");
+        assert_eq!(direct_dict[1].count, 1);
         assert!(parse_reactions(&json!({"reacts":null})).is_empty());
     }
     #[test]

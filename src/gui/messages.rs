@@ -2039,9 +2039,19 @@ pub(super) fn is_zalo_photo_message(msg: &ChatMessage) -> bool {
 pub(super) fn extract_photo_user_caption(msg: &ChatMessage) -> Option<&str> {
     let is_valid_caption = |s: &str| -> bool {
         let t = s.trim();
-        !t.is_empty()
-            && t != "[Hình ảnh]"
-            && !t.starts_with("http://")
+        if t.is_empty() || t == "[Hình ảnh]" {
+            return false;
+        }
+        let lower = t.to_ascii_lowercase();
+        if [
+            ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".jfif", ".tiff",
+        ]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+        {
+            return false;
+        }
+        !t.starts_with("http://")
             && !t.starts_with("https://")
             && !t.ends_with(".zdn.vn")
             && !t.ends_with(".zadn.vn")
@@ -3545,7 +3555,7 @@ pub(super) fn bubble_context_menu(
                         close_menu = true;
                     }
                     if let Some(url) = video_play_url(msg) {
-                        if menu_item(ui, lucide::PLAY, "Xem video", pal.text_primary).clicked() {
+                        if menu_item(ui, ICON_PLAY, "Xem video", pal.text_primary).clicked() {
                             action = Some(BubbleAction::OpenVideo { url: url.to_string(), title: video_title(msg) });
                             close_menu = true;
                         }
@@ -3945,7 +3955,7 @@ pub(super) fn render_reactions(
 ) -> Option<BubbleAction> {
     let has_pin = msg.is_pinned;
     let has_star = msg.is_starred;
-    let has_react = !msg.reactions.is_empty();
+    let has_react = !msg.reactions.is_empty() || !msg.reaction_summaries.is_empty();
 
     if !has_pin && !has_star && !has_react {
         return None;
@@ -3989,27 +3999,67 @@ pub(super) fn render_reactions(
         }
 
         if has_react {
-            for r in &msg.reactions {
-                let key = emoji_to_tex_key(r);
-                let btn = if let Some(tex) = emoji_textures.get(key) {
-                    let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(16.0));
-                    egui::Button::image(img)
-                } else {
-                    egui::Button::new(RichText::new(r).size(13.0))
-                };
-                let btn_resp = ui.add(
-                    btn.fill(pal.bg_elevated)
-                        .stroke(Stroke::new(1.0_f32, pal.border))
-                        .rounding(Rounding::same(11.0))
-                        .min_size(Vec2::new(28.0, 22.0)),
+            let mut items: Vec<(String, u64)> = Vec::new();
+            if !msg.reaction_summaries.is_empty() {
+                for s in &msg.reaction_summaries {
+                    if s.count > 0 {
+                        items.push((s.emoji.clone(), s.count));
+                    }
+                }
+            } else {
+                for r in &msg.reactions {
+                    items.push((r.clone(), 1));
+                }
+            }
+
+            for (emoji, count) in items {
+                let key = emoji_to_tex_key(&emoji);
+                let h_pad = if count > 1 { 6.0 } else { 4.5 };
+                let fr = egui::Frame::none()
+                    .fill(pal.bg_elevated)
+                    .stroke(Stroke::new(1.0_f32, pal.border))
+                    .rounding(Rounding::same(11.0))
+                    .inner_margin(Margin::symmetric(h_pad, 2.0));
+
+                let fr_resp = fr.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(3.5, 0.0);
+                        if let Some(tex) = emoji_textures.get(key) {
+                            let img = egui::Image::new(tex).fit_to_exact_size(Vec2::splat(15.0));
+                            ui.add(img);
+                        } else {
+                            ui.label(RichText::new(&emoji).size(13.0));
+                        }
+                        if count > 1 {
+                            ui.label(
+                                RichText::new(count.to_string())
+                                    .size(11.5)
+                                    .color(pal.text_primary)
+                                    .strong(),
+                            );
+                        }
+                    });
+                });
+
+                let btn_resp = ui.interact(
+                    fr_resp.response.rect,
+                    Id::new(("react_pill", &msg.id, msg.ts, &emoji)),
+                    Sense::click(),
                 );
+                if btn_resp.hovered() {
+                    ui.painter().rect_stroke(
+                        fr_resp.response.rect,
+                        Rounding::same(11.0),
+                        Stroke::new(1.2_f32, pal.primary),
+                    );
+                }
                 let clicked = btn_resp.clicked();
                 btn_resp
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text("Bấm để thả hoặc bỏ cảm xúc này");
+                    .on_hover_text(format!("Cảm xúc {emoji} ({count}) — Bấm để thả hoặc bỏ"));
                 if clicked {
                     for &(code, k, _) in &REACTION_LIST {
-                        if k == key || code == r.as_str() {
+                        if k == key || code == emoji.as_str() {
                             action = Some(BubbleAction::React(code));
                             break;
                         }
@@ -4496,6 +4546,27 @@ mod quote_navigation_tests {
         );
 
         assert!(matches!(action, Some(BubbleAction::React("👍"))));
+    }
+
+    #[test]
+    fn extract_photo_user_caption_filters_raw_image_filenames() {
+        let raw_filename_msg = ChatMessage {
+            text: "[Hình ảnh] msedge_uuRZ2mxGXV.png".into(),
+            ..Default::default()
+        };
+        assert_eq!(extract_photo_user_caption(&raw_filename_msg), None);
+
+        let clipboard_msg = ChatMessage {
+            text: "[Hình ảnh] clipboard_1730932200000.png".into(),
+            ..Default::default()
+        };
+        assert_eq!(extract_photo_user_caption(&clipboard_msg), None);
+
+        let real_caption_msg = ChatMessage {
+            text: "[Hình ảnh] Xem ảnh này nè".into(),
+            ..Default::default()
+        };
+        assert_eq!(extract_photo_user_caption(&real_caption_msg), Some("Xem ảnh này nè"));
     }
 }
 

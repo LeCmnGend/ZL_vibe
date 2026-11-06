@@ -4252,15 +4252,15 @@ pub(crate) fn capture_screen_interactive(
     ctx: egui::Context,
 ) {
     let now = crate::login::unix_now();
-    let temp_path = std::env::temp_dir().join(format!("ctdozlite_screenshot_{now}.png"));
+    let _temp_path = std::env::temp_dir().join(format!("ctdozlite_screenshot_{now}.png"));
 
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("/usr/sbin/screencapture")
-        .args(["-i", "-x", temp_path.to_str().unwrap_or("")])
+        .args(["-i", "-x", _temp_path.to_str().unwrap_or("")])
         .status();
 
     #[cfg(target_os = "windows")]
-    let status = {
+    let _status = {
         let _ = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", "Start-Process ms-screenclip:"])
             .status();
@@ -4273,7 +4273,7 @@ pub(crate) fn capture_screen_interactive(
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let status = {
-        let temp_str = temp_path.to_str().unwrap_or("");
+        let temp_str = _temp_path.to_str().unwrap_or("");
         std::process::Command::new("flameshot")
             .args(["gui", "-r", "-p", temp_str])
             .status()

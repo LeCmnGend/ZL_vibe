@@ -485,6 +485,7 @@ impl MessageStore {
                 let mut reply_to_sender = None;
                 let mut reply_to_text = None;
                 let mut reactions = Vec::new();
+                let mut reaction_summaries = Vec::new();
                 let mut is_pinned = false;
                 let mut is_starred = false;
                 let mut link_url = None;
@@ -522,6 +523,21 @@ impl MessageStore {
                             reactions = arr
                                 .iter()
                                 .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect();
+                        }
+                        if let Some(sums) = val.get("reaction_summaries") {
+                            if let Ok(parsed_sums) = serde_json::from_value::<Vec<crate::reactions::ReactionSummary>>(sums.clone()) {
+                                reaction_summaries = parsed_sums;
+                            }
+                        }
+                        if reaction_summaries.is_empty() && !reactions.is_empty() {
+                            reaction_summaries = reactions
+                                .iter()
+                                .map(|e| crate::reactions::ReactionSummary {
+                                    emoji: e.clone(),
+                                    count: 1,
+                                    ..Default::default()
+                                })
                                 .collect();
                         }
                         is_pinned = val
@@ -572,6 +588,7 @@ impl MessageStore {
                     reply_to_sender,
                     reply_to_text,
                     reactions,
+                    reaction_summaries,
                     is_pinned,
                     is_starred,
                     link_url,
@@ -610,6 +627,9 @@ impl MessageStore {
                     }
                     if existing.reactions.is_empty() && !cm.reactions.is_empty() {
                         existing.reactions = cm.reactions;
+                    }
+                    if existing.reaction_summaries.is_empty() && !cm.reaction_summaries.is_empty() {
+                        existing.reaction_summaries = cm.reaction_summaries;
                     }
                     existing.is_pinned = existing.is_pinned || cm.is_pinned;
                     existing.is_starred = existing.is_starred || cm.is_starred;
@@ -657,6 +677,9 @@ impl From<&ChatMessage> for StoredMessage {
         }
         if !m.reactions.is_empty() {
             meta.insert("reactions".into(), serde_json::json!(m.reactions));
+        }
+        if !m.reaction_summaries.is_empty() {
+            meta.insert("reaction_summaries".into(), serde_json::json!(m.reaction_summaries));
         }
         if m.is_pinned {
             meta.insert("is_pinned".into(), serde_json::json!(true));

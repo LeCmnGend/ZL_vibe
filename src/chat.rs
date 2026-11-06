@@ -2135,7 +2135,21 @@ pub async fn send_attachment_ext(
         let display_text = if !caption.trim().is_empty() {
             caption.trim().to_string()
         } else {
-            format!("[Hình ảnh] {file_name}")
+            "[Hình ảnh]".to_string()
+        };
+        let clean_title = if file_name.starts_with("clipboard_")
+            || file_name.starts_with("msedge_")
+            || file_name.starts_with("ctdozlite_")
+        {
+            format!(
+                "Hình ảnh ({width}×{height} · {})",
+                format_file_size(total_size)
+            )
+        } else {
+            format!(
+                "{file_name} ({width}×{height} · {})",
+                format_file_size(total_size)
+            )
         };
         let cm = ChatMessage {
             id: msg_id,
@@ -2146,10 +2160,7 @@ pub async fn send_attachment_ext(
             is_outgoing: true,
             ts: client_id as i64,
             link_url: Some(final_url),
-            link_title: Some(format!(
-                "{file_name} ({width}×{height} · {})",
-                format_file_size(total_size)
-            )),
+            link_title: Some(clean_title),
             link_desc: if caption.trim().is_empty() {
                 None
             } else {
@@ -3824,7 +3835,11 @@ pub(crate) async fn forward_message_with_client_id(
     };
 
     // Forward photo if message contains a photo CDN URL
-    if let Some(photo_url) = msg.link_url.as_deref().filter(|u| is_zalo_photo_cdn_url(u)) {
+    if let Some(photo_url) = msg
+        .link_url
+        .as_deref()
+        .filter(|u| is_zalo_photo_cdn_url(u) && is_safe_external_image_url(u))
+    {
         if let Ok(resp) = s.http.get(photo_url).send().await {
             if let Ok(bytes) = resp.bytes().await {
                 if !bytes.is_empty() {
@@ -5825,6 +5840,46 @@ pub fn is_zalo_photo_cdn_url(url: &str) -> bool {
                 || u.contains("zfcloud")))
 }
 
+/// Check that a remote URL does not target loopback, private RFC1918, or link-local destinations.
+pub fn is_safe_external_image_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    let without_scheme = if let Some(rest) = lower.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = lower.strip_prefix("http://") {
+        rest
+    } else {
+        return false;
+    };
+    let host = without_scheme
+        .split(&['/', '?', ':', '#'][..])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if host.is_empty()
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host == "127.0.0.1"
+        || host == "[::1]"
+        || host == "::1"
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+        || (host.starts_with("172.") && {
+            let parts: Vec<&str> = host.split('.').collect();
+            parts
+                .get(1)
+                .and_then(|p| p.parse::<u8>().ok())
+                .map(|b| (16..=31).contains(&b))
+                .unwrap_or(false)
+        })
+    {
+        return false;
+    }
+    true
+}
+
 /// Sanitize and resolve the original sender filename for a Zalo file attachment (#74),
 /// ensuring `/renewMedia` URLs never overwrite the sender's real filename.
 pub fn resolve_attachment_file_name(title: Option<&str>, text: &str, url: &str) -> String {
@@ -6556,6 +6611,40 @@ fn parse_chat_message(it: &Value) -> Option<ChatMessage> {
             (None, None, None)
         };
 
+    let (reactions, reaction_summaries) = {
+        let mut summaries = crate::reactions::parse_reactions(it);
+        if summaries.is_empty() {
+            if let Some(c) = raw_content_val {
+                summaries = crate::reactions::parse_reactions(c);
+            }
+        }
+        let reacts = if !summaries.is_empty() {
+            crate::reactions::legacy_emojis(&summaries)
+        } else {
+            let legacy = extract_reactions(it);
+            if legacy.is_empty() {
+                if let Some(c) = raw_content_val {
+                    extract_reactions(c)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                legacy
+            }
+        };
+        if summaries.is_empty() && !reacts.is_empty() {
+            summaries = reacts
+                .iter()
+                .map(|e| crate::reactions::ReactionSummary {
+                    emoji: e.clone(),
+                    count: 1,
+                    ..Default::default()
+                })
+                .collect();
+        }
+        (reacts, summaries)
+    };
+
     let mut parsed = ChatMessage {
         id: msg_id,
         client_message_id: ["cliMsgId", "clientId", "client_message_id"]
@@ -6574,7 +6663,8 @@ fn parse_chat_message(it: &Value) -> Option<ChatMessage> {
         reply_to_id,
         reply_to_sender,
         reply_to_text,
-        reactions: extract_reactions(it),
+        reactions,
+        reaction_summaries,
         is_pinned: false,
         is_starred: false,
         link_url,
@@ -6610,9 +6700,11 @@ fn parse_chat_message(it: &Value) -> Option<ChatMessage> {
 fn extract_reactions(it: &Value) -> Vec<String> {
     let mut res = Vec::new();
     if let Some(r) = it.get("reacts").or_else(|| it.get("reactions")) {
-        if let Some(arr) = r.get("reactions").and_then(Value::as_array) {
+        let arr_opt = r.get("reactions").and_then(Value::as_array).or_else(|| r.as_array());
+        if let Some(arr) = arr_opt {
             for item in arr {
-                if let Some(icon) = item.get("rIcon").and_then(Value::as_str) {
+                let icon = item.as_str().or_else(|| item.get("rIcon").and_then(Value::as_str));
+                if let Some(icon) = icon {
                     let em = icon_to_emoji(icon);
                     if !res.contains(&em.to_string()) {
                         res.push(em.to_string());
@@ -6868,6 +6960,9 @@ pub fn merge_previews(threads: &mut Vec<Thread>, resp: &Value) {
                     }
                     if !parsed.reactions.is_empty() {
                         existing.reactions = parsed.reactions;
+                    }
+                    if !parsed.reaction_summaries.is_empty() {
+                        existing.reaction_summaries = parsed.reaction_summaries;
                     }
                     existing.is_pinned = existing.is_pinned || parsed.is_pinned;
                     existing.is_starred = existing.is_starred || parsed.is_starred;
@@ -10161,6 +10256,18 @@ mod send_identity_tests {
                 checksum: "md5_123".into(),
             }
         );
+    }
+
+    #[test]
+    fn test_is_safe_external_image_url() {
+        assert!(is_safe_external_image_url("https://photo-stal-6.zdn.vn/gr/jpg/test.jpg"));
+        assert!(is_safe_external_image_url("https://example.com/banner.webp"));
+        assert!(!is_safe_external_image_url("http://localhost:8080/test.png"));
+        assert!(!is_safe_external_image_url("http://127.0.0.1/admin.png"));
+        assert!(!is_safe_external_image_url("https://10.0.0.1/secret.jpg"));
+        assert!(!is_safe_external_image_url("http://192.168.1.1/router.png"));
+        assert!(!is_safe_external_image_url("http://169.254.169.254/latest/meta-data.png"));
+        assert!(!is_safe_external_image_url("local:///Users/mac/test.png"));
     }
 
     #[test]
