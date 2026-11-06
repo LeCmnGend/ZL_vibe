@@ -3186,7 +3186,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 let result = match crate::download::validate_target_dir(&dest_dir) {
                                     Err(e) => Err(e),
                                     Ok(dir) => {
-                                        let client = { session_clone.lock().await.clone().http };
+                                        let client = { session_clone.lock().await.streaming_http() };
                                         let tx = gui_tx_clone.clone();
                                         let ctx = ctx_clone.clone();
                                         let key = url.clone();
@@ -3247,7 +3247,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     if let Ok(mut map) = cancels_task.lock() {
                                         map.insert(url.clone(), flag.clone());
                                     }
-                                    let client = { session_clone.lock().await.clone().http };
+                                    let client = { session_clone.lock().await.streaming_http() };
                                     let tx = gui_tx_clone.clone();
                                     let ctx = ctx_clone.clone();
                                     let key = url.clone();
@@ -3332,6 +3332,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             });
                         }
                         WorkerCmd::RunMaintenance => {
+                            let uin = session.lock().await.login.as_ref().map(|login| login.uin.clone()).unwrap_or_default();
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
                             tokio::task::spawn_blocking(move || {
@@ -3339,10 +3340,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 // cache (30 days / 64 MiB) and compact the history DB. Neither step
                                 // deletes a message.
                                 let (freed_bytes, removed_files) = crate::paths::trim_cache_dir();
-                                let db_compacted = crate::store::MessageStore::open(
-                                    crate::paths::history_db(),
-                                )
-                                .ok()
+                                let db_compacted = crate::sync_state::sanitize_uin(&uin)
+                                .and_then(|uin| crate::store::MessageStore::open(crate::store::db_path_for_account(uin)).ok())
                                 .and_then(|s| s.compact_if_needed(0).ok())
                                 .unwrap_or(false);
                                 let _ = gui_tx_clone.send(GuiEvent::MaintenanceDone {

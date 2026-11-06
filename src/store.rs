@@ -54,6 +54,17 @@ pub fn db_path_for_account(uin: &str) -> String {
 }
 
 impl MessageStore {
+    /// Compact the currently opened database when it exceeds the requested threshold.
+    pub fn compact_if_needed(&self, max_bytes: u64) -> Result<bool> {
+        let pages: u64 = self.conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let page_size: u64 = self.conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        if pages.saturating_mul(page_size) <= max_bytes {
+            return Ok(false);
+        }
+        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        Ok(true)
+    }
+
     /// Messages per thread loaded at startup / on refresh. The list only needs the newest one
     /// for ordering and preview; opening a thread reads deeper (`LoadGroupHistory`).
     pub const PRELOAD_MSGS: usize = 20;
