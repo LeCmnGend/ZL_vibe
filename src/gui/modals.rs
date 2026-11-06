@@ -333,7 +333,7 @@ impl ZaloGuiApp {
                             format!(
                                 "{}  Kiểm tra cập nhật (v{})",
                                 lucide::REFRESH,
-                                env!("CARGO_PKG_VERSION")
+                                env!("ZL_VIBE_DISPLAY_VERSION")
                             )
                         };
                         if ui
@@ -2725,7 +2725,7 @@ impl ZaloGuiApp {
                                                 });
                                         }
                                         SettingsTab::Update => {
-                                            let cur_ver = env!("CARGO_PKG_VERSION");
+                                            let cur_ver = env!("ZL_VIBE_DISPLAY_VERSION");
                                             let info_opt = self.update_info.clone();
                                             let has_update = info_opt
                                                 .as_ref()

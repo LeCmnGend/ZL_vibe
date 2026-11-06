@@ -121,7 +121,7 @@ pub async fn handle_mcp_request(
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
                     "name": "ctdozlite-mcp",
-                    "version": env!("CARGO_PKG_VERSION")
+                    "version": env!("ZL_VIBE_DISPLAY_VERSION")
                 },
                 "capabilities": {
                     "tools": { "listChanged": false },
@@ -356,7 +356,7 @@ async fn execute_tool_call(
                 json!({
                     "ok": true,
                     "app": "ctdozlite",
-                    "version": env!("CARGO_PKG_VERSION"),
+                    "version": env!("ZL_VIBE_DISPLAY_VERSION"),
                     "logged_in": logged_in,
                     "uin": uin,
                     "display_name": display_name,
@@ -727,7 +727,7 @@ pub async fn handle_rest_request(
                 json!({
                     "ok": true,
                     "exported_at": crate::login::unix_now(),
-                    "version": env!("CARGO_PKG_VERSION"),
+                    "version": env!("ZL_VIBE_DISPLAY_VERSION"),
                     "threads": threads,
                     "scheduled_messages": scheduled,
                     "autoreply_rules": autoreply,

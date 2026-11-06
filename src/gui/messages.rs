@@ -1579,7 +1579,6 @@ pub(super) fn render_message_body(
                         FontId::proportional(11.5),
                         Color32::WHITE,
                     );
-                }
                 // "Tải về" chip in the top-right corner: on hover, or while a download exists.
                 // Registered after the image so it sits on top for clicks.
                 if let Some(target) = dl_target.as_ref() {
@@ -1614,6 +1613,7 @@ pub(super) fn render_message_body(
                         sender: sender_label,
                         time: msg.time.clone(),
                     });
+                }
                 }
             } else {
                 let ph_frame = egui::Frame::none()

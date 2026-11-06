@@ -1838,6 +1838,7 @@ impl ZaloGuiApp {
                                 images_only: code == 0,
                                 caption: cap,
                                 preset_path: None,
+                                original_hd: false,
                             });
                         } else {
                             self.show_toast("Chưa kết nối — không thể gửi tệp (chế độ demo)");

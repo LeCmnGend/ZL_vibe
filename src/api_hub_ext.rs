@@ -650,7 +650,7 @@ pub async fn route(
             let threads = MessageStore::open(db_path).and_then(|st| st.all_threads()).map(|v| v.len()).unwrap_or(0);
             let pending = scheduler::list_pending_scheduled(db_path, None).map(|v| v.len()).unwrap_or(0);
             let mut v = json!({
-                "ok": true, "app": "ctdozlite", "version": env!("CARGO_PKG_VERSION"),
+                "ok": true, "app": "ctdozlite", "version": env!("ZL_VIBE_DISPLAY_VERSION"),
                 "logged_in": is_live(&s), "session_expired": s.is_expired_marked(),
                 "threads_in_db": threads, "pending_scheduled": pending,
             });

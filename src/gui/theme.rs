@@ -780,6 +780,14 @@ pub(super) fn draw_lucide_icon(
     );
 }
 
+pub(super) fn draw_icon_refresh(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
+    draw_lucide_icon(painter, center, lucide::REFRESH, size, color);
+}
+
+pub(super) fn draw_icon_send(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
+    draw_lucide_icon(painter, center, lucide::SEND, size, color);
+}
+
 pub(super) fn draw_icon_search(painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
     draw_lucide_icon(painter, center, lucide::SEARCH, size, color);
 }

@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "ctdozlite"
-version = "0.0.8"
+version = "26.11.6-23"
 dependencies = [
  "aes",
  "aes-gcm",

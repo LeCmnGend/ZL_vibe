@@ -240,10 +240,6 @@ pub enum WorkerCmd {
         file_name: String,
         download_dir: String,
     },
-    SendTyping {
-        thread_id: String,
-        is_group: bool,
-    },
     SendSeen {
         thread_id: String,
         is_group: bool,
@@ -3909,16 +3905,6 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 .await;
                                 let _ = gui_tx_clone.send(GuiEvent::FileDownloaded(res));
                                 ctx_clone.request_repaint();
-                            });
-                        }
-                        WorkerCmd::SendTyping {
-                            thread_id,
-                            is_group,
-                        } => {
-                            let session_clone = session.clone();
-                            tokio::spawn(async move {
-                                let s = session_clone.lock().await.clone();
-                                let _ = crate::chat::send_typing_indicator(&s, &thread_id, is_group).await;
                             });
                         }
                         WorkerCmd::SendSeen {

@@ -13,7 +13,7 @@ use anyhow::Result;
 use session::Session;
 pub use zalo_rust::{
     account_manager, api_mcp, audio, call, chat, clock, crypto, data_dir, download, endpoints, feed, gui, history_sync,
-    logger, login, media, media_resources, message_model, param_cipher, qr, reaction, reactions, scheduler,
+    logger, login, media, media_resources, message_model, param_cipher, paths, qr, reaction, reactions, scheduler,
     session, socket, store, sync_state, trace_shape, tui, ui, unread, updater, video, voip_log,
 };
 
@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo_mode = args.iter().any(|a| a == "--demo");
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("ZL-vibe v{}", env!("CARGO_PKG_VERSION"));
+        println!("ZL-vibe v{}", env!("ZL_VIBE_DISPLAY_VERSION"));
         return Ok(());
     }
     if !demo_mode && args.iter().any(|a| a == "--check-update") {

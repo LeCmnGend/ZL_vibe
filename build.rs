@@ -2,6 +2,14 @@
 //! by emitting a standard COFF/Win32 `.res` file in `OUT_DIR` without requiring external `rc.exe`.
 
 fn main() {
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let display_version = version.split_once('-').and_then(|(date, hour)| {
+        let mut parts = date.split('.');
+        let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() { return None; }
+        Some(format!("{year}{month:0>2}{day:0>2}-{hour}"))
+    }).unwrap_or(version);
+    println!("cargo:rustc-env=ZL_VIBE_DISPLAY_VERSION={display_version}");
     println!("cargo:rerun-if-changed=src/assets/app_icon.ico");
     println!("cargo:rerun-if-changed=src/assets/app_icon.png");
 

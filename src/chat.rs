@@ -3658,9 +3658,10 @@ fn quote_target_ids(quoted: &ChatMessage) -> Result<(u64, u64, u64)> {
     // `qmsgCliId` is the client id of the quoted message; the send time is the fallback Zalo
     // itself uses when the row predates `cliMsgId` capture. Never fabricated.
     let qmsg_cli_id = quoted
-        .cli_msg_id
-        .as_deref()
-        .and_then(|c| c.parse::<u64>().ok())
+        .client_message_id
+        .parse::<u64>()
+        .ok()
+        .filter(|id| *id > 0)
         .or_else(|| (quoted.ts > 0).then_some(quoted.ts as u64))
         .ok_or_else(|| {
             anyhow::anyhow!("Không trích dẫn được tin này (thiếu thời điểm gửi của tin gốc)")
@@ -3975,7 +3976,7 @@ pub async fn send_reaction(
 /// that id makes the server answer a generic error while the UI has already removed the bubble,
 /// i.e. a no-op that looks successful. `action` is the leading Vietnamese phrase so the caller's
 /// message stays specific ("Không xoá được tin này …" / "Không thu hồi được tin này …").
-fn server_message_id<'a>(msg: &'a ChatMessage, action: &str) -> Result<&'a str> {
+fn required_server_message_id<'a>(msg: &'a ChatMessage, action: &str) -> Result<&'a str> {
     let id = msg.id.trim();
     if id.is_empty() || id.starts_with("out_") || id.starts_with("local_") {
         anyhow::bail!("{action} (tin chưa có mã từ máy chủ)");
@@ -3991,8 +3992,7 @@ fn server_message_id<'a>(msg: &'a ChatMessage, action: &str) -> Result<&'a str> 
 /// rule `quote_target_ids` follows. Earlier builds sent `now` as the id, i.e. an id the server
 /// never issued. `action` keeps the caller's Vietnamese wording.
 fn message_client_id(msg: &ChatMessage, action: &str) -> Result<u64> {
-    msg.cli_msg_id
-        .as_deref()
+    Some(msg.client_message_id.as_str())
         .map(str::trim)
         .and_then(|s| s.parse::<u64>().ok())
         // `0` is what older rows stored for "no cliMsgId" (the parser filters it out too).
@@ -4012,7 +4012,7 @@ pub async fn delete_message_for_me(
         anyhow::bail!("chưa đăng nhập");
     }
     // Refuse before any request: a client-only id cannot be deleted on the server.
-    let msg_id = server_message_id(msg, "Không xoá được tin này")?;
+    let msg_id = required_server_message_id(msg, "Không xoá được tin này")?;
     // The row's own `cliMsgId` when known (server-issued), else its send time — never "now".
     let cli_id = message_client_id(msg, "Không xoá được tin này")?.to_string();
     let now = std::time::SystemTime::now()
@@ -4096,7 +4096,7 @@ pub async fn recall_message(
         anyhow::bail!("chưa đăng nhập");
     }
     // Refuse before any request: a client-only id cannot be recalled on the server.
-    let msg_id = server_message_id(msg, "Không thu hồi được tin này")?;
+    let msg_id = required_server_message_id(msg, "Không thu hồi được tin này")?;
     // The row's own `cliMsgId` when known (server-issued), else its send time — never "now".
     let cli_id = message_client_id(msg, "Không thu hồi được tin này")?.to_string();
     let now = std::time::SystemTime::now()
@@ -5649,7 +5649,7 @@ pub async fn poll_new_messages(
         }
     }
     // Newest local activity first, then capped (see [`CLOUD_SYNC_GROUPS_PER_ROUND`]).
-    let mut group_ids: Vec<(i64, String)> = threads
+    let group_ids: Vec<String> = threads
         .iter()
         .filter(|t| t.is_group && !t.id.is_empty() && t.messages.is_empty() && !t.preview.is_empty())
         .map(|t| t.id.clone())
@@ -9550,7 +9550,7 @@ mod message_state_defaults_tests {
     fn quote_target_accepts_only_server_message_ids() {
         let msg = |id: &str| ChatMessage {
             id: id.into(),
-            cli_msg_id: Some("1793705979715".into()),
+            client_message_id: "1793705979715".into(),
             ts: 1793705979842,
             ..Default::default()
         };
@@ -9697,7 +9697,7 @@ mod message_state_defaults_tests {
         assert!(!m.text.contains(CIPHERTEXT), "không được lộ chuỗi mã hoá");
         // Clear metadata still builds a usable row: dedup, ordering and reactions need it.
         assert_eq!(m.id, "8447783931887");
-        assert_eq!(m.cli_msg_id.as_deref(), Some("1793705979715"));
+        assert_eq!(m.client_message_id.as_str(), "1793705979715");
         assert_eq!(m.sender, "Người gửi");
         assert!(!m.is_outgoing);
         assert_eq!(m.ts, 1793705979842);
@@ -9771,20 +9771,20 @@ mod message_state_defaults_tests {
         };
         // A server id passes through, trimmed.
         assert_eq!(
-            server_message_id(&msg("8447783931887"), "Không xoá được tin này").unwrap(),
+            required_server_message_id(&msg("8447783931887"), "Không xoá được tin này").unwrap(),
             "8447783931887"
         );
         assert_eq!(
-            server_message_id(&msg(" 8447783931887 "), "Không thu hồi được tin này").unwrap(),
+            required_server_message_id(&msg(" 8447783931887 "), "Không thu hồi được tin này").unwrap(),
             "8447783931887"
         );
         // A row that exists only on this client is refused, with the caller's own wording.
         for id in ["", "   ", "out_1793705979842", "local_3"] {
-            let err = server_message_id(&msg(id), "Không xoá được tin này")
+            let err = required_server_message_id(&msg(id), "Không xoá được tin này")
                 .unwrap_err()
                 .to_string();
             assert_eq!(err, "Không xoá được tin này (tin chưa có mã từ máy chủ)");
-            let err = server_message_id(&msg(id), "Không thu hồi được tin này")
+            let err = required_server_message_id(&msg(id), "Không thu hồi được tin này")
                 .unwrap_err()
                 .to_string();
             assert_eq!(err, "Không thu hồi được tin này (tin chưa có mã từ máy chủ)");
@@ -9795,7 +9795,7 @@ mod message_state_defaults_tests {
     fn delete_and_recall_prefer_the_rows_own_client_id() {
         let msg = |id: &str, cli: Option<&str>, ts: i64| ChatMessage {
             id: id.into(),
-            cli_msg_id: cli.map(str::to_string),
+            client_message_id: cli.unwrap_or_default().to_string(),
             ts,
             ..Default::default()
         };
@@ -9849,7 +9849,7 @@ mod message_state_defaults_tests {
         );
         // (d) the id check still runs first: a client-only row keeps its own error.
         assert_eq!(
-            server_message_id(&msg("out_1", Some("1793705979715"), 0), DELETE)
+            required_server_message_id(&msg("out_1", Some("1793705979715"), 0), DELETE)
                 .unwrap_err()
                 .to_string(),
             "Không xoá được tin này (tin chưa có mã từ máy chủ)"

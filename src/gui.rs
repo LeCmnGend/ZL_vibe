@@ -2812,9 +2812,9 @@ impl ZaloGuiApp {
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(if self.demo_mode {
-                                    format!("v{} · demo", env!("CARGO_PKG_VERSION"))
+                                    format!("v{} · demo", env!("ZL_VIBE_DISPLAY_VERSION"))
                                 } else {
-                                    format!("v{}", env!("CARGO_PKG_VERSION"))
+                                    format!("v{}", env!("ZL_VIBE_DISPLAY_VERSION"))
                                 })
                                 .color(pal.primary)
                                 .size(10.5),

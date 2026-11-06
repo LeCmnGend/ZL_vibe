@@ -237,7 +237,7 @@ pub fn record_gaps_from(payload: &Value, uin: &str) -> bool {
     match store.add_missing_range("*", from, to, &signals.join(",")) {
         Ok(_) => {
             if let Ok(mut dirty) = GAPS_DIRTY.get_or_init(Default::default).lock() {
-                dirty.insert(uin);
+                dirty.insert(uin.to_string());
             }
             true
         }

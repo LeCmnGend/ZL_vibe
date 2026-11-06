@@ -3051,7 +3051,7 @@ impl ZaloGuiApp {
                                                     ));
                                                     if let Some(tx) = WORKER_TX.get() {
                                                         let _ = tx.send(WorkerCmd::SendTyping {
-                                                            thread_id: thread_id.clone(),
+                                                            to_id: thread_id.clone(),
                                                             is_group,
                                                         });
                                                     }
