@@ -188,6 +188,7 @@ fn percent_decode(s: &str) -> String {
 /// (by magic), then zlib, then raw deflate.
 fn inflate(buf: &[u8]) -> Result<Vec<u8>> {
     use std::io::Read;
+    const MAX_INFLATED: u64 = 32 * 1024 * 1024;
     if trace_on() {
         let head: String = buf.iter().take(12).map(|b| format!("{b:02x}")).collect();
         trace(format!("inflate input {} bytes head={head}", buf.len()));
@@ -205,7 +206,8 @@ fn inflate(buf: &[u8]) -> Result<Vec<u8>> {
     for idx in order {
         let (name, make) = attempts[idx];
         let mut out = Vec::new();
-        match make(buf).read_to_end(&mut out) {
+        match make(buf).take(MAX_INFLATED + 1).read_to_end(&mut out) {
+            Ok(n) if n as u64 > MAX_INFLATED => bail!("inflated payload exceeds limit"),
             Ok(_) if !out.is_empty() => {
                 trace(format!("inflate ok via {name}: {} -> {} bytes", buf.len(), out.len()));
                 return Ok(out);
@@ -215,7 +217,10 @@ fn inflate(buf: &[u8]) -> Result<Vec<u8>> {
         }
     }
     let mut out = Vec::new();
-    flate2::read::DeflateDecoder::new(buf).read_to_end(&mut out)?;
+    flate2::read::DeflateDecoder::new(buf).take(MAX_INFLATED + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > MAX_INFLATED {
+        bail!("inflated payload exceeds limit");
+    }
     if out.is_empty() {
         return Err(last_err.unwrap_or_else(|| anyhow!("empty inflate output")));
     }
