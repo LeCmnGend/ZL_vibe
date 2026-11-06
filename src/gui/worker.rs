@@ -539,6 +539,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
     }));
 
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
+    crate::cskh::bo_gui::dat_phien(session.clone());
     let poll_state = std::sync::Arc::new(tokio::sync::Mutex::new(saved.poll));
     let ctrl_poll_state =
         std::sync::Arc::new(tokio::sync::Mutex::new(crate::call::CtrlPollState::default()));

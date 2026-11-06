@@ -458,6 +458,7 @@ impl ZaloGuiApp {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 ui.add_space(12.0);
+                self.render_cskh_nav_button(ui, pal);
                 let groups = self.nav_items();
                 let titles = ["Hộp thư", "Lưu trữ", "Danh bạ"];
                 let mut clicked: Option<(Option<NavSection>, NavAction, Option<&'static str>)> = None;

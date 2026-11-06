@@ -66,8 +66,18 @@ impl ZaloGuiApp {
         let list_max_w = (screen_w * 0.42).clamp(260.0, 440.0);
         self.render_conversation_list(ctx, pal, list_expanded, list_forced, list_max_w);
 
+        // The customer-care page rides on `contacts_view_open`: any other nav click clears it.
+        self.cskh_open &= self.contacts_view_open;
         if self.contacts_view_open {
-            self.render_contacts_page(ctx, pal);
+            if self.cskh_open {
+                let uin = self.user_uin.clone();
+                if self.cskh.ve(ctx, &uin, &self.threads) {
+                    self.cskh_open = false;
+                    self.contacts_view_open = false;
+                }
+            } else {
+                self.render_contacts_page(ctx, pal);
+            }
             self.render_profile_popover(ctx, pal);
             self.render_wipe_confirm(ctx, pal);
             self.render_toast_overlay(ctx, pal);
@@ -3752,6 +3762,35 @@ mod quote_navigation_tests {
                 after < before && target_visible,
                 "Jump must center the older target, not remain at the bottom: {after}"
             );
+        }
+    }
+}
+
+impl ZaloGuiApp {
+    /// Left-rail button that opens the customer-care page (src/cskh).
+    pub(super) fn render_cskh_nav_button(&mut self, ui: &mut egui::Ui, pal: &ThemePalette) {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(42.0, 42.0), Sense::click());
+        if self.cskh_open {
+            ui.painter()
+                .rect_filled(rect, Rounding::same(11.0), pal.primary.linear_multiply(0.18));
+        } else if resp.hovered() {
+            ui.painter().rect_filled(rect, Rounding::same(11.0), pal.bg_hover);
+        }
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            lucide::SEND,
+            egui::FontId::proportional(19.0),
+            if self.cskh_open { pal.primary_hover } else { pal.text_secondary },
+        );
+        if resp
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Chăm sóc khách hàng")
+            .clicked()
+        {
+            self.feed_modal_open = false;
+            self.cskh_open = !self.cskh_open;
+            self.contacts_view_open = self.cskh_open;
         }
     }
 }
