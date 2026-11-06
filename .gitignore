@@ -66,6 +66,9 @@ graphify-out/
 book/
 
 # Local agent tooling & skill kit (machine-specific, symlinked paths)
+/.ai-context/
+/CLAUDE.md
+/AGENTS.md
 .claude/
 .omp/
 .agents/
