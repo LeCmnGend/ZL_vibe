@@ -2000,7 +2000,7 @@ impl ZaloGuiApp {
                         .id_salt(Id::new(("chat_scroll", &thread_id)))
                         .max_height(msg_area_height)
                         .auto_shrink([false, false])
-                        .stick_to_bottom(jump_index.is_none())
+                        .stick_to_bottom(stick_to_bottom)
                         .show(ui, |ui| {
                             egui::Frame::none()
                                 .inner_margin(Margin {
