@@ -308,8 +308,32 @@ pub fn parse_reactions(value: &Value) -> Vec<ReactionSummary> {
             } else {
                 continue;
             };
-            let n = item.get("count").and_then(count).unwrap_or((1, false));
+            let n = item
+                .get("count")
+                .or_else(|| item.get("total"))
+                .or_else(|| item.get("total_reacts"))
+                .or_else(|| item.get("totalReactions"))
+                .or_else(|| item.get("reactionCount"))
+                .and_then(count)
+                .unwrap_or((1, false));
             add(&mut out, kind, emoji, n.0, n.1, None);
+        }
+    }
+    let parent_total = root
+        .get("total")
+        .or_else(|| root.get("total-reacts"))
+        .or_else(|| root.get("total_reacts"))
+        .or_else(|| root.get("totalReactions"))
+        .or_else(|| root.get("reactionCount"))
+        .or_else(|| value.get("total"))
+        .or_else(|| value.get("total-reacts"))
+        .or_else(|| value.get("total_reacts"))
+        .or_else(|| value.get("totalReactions"))
+        .or_else(|| value.get("reactionCount"))
+        .and_then(count);
+    if let Some((tot, _)) = parent_total {
+        if tot > 1 && out.len() == 1 {
+            out[0].count = out[0].count.max(tot);
         }
     }
     out.sort_by(|a, b| {

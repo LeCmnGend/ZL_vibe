@@ -6930,6 +6930,22 @@ pub fn merge_previews(threads: &mut Vec<Thread>, resp: &Value) {
         }
 
         for (m_val, is_grp) in raw_msgs {
+            if m_val.get("msgType").and_then(Value::as_str) == Some("chat.reaction") {
+                for event in crate::reactions::parse_reaction_events(m_val) {
+                    if let Some(thread) = threads.iter_mut().find(|thread| {
+                        thread.id == event.thread_id || format!("g{}", thread.id) == event.thread_id
+                    }) {
+                        if let Some(message) = thread.messages.iter_mut().find(|message| {
+                            (!event.message_id.is_empty() && message.id == event.message_id)
+                                || (!event.client_message_id.is_empty() && message.client_message_id == event.client_message_id)
+                        }) {
+                            message.apply_reaction(&event);
+                        }
+                    }
+                }
+                continue;
+            }
+
             let Some(parsed) = parse_chat_message(m_val) else {
                 continue;
             };
