@@ -1482,6 +1482,11 @@ pub(super) fn render_message_body(
                         ),
                     );
                     let pill_r = Rect::from_center_size(resp.rect.center(), Vec2::new(108.0, 26.0));
+                    let zoom_resp = ui.interact(
+                        pill_r,
+                        Id::new(("photo_zoom", &msg.id, msg.ts)),
+                        Sense::click(),
+                    ).on_hover_cursor(CursorIcon::PointingHand);
                     ui.painter().rect_filled(
                         pill_r,
                         Rounding::same(13.0),
@@ -1520,7 +1525,7 @@ pub(super) fn render_message_body(
                         }
                     }
                 }
-                if body_action.is_none() && resp.clicked() {
+                if body_action.is_none() && (zoom_resp.clicked() || resp.clicked()) {
                     body_action = Some(BubbleAction::OpenImagePopup {
                         tex_key: key,
                         full_url: open_target,
