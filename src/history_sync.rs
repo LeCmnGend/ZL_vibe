@@ -209,6 +209,7 @@ where
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
+    set_last_mobile_sync_status(None);
     let pub_key = generate_sync_public_key();
     let before_total: usize = threads.iter().map(|t| t.messages.len()).sum();
 
@@ -222,8 +223,6 @@ where
     }
 
     if send_phone_prompt {
-        set_last_mobile_sync_status(None);
-
         // Phase 1: Send mobile wake-up / pull request to phone (`cmd 12000` + WebSocket `cmd 592` & `cmd 590`)
         on_progress(
             0.10,

@@ -3933,6 +3933,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 .await;
                                 let cancelled = crate::history_sync::PHONE_SYNC_CANCEL
                                     .load(Ordering::Relaxed);
+                                let phone_status = crate::history_sync::last_mobile_sync_status();
                                 match res {
                                     Ok((added, active_threads)) => {
                                         let _ = gui_tx_clone.send(GuiEvent::PhoneSyncFinished {
@@ -3942,6 +3943,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             active_threads,
                                             cancelled,
                                             error: None,
+                                            phone_prompt_sent: send_phone_prompt,
+                                            phone_status: phone_status.clone(),
                                         });
                                     }
                                     Err(e) => {
@@ -3952,6 +3955,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             active_threads: 0,
                                             cancelled,
                                             error: Some(e.to_string()),
+                                            phone_prompt_sent: send_phone_prompt,
+                                            phone_status,
                                         });
                                     }
                                 }

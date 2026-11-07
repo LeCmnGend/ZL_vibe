@@ -235,6 +235,8 @@ pub enum GuiEvent {
         active_threads: usize,
         cancelled: bool,
         error: Option<String>,
+        phone_prompt_sent: bool,
+        phone_status: Option<String>,
     },
     ProxyUpdated(Result<Option<String>, String>),
     FileDownloaded(Result<(String, String), String>),
@@ -311,14 +313,24 @@ fn phone_sync_completion_message(
     active_threads: usize,
     cancelled: bool,
     error: Option<&str>,
+    phone_prompt_sent: bool,
+    phone_status: Option<&str>,
 ) -> String {
     if let Some(err) = error {
         return format!("⚠️ Đồng bộ thất bại: {err}");
     }
     let prefix = if cancelled { "Đã dừng" } else { "Đã hoàn tất" };
-    format!(
-        "{prefix} yêu cầu: {added} tin mới từ Cloud/Nhóm ({active_threads} hội thoại). Lịch sử điện thoại chưa được tải vào ứng dụng."
-    )
+    let cloud_status = format!("{prefix} đồng bộ: {added} tin mới từ Cloud/Nhóm ({active_threads} hội thoại)");
+    let phone_status = phone_status.filter(|status| !status.trim().is_empty());
+    match (phone_prompt_sent, phone_status) {
+        (_, Some(status)) => format!("{cloud_status}. Trạng thái điện thoại: {status}"),
+        (true, None) => format!(
+            "{cloud_status}. Chưa nhận được phản hồi từ điện thoại; mở Zalo trên điện thoại và bấm 'Đồng bộ ngay'."
+        ),
+        (false, None) => format!(
+            "{cloud_status}. Lượt này chỉ đồng bộ Cloud/Nhóm, chưa gửi yêu cầu tới điện thoại."
+        ),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2444,6 +2456,8 @@ impl ZaloGuiApp {
                     active_threads,
                     cancelled,
                     error,
+                    phone_prompt_sent,
+                    phone_status,
                 } => {
                     if uin.is_empty() || uin != self.user_uin {
                         continue;
@@ -2485,6 +2499,8 @@ impl ZaloGuiApp {
                         active_threads,
                         cancelled,
                         error.as_deref(),
+                        phone_prompt_sent,
+                        phone_status.as_deref(),
                     );
                     self.phone_sync_status = msg.clone();
                     self.status_msg = msg.clone();
@@ -3425,16 +3441,26 @@ mod tests {
     }
 
     #[test]
-    fn phone_sync_completion_does_not_claim_phone_messages_were_imported() {
-        let none = phone_sync_completion_message(0, 0, false, None);
-        assert!(none.contains("Lịch sử điện thoại chưa được tải vào ứng dụng"));
-        assert!(none.contains("0 tin mới từ Cloud/Nhóm"));
+    fn phone_sync_completion_reports_phone_request_and_result() {
+        let background = phone_sync_completion_message(0, 0, false, None, false, None);
+        assert!(background.contains("0 tin mới từ Cloud/Nhóm"));
+        assert!(background.contains("chưa gửi yêu cầu tới điện thoại"));
 
-        let cloud = phone_sync_completion_message(12, 3, false, None);
-        assert!(cloud.contains("12 tin mới từ Cloud/Nhóm (3 hội thoại)"));
-        assert!(cloud.contains("Lịch sử điện thoại chưa được tải vào ứng dụng"));
+        let waiting = phone_sync_completion_message(12, 3, false, None, true, None);
+        assert!(waiting.contains("12 tin mới từ Cloud/Nhóm (3 hội thoại)"));
+        assert!(waiting.contains("Chưa nhận được phản hồi từ điện thoại"));
 
-        let failed = phone_sync_completion_message(0, 0, false, Some("network"));
+        let imported = phone_sync_completion_message(
+            12,
+            3,
+            false,
+            None,
+            true,
+            Some("Đã nhập 4 tin nhắn mới từ điện thoại."),
+        );
+        assert!(imported.contains("Trạng thái điện thoại: Đã nhập 4 tin nhắn mới"));
+
+        let failed = phone_sync_completion_message(0, 0, false, Some("network"), true, None);
         assert!(failed.contains("Đồng bộ thất bại: network"));
     }
 }
