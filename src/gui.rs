@@ -223,6 +223,7 @@ pub enum GuiEvent {
     ),
     MuteSnapshotSynced(HashMap<String, i64>),
     PinnedSnapshotSynced(Vec<String>),
+    PinnedSyncFailed,
     MuteEventsReceived(Vec<crate::chat::MuteControlEvent>),
     PhoneSyncProgress {
         progress: f32,
@@ -2402,22 +2403,13 @@ impl ZaloGuiApp {
                     self.persist_threads_async();
                 }
                 GuiEvent::PinnedSnapshotSynced(pinned_ids) => {
-                    for pid in &pinned_ids {
-                        let clean = pid
-                            .trim_start_matches("group_")
-                            .trim_start_matches('g')
-                            .trim_start_matches('G')
-                            .trim_start_matches('u')
-                            .trim_start_matches('U')
-                            .trim()
-                            .to_string();
-                        if !clean.is_empty() && !self.settings.pinned_threads.contains(&clean) {
-                            self.settings.pinned_threads.push(clean);
-                        }
-                    }
+                    self.settings.pinned_threads = pinned_ids.clone();
                     crate::chat::apply_pinned_threads(&mut self.threads, &pinned_ids);
                     self.settings.save();
                     self.persist_threads_async();
+                }
+                GuiEvent::PinnedSyncFailed => {
+                    self.show_toast("Không đồng bộ được danh sách ghim từ máy chủ Zalo");
                 }
                 GuiEvent::MuteEventsReceived(events) => {
                     let mut changed = false;

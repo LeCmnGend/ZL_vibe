@@ -1156,12 +1156,44 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             pin,
                         } => {
                             let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
                             tokio::spawn(async move {
                                 let s = session_clone.lock().await.clone();
-                                let _ = crate::chat::update_pinned_conversation(
-                                    &s, &thread_id, is_group, pin,
-                                )
-                                .await;
+                                let update_failed =
+                                    if let Err(error) = crate::chat::update_pinned_conversation(
+                                        &s, &thread_id, is_group, pin,
+                                    )
+                                    .await
+                                    {
+                                        crate::logger::log_error(
+                                            "gui::pin_thread",
+                                            &error.to_string(),
+                                        );
+                                        true
+                                    } else {
+                                        false
+                                    };
+                                let sync_failed = match crate::chat::get_pinned(&s).await {
+                                    Ok(response) => {
+                                        let pinned_ids =
+                                            crate::chat::parse_pinned_conversations(&response);
+                                        let _ = gui_tx_clone
+                                            .send(GuiEvent::PinnedSnapshotSynced(pinned_ids));
+                                        false
+                                    }
+                                    Err(error) => {
+                                        crate::logger::log_error(
+                                            "gui::pin_thread_sync",
+                                            &error.to_string(),
+                                        );
+                                        true
+                                    }
+                                };
+                                if update_failed || sync_failed {
+                                    let _ = gui_tx_clone.send(GuiEvent::PinnedSyncFailed);
+                                }
+                                ctx_clone.request_repaint();
                             });
                         }
                         WorkerCmd::MarkThreadUnread {

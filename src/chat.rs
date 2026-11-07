@@ -4324,9 +4324,7 @@ pub fn is_pinned_in_list(thread_id: &str, is_group: bool, pinned_ids: &[String])
 /// Apply server pinned status to threads.
 pub fn apply_pinned_threads(threads: &mut [Thread], pinned_ids: &[String]) {
     for t in threads.iter_mut() {
-        if is_pinned_in_list(&t.id, t.is_group, pinned_ids) {
-            t.presentation.pinned = true;
-        }
+        t.presentation.pinned = is_pinned_in_list(&t.id, t.is_group, pinned_ids);
     }
 }
 
