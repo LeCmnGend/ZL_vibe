@@ -7,7 +7,7 @@ fn main() {
         let mut parts = date.split('.');
         let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
         if parts.next().is_some() { return None; }
-        Some(format!("{year}{month:0>2}{day:0>2}-{hour}"))
+        Some(format!("{year}{month:0>2}{day:0>2}-{hour:0>4}"))
     }).unwrap_or(version);
     println!("cargo:rustc-env=ZL_VIBE_DISPLAY_VERSION={display_version}");
     println!("cargo:rerun-if-changed=src/assets/app_icon.ico");
