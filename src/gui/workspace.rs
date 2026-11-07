@@ -1441,15 +1441,15 @@ impl ZaloGuiApp {
                                 });
                             });
                     }
-                    // 1b. Pinned Message Banner (if any message is pinned in this thread)
+                    // 1b. Pinned messages available in the current conversation.
                     let pinned_msg_info = self
                         .threads
                         .get(self.selected_thread_index)
-                        .and_then(|t| {
+                        .map(|t| {
                             t.messages
                                 .iter()
                                 .enumerate()
-                                .find(|(_, m)| m.is_pinned)
+                                .filter(|(_, m)| m.is_pinned)
                                 .map(|(idx, m)| {
                                     (
                                         idx,
@@ -1467,10 +1467,13 @@ impl ZaloGuiApp {
                                         },
                                     )
                                 })
-                        });
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
 
-                    let mut unpin_idx: Option<usize> = None;
-                    if let Some((pidx, psender, ptext)) = pinned_msg_info {
+                    let mut jump_to_pin = None;
+                    let mut unpin_all = false;
+                    if let Some((_, psender, ptext)) = pinned_msg_info.first() {
                         egui::Frame::none()
                             .fill(pal.bg_elevated)
                             .stroke(Stroke::new(1.0_f32, pal.primary.linear_multiply(0.4)))
@@ -1478,35 +1481,95 @@ impl ZaloGuiApp {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(format!("{} Tin ghim:", lucide::PIN))
-                                            .size(12.5)
-                                            .color(pal.primary)
-                                            .strong(),
+                                        RichText::new(lucide::MESSAGE_SQUARE)
+                                            .size(16.0)
+                                            .color(pal.primary),
                                     );
-                                    ui.label(
-                                        RichText::new(format!("{psender}: {ptext}"))
-                                            .size(12.5)
-                                            .color(pal.text_primary),
-                                    );
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            RichText::new("Tin nhắn")
+                                                .size(12.5)
+                                                .color(pal.text_primary)
+                                                .strong(),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("{psender}: {ptext}"))
+                                                .size(11.5)
+                                                .color(pal.text_secondary),
+                                        );
+                                    });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui
-                                            .small_button(format!("Bỏ ghim {}", lucide::X))
-                                            .on_hover_cursor(CursorIcon::PointingHand)
-                                            .clicked()
-                                        {
-                                            unpin_idx = Some(pidx);
-                                        }
+                                        ui.menu_button(lucide::ELLIPSIS, |ui| {
+                                            if ui.button("Bỏ ghim tất cả").clicked() {
+                                                unpin_all = true;
+                                                ui.close_menu();
+                                            }
+                                        });
+                                        let pin_count = pinned_msg_info.len();
+                                        let pin_label = if pin_count > 1 {
+                                            format!("+{} ghim", pin_count - 1)
+                                        } else {
+                                            "1 ghim".to_string()
+                                        };
+                                        ui.menu_button(
+                                            format!("{pin_label} {}", lucide::CHEVRON_DOWN),
+                                            |ui| {
+                                                for (idx, sender, text) in &pinned_msg_info {
+                                                    if ui
+                                                        .selectable_label(
+                                                            false,
+                                                            format!("{sender}: {text}"),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        jump_to_pin = Some(*idx);
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            },
+                                        );
                                     });
                                 });
                             });
                     }
-                    if let Some(uidx) = unpin_idx {
-                        if let Some(real) = self
+
+                    if let Some(index) = jump_to_pin {
+                        let reference = self
                             .threads
-                            .get_mut(self.selected_thread_index)
-                            .and_then(|t| t.messages.get_mut(uidx))
-                        {
-                            real.is_pinned = false;
+                            .get(self.selected_thread_index)
+                            .and_then(|thread| {
+                                let message = thread.messages.get(index)?;
+                                [message.id.as_str(), message.client_message_id.as_str()]
+                                    .into_iter()
+                                    .find(|reference| {
+                                        crate::message_navigation::unique_reference_index(
+                                            &thread.messages,
+                                            reference,
+                                        ) == Some(index)
+                                    })
+                                    .map(str::to_owned)
+                            });
+                        if let Some(reference) = reference {
+                            self.filter_starred_only = false;
+                            self.in_chat_search_open = false;
+                            self.in_chat_search_query.clear();
+                            self.quote_jump = Some(QuoteJump {
+                                thread_id: thread_id.clone(),
+                                reference,
+                                highlight_until: std::time::Instant::now()
+                                    + std::time::Duration::from_secs(3),
+                                scroll_pending: true,
+                            });
+                            ctx.request_repaint();
+                        } else {
+                            self.show_toast("Không tìm thấy ID duy nhất để mở tin ghim");
+                        }
+                    }
+                    if unpin_all {
+                        if let Some(thread) = self.threads.get_mut(self.selected_thread_index) {
+                            for message in &mut thread.messages {
+                                message.is_pinned = false;
+                            }
                         }
                         self.persist_threads_async();
                         self.status_msg = "Đã bỏ ghim tin nhắn".into();
