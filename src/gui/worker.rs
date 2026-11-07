@@ -245,6 +245,10 @@ pub enum WorkerCmd {
         user_id: String,
         alias: String,
     },
+    CreateGroup {
+        name: String,
+        member_ids: Vec<String>,
+    },
     SetProxy {
         proxy_url: String,
     },
@@ -3827,6 +3831,19 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ctx_clone.request_repaint();
                             });
                         }
+                        WorkerCmd::CreateGroup { name, member_ids } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::create_group(&s, &name, &member_ids)
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupCreationFinished(result));
+                                ctx_clone.request_repaint();
+                            });
+                        }
                         WorkerCmd::FetchSocialProfile { target_uid } => {
                             let session_clone = session.clone();
                             let gui_tx_clone = gui_tx.clone();
@@ -3975,10 +3992,10 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 egui_ctx.request_repaint();
                                 continue;
                             }
+                            crate::history_sync::PHONE_SYNC_CANCEL.store(false, Ordering::Relaxed);
                             if let Some(tx) = WORKER_TX.get() {
                                 let _ = tx.send(WorkerCmd::SyncContactAliases);
                             }
-                            crate::history_sync::PHONE_SYNC_CANCEL.store(false, Ordering::Relaxed);
                             let session_clone = session.clone();
                             let poll_clone = poll_state.clone();
                             let gui_tx_clone = gui_tx.clone();

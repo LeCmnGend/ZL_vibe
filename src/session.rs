@@ -1384,6 +1384,17 @@ impl Session {
         .await
     }
 
+    /// Perform a bodyless `POST` request against `endpoint` with host failover.
+    ///
+    /// # Errors
+    /// Returns the request error when every candidate host fails.
+    pub async fn post_endpoint(&self, endpoint: &str, path_and_query: &str) -> Result<Value> {
+        self.request_with_candidates(endpoint, path_and_query, |url| async move {
+            self.send(Method::POST, &url, None, false).await
+        })
+        .await
+    }
+
     /// Perform a `POST` form request against `endpoint` with multi-candidate host failover (#27).
     pub async fn post_endpoint_form(
         &self,

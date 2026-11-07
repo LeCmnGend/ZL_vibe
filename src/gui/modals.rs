@@ -6635,22 +6635,31 @@ impl ZaloGuiApp {
                         ui.painter()
                             .rect_filled(grp_r, Rounding::same(7.0), pal.bg_hover);
                     }
-                    draw_icon_contacts(
-                        ui.painter(),
-                        grp_r.center(),
-                        16.5,
-                        if grp_resp.hovered() {
-                            pal.primary_hover
-                        } else {
-                            pal.text_secondary
-                        },
+                    let icon_color = if grp_resp.hovered() {
+                        pal.primary_hover
+                    } else {
+                        pal.text_secondary
+                    };
+                    draw_lucide_icon(ui.painter(), grp_r.center(), lucide::USERS, 16.5, icon_color);
+                    let plus = Pos2::new(grp_r.right() - 6.0, grp_r.top() + 8.0);
+                    ui.painter().circle_filled(plus, 5.0, pal.bg_sidebar);
+                    ui.painter().line_segment(
+                        [plus - Vec2::new(2.3, 0.0), plus + Vec2::new(2.3, 0.0)],
+                        Stroke::new(1.3_f32, icon_color),
+                    );
+                    ui.painter().line_segment(
+                        [plus - Vec2::new(0.0, 2.3), plus + Vec2::new(0.0, 2.3)],
+                        Stroke::new(1.3_f32, icon_color),
                     );
                     if grp_resp
                         .on_hover_cursor(CursorIcon::PointingHand)
-                        .on_hover_text("Danh sách nhóm và cộng đồng")
+                        .on_hover_text("Tạo nhóm")
                         .clicked()
                     {
-                        self.contacts_sub_tab = ContactsSubTab::Groups;
+                        self.group_create_dialog_open = true;
+                        self.group_create_name.clear();
+                        self.group_create_search.clear();
+                        self.group_create_selected.clear();
                     }
                 });
 
@@ -7016,6 +7025,143 @@ impl ZaloGuiApp {
                     }
                 }
             });
+
+        self.render_create_group_dialog(ctx, pal);
+    }
+
+    fn render_create_group_dialog(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
+        if !self.group_create_dialog_open {
+            return;
+        }
+
+        let mut open = true;
+        let mut submit = false;
+        egui::Window::new("Tạo nhóm")
+            .id(Id::new("create_group_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(420.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(pal.bg_elevated)
+                    .rounding(Rounding::same(12.0))
+                    .inner_margin(Margin::symmetric(18.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Tên nhóm").color(pal.text_secondary));
+                ui.add_enabled(
+                    !self.group_create_submitting,
+                    egui::TextEdit::singleline(&mut self.group_create_name)
+                        .hint_text("Nhập tên nhóm")
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!("Chọn thành viên ({})", self.group_create_selected.len()))
+                        .color(pal.text_secondary),
+                );
+                ui.add_enabled(
+                    !self.group_create_submitting,
+                    egui::TextEdit::singleline(&mut self.group_create_search)
+                        .hint_text("Tìm bạn")
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(6.0);
+
+                let query = self.group_create_search.trim().to_lowercase();
+                let folded_query = fold_vn_search(&query);
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut friends: Vec<(String, String)> = self
+                            .threads
+                            .iter()
+                            .filter(|thread| {
+                                !thread.is_group && !thread.name.contains("Cloud của tôi")
+                            })
+                            .map(|thread| {
+                                (
+                                    thread.id.clone(),
+                                    self.contact_display_name(&thread.id, &thread.name),
+                                )
+                            })
+                            .filter(|(_, name)| {
+                                query.is_empty()
+                                    || matches_vn_query(name, &query, &folded_query)
+                            })
+                            .collect();
+                        friends.sort_by(|a, b| fold_vn_search(&a.1).cmp(&fold_vn_search(&b.1)));
+                        for (user_id, name) in friends {
+                            let mut selected = self.group_create_selected.contains(&user_id);
+                            if ui
+                                .add_enabled(
+                                    !self.group_create_submitting,
+                                    egui::Checkbox::new(&mut selected, name),
+                                )
+                                .changed()
+                            {
+                                if selected {
+                                    self.group_create_selected.insert(user_id);
+                                } else {
+                                    self.group_create_selected.remove(&user_id);
+                                }
+                            }
+                        }
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let create = egui::Button::new("Tạo nhóm")
+                            .fill(pal.primary)
+                            .rounding(Rounding::same(7.0));
+                        if ui
+                            .add_enabled(
+                                !self.group_create_submitting
+                                    && !self.group_create_name.trim().is_empty()
+                                    && !self.group_create_selected.is_empty(),
+                                create,
+                            )
+                            .clicked()
+                        {
+                            submit = true;
+                        }
+                        if ui
+                            .add_enabled(!self.group_create_submitting, egui::Button::new("Huỷ"))
+                            .clicked()
+                        {
+                            self.group_create_dialog_open = false;
+                        }
+                    });
+                });
+                if self.group_create_submitting {
+                    ui.label(RichText::new("Đang tạo nhóm…").color(pal.text_muted));
+                }
+            });
+
+        if !open && !self.group_create_submitting {
+            self.group_create_dialog_open = false;
+        }
+        if submit {
+            let mut member_ids: Vec<String> = self.group_create_selected.iter().cloned().collect();
+            member_ids.sort();
+            let command = WorkerCmd::CreateGroup {
+                name: self.group_create_name.trim().to_owned(),
+                member_ids,
+            };
+            if let Some(tx) = WORKER_TX.get() {
+                if tx.send(command).is_ok() {
+                    self.group_create_submitting = true;
+                } else {
+                    self.show_toast("Không gửi được yêu cầu tạo nhóm");
+                }
+            } else {
+                self.show_toast("Hãy đăng nhập để tạo nhóm");
+            }
+        }
     }
 
     pub(super) fn trigger_feed_timeline_load(&mut self) {

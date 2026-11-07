@@ -1219,6 +1219,73 @@ pub fn save_threads_cache(threads: &[Thread]) {
     }
 }
 
+/// Create a Zalo group from selected friend IDs.
+///
+/// # Errors
+/// Returns an error when input is invalid or the group service rejects the request.
+pub async fn create_group(s: &Session, name: &str, member_ids: &[String]) -> Result<String> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("hãy nhập tên nhóm");
+    }
+
+    let mut members = std::collections::HashSet::new();
+    let members: Vec<String> = member_ids
+        .iter()
+        .map(|id| {
+            id.trim()
+                .strip_prefix('u')
+                .or_else(|| id.trim().strip_prefix('U'))
+                .unwrap_or_else(|| id.trim())
+                .to_owned()
+        })
+        .filter(|id| !id.is_empty() && members.insert(id.clone()))
+        .collect();
+    if members.is_empty() {
+        anyhow::bail!("hãy chọn ít nhất một người bạn");
+    }
+
+    let client_id = crate::login::unix_now().saturating_mul(1000);
+    let member_types = vec![-1; members.len()];
+    // Payload shape follows zca-js; live-session verification is pending.
+    let params = s.encoded_params(&json!({
+        "clientId": client_id,
+        "gname": name,
+        "gdesc": null,
+        "members": members,
+        "membersTypes": member_types,
+        "nameChanged": 1,
+        "createLink": 1,
+        "clientLang": "vi",
+        "imei": s.imei,
+        "zsource": 601,
+    }))?;
+    let path = format!("/api/group/create/v2?{}&params={params}", s.common_params());
+    let response = s.post_endpoint("group", &path).await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    if let Some(code) = response.get("error_code").and_then(Value::as_i64) {
+        if code != 0 {
+            anyhow::bail!("Zalo group creation failed with error_code {code}");
+        }
+    }
+    let data = response.get("data").cloned().unwrap_or(response);
+    let data = if let Value::String(data) = data {
+        serde_json::from_str(&data)?
+    } else {
+        data
+    };
+    let group_id = data
+        .get("groupId")
+        .or_else(|| data.get("group_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Zalo did not return a group ID"))?;
+    Ok(group_id.to_owned())
+}
+
 /// `/api/social/friend/getfriends` — the friend list.
 ///
 /// Tries `s.domains.friend` (the canonical `tt-friend-wpa.chat.zalo.me` host) first and

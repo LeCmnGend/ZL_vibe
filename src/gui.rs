@@ -120,6 +120,7 @@ pub enum GuiEvent {
     },
     PhoneLookupSuccess(crate::chat::PhoneLookupResult),
     PhoneLookupFailed(String),
+    GroupCreationFinished(Result<String, String>),
     FriendStatusChecked {
         user_id: String,
         status: crate::chat::FriendshipStatus,
@@ -764,6 +765,11 @@ pub struct ZaloGuiApp {
     phone_lookup_loading: bool,
     phone_lookup_result: Option<crate::chat::PhoneLookupResult>,
     phone_lookup_error: Option<String>,
+    group_create_dialog_open: bool,
+    group_create_name: String,
+    group_create_search: String,
+    group_create_selected: HashSet<String>,
+    group_create_submitting: bool,
     in_chat_search_open: bool,
     in_chat_search_query: String,
     in_chat_search_focus_pending: bool,
@@ -1234,6 +1240,11 @@ impl ZaloGuiApp {
             phone_lookup_loading: false,
             phone_lookup_result: None,
             phone_lookup_error: None,
+            group_create_dialog_open: false,
+            group_create_name: String::new(),
+            group_create_search: String::new(),
+            group_create_selected: HashSet::new(),
+            group_create_submitting: false,
             in_chat_search_open: false,
             in_chat_search_query: String::new(),
             in_chat_search_focus_pending: false,
@@ -2176,6 +2187,21 @@ impl ZaloGuiApp {
                     self.phone_lookup_result = None;
                     self.phone_modal_open = true;
                     self.phone_lookup_error = Some(err);
+                }
+                GuiEvent::GroupCreationFinished(Ok(_group_id)) => {
+                    self.group_create_submitting = false;
+                    self.group_create_dialog_open = false;
+                    self.group_create_name.clear();
+                    self.group_create_search.clear();
+                    self.group_create_selected.clear();
+                    self.show_toast("Đã tạo nhóm");
+                    if let Some(tx) = WORKER_TX.get() {
+                        let _ = tx.send(WorkerCmd::RefreshThreads);
+                    }
+                }
+                GuiEvent::GroupCreationFinished(Err(error)) => {
+                    self.group_create_submitting = false;
+                    self.show_toast(format!("Không tạo được nhóm: {error}"));
                 }
                 GuiEvent::SendFailed {
                     thread_id: _,
