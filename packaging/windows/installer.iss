@@ -5,6 +5,10 @@
 #ifndef MyAppVersion
 #define MyAppVersion "0.0.0"
 #endif
+; Windows PE version resources require numeric components, unlike display versions.
+#ifndef MyAppFileVersion
+#define MyAppFileVersion "0.0.0.0"
+#endif
 #define MyAppPublisher "ctdoteam1110"
 #define MyAppURL "https://github.com/ctdoteam1110/ctdozlite"
 #define MyAppExeName "ctdozlite.exe"
@@ -42,12 +46,12 @@ SetupIconFile=..\..\src\assets\app_icon.ico
 Compression=zip/9
 SolidCompression=no
 SignedUninstaller=no
-VersionInfoVersion={#MyAppVersion}.0
+VersionInfoVersion={#MyAppFileVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=ctdozlite Native Desktop Client Installer
 VersionInfoTextVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion={#MyAppVersion}.0
+VersionInfoProductVersion={#MyAppFileVersion}
 VersionInfoCopyright=Copyright (C) 2026 ctdoteam1110 (MIT OR Apache-2.0)
 WizardStyle=modern
 ArchitecturesAllowed={#ArchAllowed}
