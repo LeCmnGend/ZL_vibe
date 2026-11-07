@@ -387,6 +387,18 @@ struct ActiveCallOverlay {
 }
 
 #[derive(Debug, Clone)]
+struct ImageViewerPhoto {
+    message_id: String,
+    tex_key: String,
+    thumb_url: String,
+    full_url: String,
+    title: String,
+    sender: String,
+    time: String,
+    ts: i64,
+}
+
+#[derive(Debug, Clone, Default)]
 struct ImageViewerModal {
     tex_key: String,
     hd_tex_key: Option<String>,
@@ -394,6 +406,9 @@ struct ImageViewerModal {
     title: String,
     sender: String,
     time: String,
+    thread_id: String,
+    gallery: std::sync::Arc<Vec<ImageViewerPhoto>>,
+    selected_index: usize,
     zoom: f32,
     pan: Vec2,
 }

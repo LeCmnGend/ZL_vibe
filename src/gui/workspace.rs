@@ -1,6 +1,64 @@
 use super::*;
 
 impl ZaloGuiApp {
+    fn chat_image_gallery(&self, thread_id: &str) -> Vec<ImageViewerPhoto> {
+        let Some(thread) = self.threads.iter().find(|thread| thread.id == thread_id) else {
+            return Vec::new();
+        };
+        let mut images = thread
+            .messages
+            .iter()
+            .filter(|message| super::messages::is_zalo_photo_message(message))
+            .filter_map(|message| {
+                let thumb_url = super::messages::photo_primary_url(message)?;
+                let full_url = message
+                    .link_url
+                    .as_deref()
+                    .filter(|url| crate::chat::is_zalo_photo_cdn_url(url))
+                    .unwrap_or(thumb_url)
+                    .to_owned();
+                let title = message
+                    .link_title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|title| {
+                        !title.is_empty()
+                            && !title.starts_with("http://")
+                            && !title.starts_with("https://")
+                            && !title.ends_with(".zdn.vn")
+                            && !title.ends_with(".zadn.vn")
+                            && !title.ends_with(".dlfl.vn")
+                            && !title.contains("zpcloud")
+                            && !title.contains("zpg-r")
+                            && !title.contains("photo-stal")
+                            && !title.contains("photo-zmp")
+                    })
+                    .unwrap_or("Hình ảnh")
+                    .to_owned();
+                Some(ImageViewerPhoto {
+                    message_id: message.id.clone(),
+                    tex_key: format!("thumb_{}", crate::crypto::md5_hex(thumb_url)),
+                    thumb_url: thumb_url.to_owned(),
+                    full_url,
+                    title,
+                    sender: if message.is_outgoing {
+                        "Bạn".into()
+                    } else if !message.sender.is_empty() && message.sender != "0" {
+                        message.sender.clone()
+                    } else {
+                        thread.name.clone()
+                    },
+                    time: message.time.clone(),
+                    ts: message.ts,
+                })
+            })
+            .collect::<Vec<_>>();
+        if images.iter().all(|image| image.ts > 0) {
+            images.sort_by_key(|image| crate::clock::normalize_ts_ms(image.ts));
+        }
+        images
+    }
+
     /// Start loading the full-resolution texture the image viewer shows. Message bubbles and
     /// the media grid keep a 480 px copy; the `hd_` key keeps this one (and its disk cache) apart.
     pub(super) fn request_hd_texture(&mut self, full_url: &str) -> Option<String> {
@@ -614,6 +672,7 @@ impl ZaloGuiApp {
                                                     time: String::new(),
                                                     zoom: 1.0,
                                                     pan: Vec2::ZERO,
+                                                    ..ImageViewerModal::default()
                                                 });
                                             }
                                         }
@@ -2386,6 +2445,7 @@ impl ZaloGuiApp {
                                     }
                                 }
                                 BubbleAction::OpenImagePopup {
+                                    message_id,
                                     tex_key,
                                     full_url,
                                     title,
@@ -2393,6 +2453,32 @@ impl ZaloGuiApp {
                                     time,
                                 } => {
                                     let hd_tex_key = self.request_hd_texture(&full_url);
+                                    let mut gallery = self.chat_image_gallery(&thread_id);
+                                    let selected_index = gallery
+                                        .iter()
+                                        .position(|image| image.message_id == message_id)
+                                        .unwrap_or_else(|| {
+                                            let ts = self
+                                                .threads
+                                                .iter()
+                                                .find(|thread| thread.id == thread_id)
+                                                .and_then(|thread| {
+                                                    thread.messages.iter().find(|msg| msg.id == message_id)
+                                                })
+                                                .map(|msg| msg.ts)
+                                                .unwrap_or_default();
+                                            gallery.push(ImageViewerPhoto {
+                                                message_id,
+                                                tex_key: tex_key.clone(),
+                                                thumb_url: full_url.clone(),
+                                                full_url: full_url.clone(),
+                                                title: title.clone(),
+                                                sender: sender.clone(),
+                                                time: time.clone(),
+                                                ts,
+                                            });
+                                            gallery.len() - 1
+                                        });
                                     self.image_viewer = Some(ImageViewerModal {
                                         tex_key,
                                         hd_tex_key,
@@ -2400,6 +2486,9 @@ impl ZaloGuiApp {
                                         title,
                                         sender,
                                         time,
+                                        thread_id: thread_id.clone(),
+                                        gallery: std::sync::Arc::new(gallery),
+                                        selected_index,
                                         zoom: 1.0,
                                         pan: Vec2::ZERO,
                                     });

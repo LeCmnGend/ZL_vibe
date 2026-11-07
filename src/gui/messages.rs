@@ -1527,6 +1527,7 @@ pub(super) fn render_message_body(
                 }
                 if body_action.is_none() && (zoom_resp.clicked() || resp.clicked()) {
                     body_action = Some(BubbleAction::OpenImagePopup {
+                        message_id: msg.id.clone(),
                         tex_key: key,
                         full_url: open_target,
                         title: title_label,
@@ -1581,6 +1582,7 @@ pub(super) fn render_message_body(
                     .clicked()
                 {
                     body_action = Some(BubbleAction::OpenImagePopup {
+                        message_id: msg.id.clone(),
                         tex_key: key,
                         full_url: open_target,
                         title: title_label,
@@ -2555,6 +2557,7 @@ pub(super) enum BubbleAction {
         is_video: bool,
     },
     OpenImagePopup {
+        message_id: String,
         tex_key: String,
         full_url: String,
         title: String,
@@ -3526,6 +3529,7 @@ pub(super) fn bubble_context_menu(
                         if let Some(thumb_url) = photo_primary_url(msg) {
                             if menu_item(ui, lucide::SEARCH, "Xem ảnh phóng to", pal.text_primary).clicked() {
                                 action = Some(BubbleAction::OpenImagePopup {
+                                    message_id: msg.id.clone(),
                                     tex_key: format!("thumb_{}", crate::crypto::md5_hex(thumb_url)),
                                     full_url: msg
                                         .link_url

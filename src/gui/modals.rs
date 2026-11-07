@@ -5914,7 +5914,11 @@ impl ZaloGuiApp {
         let clean_title = image_viewer_title(&viewer.title);
 
         // The window size is chosen once per opened image, so the user's own resizing sticks.
-        let ident = format!("{}|{}", viewer.tex_key, viewer.full_url);
+        let ident = if viewer.thread_id.is_empty() {
+            format!("{}|{}", viewer.tex_key, viewer.full_url)
+        } else {
+            format!("{}|gallery", viewer.thread_id)
+        };
         let (win_size, win_position, newly_opened) = match &self.media.image_window {
             Some((id, size, position)) if *id == ident => (*size, *position, false),
             _ => {
@@ -5944,6 +5948,8 @@ impl ZaloGuiApp {
         let mut dl_action: Option<BubbleAction> = None;
         let mut should_close = false;
         let mut copied = false;
+        let mut gallery_selection = None;
+        let mut thumbnail_requests = HashMap::new();
 
         let window_title = format!("Xem ảnh — {clean_title}");
         let mut builder = egui::ViewportBuilder::default()
@@ -5987,6 +5993,17 @@ impl ZaloGuiApp {
                         .default_size(win_size)
                         .show(vctx, |ui| {
                             toolbar(ui, &mut viewer);
+                            if !viewer.gallery.is_empty() {
+                                render_image_viewer_gallery(
+                                    ui,
+                                    &viewer.gallery,
+                                    viewer.selected_index,
+                                    &self.sticker_textures,
+                                    &mut gallery_selection,
+                                    &mut thumbnail_requests,
+                                    pal,
+                                );
+                            }
                             image_viewer_stage(ui, &mut viewer, active_tex.as_ref(), pal);
                         });
                     should_close |= !open;
@@ -6000,6 +6017,27 @@ impl ZaloGuiApp {
                                 .inner_margin(Margin::symmetric(14.0, 6.0)),
                         )
                         .show(vctx, |ui| toolbar(ui, &mut viewer));
+                    if !viewer.gallery.is_empty() {
+                        egui::SidePanel::right("image_viewer_gallery")
+                            .exact_width(132.0)
+                            .resizable(false)
+                            .frame(
+                                egui::Frame::none()
+                                    .fill(pal.bg_sidebar)
+                                    .stroke(Stroke::new(1.0, pal.border)),
+                            )
+                            .show(vctx, |ui| {
+                                render_image_viewer_gallery(
+                                    ui,
+                                    &viewer.gallery,
+                                    viewer.selected_index,
+                                    &self.sticker_textures,
+                                    &mut gallery_selection,
+                                    &mut thumbnail_requests,
+                                    pal,
+                                );
+                            });
+                    }
                     egui::CentralPanel::default()
                         .frame(egui::Frame::none().fill(image_stage_bg(pal)))
                         .show(vctx, |ui| {
@@ -6008,6 +6046,19 @@ impl ZaloGuiApp {
                 }
             },
         );
+
+        for (key, url) in thumbnail_requests {
+            if !self.sticker_textures.contains_key(&key) && self.loading_stickers.insert(key.clone()) {
+                if let Some(tx) = WORKER_TX.get() {
+                    let _ = tx.send(WorkerCmd::FetchStickerImage { key, url });
+                }
+            }
+        }
+        if let Some(index) = gallery_selection {
+            if index != viewer.selected_index {
+                self.select_image_viewer_gallery_item(&mut viewer, index);
+            }
+        }
 
         if copied {
             ctx.copy_text(viewer.full_url.clone());
@@ -6018,11 +6069,14 @@ impl ZaloGuiApp {
                 url,
                 suggested_name,
             }) => {
-                let thread_id = self
-                    .threads
-                    .get(self.selected_thread_index)
-                    .map(|t| t.id.clone())
-                    .unwrap_or_default();
+                let thread_id = if viewer.thread_id.is_empty() {
+                    self.threads
+                        .get(self.selected_thread_index)
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default()
+                } else {
+                    viewer.thread_id.clone()
+                };
                 // Use the photo's title as the file name only when it is one (`IMG_01.jpg`);
                 // otherwise the worker names it from the URL.
                 let title = viewer.title.trim();
@@ -6047,6 +6101,21 @@ impl ZaloGuiApp {
         } else {
             self.image_viewer = Some(viewer);
         }
+    }
+
+    fn select_image_viewer_gallery_item(&mut self, viewer: &mut ImageViewerModal, index: usize) {
+        let Some(photo) = viewer.gallery.get(index) else {
+            return;
+        };
+        viewer.selected_index = index;
+        viewer.tex_key = photo.tex_key.clone();
+        viewer.full_url = photo.full_url.clone();
+        viewer.title = photo.title.clone();
+        viewer.sender = photo.sender.clone();
+        viewer.time = photo.time.clone();
+        viewer.hd_tex_key = self.request_hd_texture(&photo.full_url);
+        viewer.zoom = 1.0;
+        viewer.pan = Vec2::ZERO;
     }
 
     /// Detect an `http://` or `https://` URL in `self.input_message` and asynchronously fetch its
@@ -7214,6 +7283,7 @@ impl ZaloGuiApp {
                                     time: String::new(),
                                     zoom: 1.0,
                                     pan: Vec2::ZERO,
+                                    ..ImageViewerModal::default()
                                 });
                             }
                             ui.add_space(12.0);
@@ -7661,6 +7731,7 @@ impl ZaloGuiApp {
                 time: String::new(),
                 zoom: 1.0,
                 pan: Vec2::ZERO,
+                ..ImageViewerModal::default()
             });
         }
     }
@@ -7734,6 +7805,7 @@ impl ZaloGuiApp {
                                 time: String::new(),
                                 zoom: 1.0,
                                 pan: Vec2::ZERO,
+                                ..ImageViewerModal::default()
                             });
                         }
                     }
@@ -8181,6 +8253,113 @@ mod tests {
 // ---------------------------------------------------------------------------
 // Image viewer window helpers
 // ---------------------------------------------------------------------------
+
+fn render_image_viewer_gallery(
+    ui: &mut egui::Ui,
+    gallery: &[ImageViewerPhoto],
+    selected: usize,
+    textures: &HashMap<String, TextureHandle>,
+    selection: &mut Option<usize>,
+    requests: &mut HashMap<String, String>,
+    pal: &ThemePalette,
+) {
+    if gallery.is_empty() {
+        return;
+    }
+    ui.vertical_centered(|ui| {
+        ui.add_space(5.0);
+        ui.label(RichText::new("Ảnh trong hội thoại").size(11.0).color(pal.text_secondary));
+        ui.horizontal(|ui| {
+            if ui.add_enabled(selected > 0, egui::Button::new("↑")).clicked() {
+                *selection = Some(selected - 1);
+            }
+            ui.label(format!("{} / {}", selected + 1, gallery.len()));
+            if ui.add_enabled(selected + 1 < gallery.len(), egui::Button::new("↓")).clicked() {
+                *selection = Some(selected + 1);
+            }
+        });
+    });
+
+    let today = chrono::Local::now().date_naive();
+    let yesterday = today.pred_opt();
+    let mut last_day = Some(i64::MIN);
+    egui::ScrollArea::vertical()
+        .id_source("image_viewer_gallery_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add_space(4.0);
+            for (index, photo) in gallery.iter().enumerate() {
+                let day = crate::clock::local_day(photo.ts);
+                if day != last_day {
+                    let label = crate::clock::local_datetime(photo.ts)
+                        .map(|dt| {
+                            if dt.date_naive() == today {
+                                "Hôm nay".to_owned()
+                            } else if Some(dt.date_naive()) == yesterday {
+                                "Hôm qua".to_owned()
+                            } else {
+                                dt.format("%d/%m/%Y").to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "Khác".to_owned());
+                    ui.label(RichText::new(label).size(10.5).color(pal.text_muted).strong());
+                    last_day = day;
+                }
+
+                let (rect, response) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), 76.0),
+                    Sense::click(),
+                );
+                let fill = if index == selected {
+                    pal.primary.gamma_multiply(0.18)
+                } else {
+                    pal.bg_elevated
+                };
+                ui.painter().rect_filled(rect, Rounding::same(5.0), fill);
+                if index == selected {
+                    ui.painter().rect_stroke(rect, Rounding::same(5.0), Stroke::new(1.0, pal.primary));
+                }
+                if let Some(texture) = textures.get(&photo.tex_key) {
+                    let [w, h] = texture.size();
+                    let scale = ((rect.width() - 12.0) / w.max(1) as f32)
+                        .min(54.0 / h.max(1) as f32)
+                        .min(1.0);
+                    let size = Vec2::new(w as f32 * scale, h as f32 * scale);
+                    let image_rect = Rect::from_center_size(
+                        Pos2::new(rect.center().x, rect.top() + 31.0),
+                        size,
+                    );
+                    ui.painter().image(texture.id(), image_rect, Rect::EVERYTHING, Color32::WHITE);
+                } else {
+                    ui.painter().text(
+                        Pos2::new(rect.center().x, rect.top() + 31.0),
+                        Align2::CENTER_CENTER,
+                        lucide::IMAGE,
+                        FontId::proportional(18.0),
+                        pal.text_muted,
+                    );
+                    if ui.is_rect_visible(rect) {
+                        requests.insert(photo.tex_key.clone(), photo.thumb_url.clone());
+                    }
+                }
+                ui.painter().text(
+                    Pos2::new(rect.center().x, rect.bottom() - 11.0),
+                    Align2::CENTER_CENTER,
+                    if photo.time.is_empty() {
+                        "Ảnh"
+                    } else {
+                        photo.time.as_str()
+                    },
+                    FontId::proportional(9.5),
+                    pal.text_secondary,
+                );
+                if response.clicked() {
+                    *selection = Some(index);
+                }
+            }
+            ui.add_space(5.0);
+        });
+}
 
 /// Readable title for the image viewer: no icon glyph, no `[Hình ảnh]` placeholder, no
 /// ` (1280×960 · 245 KB)` suffix.

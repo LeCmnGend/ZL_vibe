@@ -255,6 +255,7 @@ impl ZaloGuiApp {
                 time: String::new(),
                 zoom: 1.0,
                 pan: Vec2::ZERO,
+                ..ImageViewerModal::default()
             });
         }
         // `QTZALO_DEMO_VIDEO_PENDING=1`: show the "Đang tải video… 45%" card (no download runs).
