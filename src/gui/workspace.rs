@@ -2867,9 +2867,10 @@ impl ZaloGuiApp {
                             });
                             if screenshot_hotkeys.0 || screenshot_hotkeys.1 {
                                 self.screenshot_menu_open = false;
+                                self.screenshot_include_zalo_window = screenshot_hotkeys.0;
                                 if let Some(tx) = WORKER_TX.get() {
                                     let _ = tx.send(WorkerCmd::TriggerScreenshot {
-                                        include_zalo_window: screenshot_hotkeys.0,
+                                        include_zalo_window: self.screenshot_include_zalo_window,
                                     });
                                     self.show_toast("Đã mở công cụ chụp màn hình");
                                 }
@@ -3161,6 +3162,48 @@ impl ZaloGuiApp {
                                             if cam_resp.on_hover_cursor(CursorIcon::PointingHand)
                                                 .on_hover_text("Chụp ảnh màn hình")
                                                 .clicked() {
+                                                self.screenshot_menu_open = false;
+                                                if let Some(tx) = WORKER_TX.get() {
+                                                    let _ = tx.send(WorkerCmd::TriggerScreenshot {
+                                                        include_zalo_window: self.screenshot_include_zalo_window,
+                                                    });
+                                                }
+                                            }
+                                            let (arrow_rect, arrow_resp) = ui.allocate_exact_size(
+                                                Vec2::new(18.0, 34.0),
+                                                Sense::click(),
+                                            );
+                                            if arrow_resp.hovered() || self.screenshot_menu_open {
+                                                ui.painter().rect_filled(
+                                                    arrow_rect,
+                                                    Rounding::same(6.0),
+                                                    if self.screenshot_menu_open {
+                                                        pal.bg_selected
+                                                    } else {
+                                                        pal.bg_hover
+                                                    },
+                                                );
+                                            }
+                                            draw_lucide_icon(
+                                                ui.painter(),
+                                                arrow_rect.center(),
+                                                if self.screenshot_menu_open {
+                                                    lucide::CHEVRON_UP
+                                                } else {
+                                                    lucide::CHEVRON_DOWN
+                                                },
+                                                13.0,
+                                                if arrow_resp.hovered() || self.screenshot_menu_open {
+                                                    pal.primary
+                                                } else {
+                                                    pal.text_secondary
+                                                },
+                                            );
+                                            if arrow_resp
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Chọn chế độ chụp")
+                                                .clicked()
+                                            {
                                                 self.screenshot_menu_open = !self.screenshot_menu_open;
                                             }
 
@@ -3647,17 +3690,35 @@ impl ZaloGuiApp {
                                             ("Chụp kèm với cửa sổ Zalo", "Alt + Ctrl + S", true),
                                             ("Chụp KHÔNG kèm cửa sổ Zalo", "Ctrl + Alt + A", false),
                                         ] {
-                                            let response = ui.add_sized(
-                                                [358.0, 36.0],
-                                                egui::Button::new(format!("{label}   ({shortcut})"))
-                                                    .fill(Color32::TRANSPARENT).stroke(Stroke::NONE),
-                                            );
-                                            if response.clicked() { selected_mode = Some(include_zalo_window); }
+                                            ui.horizontal(|ui| {
+                                                let response = ui.add_sized(
+                                                    [330.0, 36.0],
+                                                    egui::Button::new(format!("{label}   ({shortcut})"))
+                                                        .fill(Color32::TRANSPARENT)
+                                                        .stroke(Stroke::NONE),
+                                                );
+                                                if include_zalo_window
+                                                    == self.screenshot_include_zalo_window
+                                                {
+                                                    ui.label(
+                                                        RichText::new("✓")
+                                                            .color(pal.primary)
+                                                            .size(16.0)
+                                                            .strong(),
+                                                    );
+                                                } else {
+                                                    ui.add_space(16.0);
+                                                }
+                                                if response.clicked() {
+                                                    selected_mode = Some(include_zalo_window);
+                                                }
+                                            });
                                         }
                                     });
                             });
                         if let Some(include_zalo_window) = selected_mode {
                             self.screenshot_menu_open = false;
+                            self.screenshot_include_zalo_window = include_zalo_window;
                             if let Some(tx) = WORKER_TX.get() {
                                 let _ = tx.send(WorkerCmd::TriggerScreenshot { include_zalo_window });
                             }
