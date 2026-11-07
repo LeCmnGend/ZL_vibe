@@ -7012,6 +7012,7 @@ impl ZaloGuiApp {
                     if let Some(idx) = self.threads.iter().position(|t| t.id == tid) {
                         self.selected_thread_index = idx;
                         self.contacts_view_open = false;
+                        self.nav_section = NavSection::Messages;
                         self.thread_filter = ThreadFilter::All;
                         if is_grp {
                             if let Some(tx) = WORKER_TX.get() {

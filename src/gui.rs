@@ -538,9 +538,6 @@ enum NavSection {
     Unread,
     Strangers,
     Hidden,
-    Friends,
-    Groups,
-    FriendRequests,
 }
 
 impl NavSection {
@@ -551,9 +548,6 @@ impl NavSection {
             NavSection::Unread => "Chưa đọc",
             NavSection::Strangers => "Người lạ",
             NavSection::Hidden => "Trò chuyện ẩn",
-            NavSection::Friends => "Bạn bè",
-            NavSection::Groups => "Nhóm và cộng đồng",
-            NavSection::FriendRequests => "Lời mời kết bạn",
         }
     }
 }

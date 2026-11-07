@@ -26,6 +26,7 @@ struct NavItem {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NavAction {
     Section,
+    OpenContacts,
     OpenCloud,
     ZCloud,
 }
@@ -271,15 +272,6 @@ impl ZaloGuiApp {
             NavSection::Other => false,
             NavSection::Unread => self.unread_counts.get(&t.id).copied().unwrap_or(0) > 0,
             NavSection::Strangers => !t.is_group && matches!(self.friendship_of(t), F::Stranger),
-            NavSection::Friends => {
-                !t.is_group
-                    && !Self::is_cloud_thread(t)
-                    && !matches!(self.friendship_of(t), F::Stranger | F::IncomingPending)
-            }
-            NavSection::Groups => t.is_group,
-            NavSection::FriendRequests => {
-                !t.is_group && matches!(self.friendship_of(t), F::IncomingPending)
-            }
         };
         let hidden = self.settings.hidden_threads.contains(&t.id)
             || t.presentation.hidden
@@ -364,18 +356,25 @@ impl ZaloGuiApp {
             },
         ];
         let contacts = vec![
-            item(NavSection::Friends, lucide::USER, "Bạn bè", 0),
-            item(NavSection::Groups, lucide::USERS, "Nhóm và cộng đồng", 0),
-            item(NavSection::FriendRequests, lucide::USER_PLUS, "Lời mời kết bạn", request_cnt),
+            NavItem {
+                section: None,
+                icon: lucide::USERS,
+                label: "Danh bạ",
+                badge: request_cnt,
+                soon: None,
+                action: NavAction::OpenContacts,
+            },
         ];
         // Strangers badge is informational only; keep the list calm like the reference.
         let _ = stranger_cnt;
-        [inbox, storage, contacts]
+        [inbox, contacts, storage]
     }
 
     fn activate_nav_item(&mut self, item_section: Option<NavSection>, action: NavAction, soon: Option<&'static str>) {
         match action {
             NavAction::Section => {
+                self.contacts_view_open = false;
+                self.feed_modal_open = false;
                 if let Some(sec) = item_section {
                     if sec == NavSection::Hidden && self.nav_section != NavSection::Hidden {
                         self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
@@ -412,6 +411,11 @@ impl ZaloGuiApp {
                 if let Some(msg) = soon {
                     self.show_toast(msg);
                 }
+            }
+            NavAction::OpenContacts => {
+                self.contacts_view_open = true;
+                self.cskh_open = false;
+                self.feed_modal_open = false;
             }
             NavAction::OpenCloud => {
                 self.nav_section = NavSection::Messages;
@@ -527,6 +531,7 @@ impl ZaloGuiApp {
     fn is_nav_item_active(&self, item: &NavItem) -> bool {
         match item.action {
             NavAction::Section => item.section == Some(self.nav_section),
+            NavAction::OpenContacts => self.contacts_view_open,
             NavAction::OpenCloud => self
                 .threads
                 .get(self.selected_thread_index)
@@ -579,7 +584,7 @@ impl ZaloGuiApp {
             .show(ui, |ui| {
                 ui.add_space(12.0);
                 let groups = self.nav_items();
-                let titles = ["Hộp thư", "Lưu trữ", "Danh bạ"];
+                let titles = ["Hộp thư", "Danh bạ", "Lưu trữ"];
                 let mut clicked: Option<(Option<NavSection>, NavAction, Option<&'static str>)> = None;
 
                 for (gi, (title, items)) in titles.iter().zip(groups.iter()).enumerate() {
@@ -664,7 +669,12 @@ impl ZaloGuiApp {
         ui.painter().rect_filled(row, Rounding::same(10.0), bg);
         let fg = if active { pal.primary } else { pal.text_primary };
         let icon_fg = if active { pal.primary } else { pal.text_secondary };
-        draw_lucide_icon(ui.painter(), Pos2::new(row.left() + 18.0, row.center().y), item.icon, 16.5, icon_fg);
+        let icon_center = Pos2::new(row.left() + 18.0, row.center().y);
+        if item.action == NavAction::OpenContacts {
+            draw_icon_contacts(ui.painter(), icon_center, 16.5, icon_fg);
+        } else {
+            draw_lucide_icon(ui.painter(), icon_center, item.icon, 16.5, icon_fg);
+        }
         let mut label_max = row.width() - 46.0;
         if item.badge > 0 {
             let c = Pos2::new(row.right() - 18.0, row.center().y);
@@ -696,13 +706,12 @@ impl ZaloGuiApp {
             Color32::TRANSPARENT
         };
         ui.painter().rect_filled(cell, Rounding::same(11.0), bg);
-        draw_lucide_icon(
-            ui.painter(),
-            cell.center(),
-            item.icon,
-            18.0,
-            if active { pal.primary } else { pal.text_secondary },
-        );
+        let icon_color = if active { pal.primary } else { pal.text_secondary };
+        if item.action == NavAction::OpenContacts {
+            draw_icon_contacts(ui.painter(), cell.center(), 18.0, icon_color);
+        } else {
+            draw_lucide_icon(ui.painter(), cell.center(), item.icon, 18.0, icon_color);
+        }
         if item.badge > 0 {
             let c = Pos2::new(cell.right() - 6.0, cell.top() + 7.0);
             ui.painter().circle_filled(c, 7.5, pal.bg_nav);
@@ -755,19 +764,8 @@ impl ZaloGuiApp {
     }
 
     fn render_nav_footer(&mut self, ui: &mut egui::Ui, pal: &ThemePalette, full: bool) {
-        let mut contacts_clicked = false;
         let mut phone_sync_clicked = false;
         if full {
-            contacts_clicked = icon_button(
-                ui,
-                lucide::USERS,
-                30.0,
-                16.0,
-                self.contacts_view_open,
-                pal,
-                "Quản lý danh bạ",
-            )
-            .clicked();
             phone_sync_clicked = icon_button(
                 ui,
                 lucide::REFRESH,
@@ -780,17 +778,6 @@ impl ZaloGuiApp {
             .clicked();
         } else {
             ui.vertical_centered(|ui| {
-                contacts_clicked = icon_button(
-                    ui,
-                    lucide::USERS,
-                    36.0,
-                    17.0,
-                    self.contacts_view_open,
-                    pal,
-                    "Quản lý danh bạ",
-                )
-                .clicked();
-                ui.add_space(6.0);
                 phone_sync_clicked = icon_button(
                     ui,
                     lucide::REFRESH,
@@ -802,10 +789,6 @@ impl ZaloGuiApp {
                 )
                 .clicked();
             });
-        }
-        if contacts_clicked {
-            self.contacts_view_open = !self.contacts_view_open;
-            self.feed_modal_open = false;
         }
         if phone_sync_clicked {
             self.phone_sync_progress = 0.05;
@@ -1622,9 +1605,6 @@ impl ZaloGuiApp {
                             NavSection::Hidden => (lucide::EYE_OFF, "Chưa có trò chuyện ẩn", "Tài khoản chưa có hội thoại nào được ẩn."),
                             NavSection::Unread => (lucide::CHECK_CHECK, "Đã đọc hết", "Bạn không còn tin nhắn chưa đọc."),
                             NavSection::Strangers => (lucide::USER_SEARCH, "Không có người lạ", "Tin nhắn từ người chưa kết bạn sẽ hiện ở đây."),
-                            NavSection::FriendRequests => (lucide::USER_PLUS, "Chưa có lời mời", "Lời mời kết bạn mới sẽ hiện ở đây."),
-                            NavSection::Groups => (lucide::USERS, "Chưa có nhóm", "Các nhóm bạn tham gia sẽ hiện ở đây."),
-                            NavSection::Friends => (lucide::USER, "Chưa có bạn bè", "Danh bạ bạn bè sẽ hiện ở đây sau khi làm mới."),
                             _ => (lucide::MESSAGES_SQUARE, "Chưa có hội thoại", "Bấm \"Làm mới hội thoại\" trong menu tài khoản để tải lại."),
                         };
                         Self::paint_empty_state(ui, pal, icon, title, body);
