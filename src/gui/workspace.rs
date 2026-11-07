@@ -728,7 +728,7 @@ impl ZaloGuiApp {
             self.show_toast(format!("Đã mở cuộc trò chuyện với {}", m.name));
         }
 
-        if let Some(uid) = view_profile_member {
+        if let Some(uid) = view_profile_member.clone() {
             self.feed_modal_open = true;
             self.feed_modal_tab = FeedModalTab::Profile;
             self.feed_target_uid = uid.clone();
@@ -859,8 +859,20 @@ impl ZaloGuiApp {
                                                 pal.text_primary,
                                                 (left_info_w - tag_w).max(40.0),
                                             );
-                                            let (r, _) = ui.allocate_exact_size(Vec2::new(g.size().x, 22.0), Sense::hover());
+                                            let (r, name_response) = ui.allocate_exact_size(
+                                                Vec2::new(g.size().x, 22.0),
+                                                if is_group { Sense::hover() } else { Sense::click() },
+                                            );
                                             ui.painter().galley(Pos2::new(r.left(), r.center().y - g.size().y / 2.0), g, pal.text_primary);
+                                            if !is_group && !is_cloud_thread {
+                                                if name_response
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .on_hover_text("Xem thông tin tài khoản")
+                                                    .clicked()
+                                                {
+                                                    view_profile_member = Some(thread_id.clone());
+                                                }
+                                            }
                                             if let (Some((lbl, col)), true) = (tag, tag_w > 0.0) {
                                                 egui::Frame::none()
                                                     .fill(col.linear_multiply(0.14))
