@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -21,6 +22,23 @@ use crate::store::{self, MessageStore};
 
 pub const AUTOREPLY_FILE: &str = "autoreply_rules.json";
 pub const DEFAULT_API_PORT: u16 = 17890;
+
+fn local_api_origin_allowed(origin: &str, port: u16) -> bool {
+    origin == format!("http://127.0.0.1:{port}") || origin == format!("http://localhost:{port}")
+}
+
+fn bearer_token_matches(headers: &str, expected: &str) -> bool {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("authorization") {
+            return None;
+        }
+        let (scheme, token) = value.trim().split_once(' ')?;
+        scheme
+            .eq_ignore_ascii_case("bearer")
+            .then(|| bool::from(token.trim().as_bytes().ct_eq(expected.as_bytes())))
+    }) == Some(true)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AutoReplyRule {
@@ -802,12 +820,15 @@ pub async fn run_local_http_server(
     port: u16,
     db_path: String,
 ) -> Result<()> {
+    let expected_token = std::env::var("CTDOZLITE_API_TOKEN")
+        .ok()
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("Chưa đặt CTDOZLITE_API_TOKEN để khởi động HTTP API cục bộ")
+        })?;
     let bind_addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&bind_addr).await?;
     crate::api_hub_ext::spawn_background(session.clone());
-    let expected_token = std::env::var("CTDOZLITE_API_TOKEN")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
 
     loop {
         let (mut stream, _) = listener.accept().await?;
@@ -854,33 +875,46 @@ pub async fn run_local_http_server(
             let mut parts = req_line.split_whitespace();
             let method = parts.next().unwrap_or("GET");
             let path = parts.next().unwrap_or("/");
+            let origin = head.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("origin")
+                    .then(|| value.trim().to_string())
+            });
+
+            if origin
+                .as_deref()
+                .is_some_and(|value| !local_api_origin_allowed(value, port))
+            {
+                let body = json!({ "ok": false, "error": "Forbidden: origin not allowed" }).to_string();
+                let response = format!(
+                    "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
 
             if method == "OPTIONS" {
-                let cors = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\n\r\n";
+                let Some(origin) = origin.as_deref() else {
+                    let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                    return;
+                };
+                let cors = format!(
+                    "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nVary: Origin\r\nContent-Length: 0\r\n\r\n"
+                );
                 let _ = stream.write_all(cors.as_bytes()).await;
                 return;
             }
 
-            if let Some(ref expected) = tok {
-                let authorized = head.lines().any(|line| {
-                    let lower = line.to_ascii_lowercase();
-                    if lower.starts_with("authorization:") {
-                        let val = line[14..].trim().trim_start_matches("Bearer ").trim();
-                        val == expected
-                    } else {
-                        false
-                    }
-                });
-                if !authorized {
-                    let body_str = json!({ "ok": false, "error": "Unauthorized: invalid or missing Bearer token" }).to_string();
-                    let resp = format!(
-                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
-                        body_str.len(),
-                        body_str
-                    );
-                    let _ = stream.write_all(resp.as_bytes()).await;
-                    return;
-                }
+            if !bearer_token_matches(head, &tok) {
+                let body = json!({ "ok": false, "error": "Unauthorized: invalid or missing Bearer token" }).to_string();
+                let response = format!(
+                    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
             }
 
             let (status, json_val) =
@@ -894,8 +928,12 @@ pub async fn run_local_http_server(
                 _ => "500 Internal Server Error",
             };
             let body_str = serde_json::to_string(&json_val).unwrap_or_else(|_| "{}".into());
+            let cors_header = origin
+                .as_deref()
+                .map(|value| format!("Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\n"))
+                .unwrap_or_default();
             let resp = format!(
-                "HTTP/1.1 {status_text}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status_text}\r\nContent-Type: application/json; charset=utf-8\r\n{cors_header}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body_str.len(),
                 body_str
             );

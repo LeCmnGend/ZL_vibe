@@ -617,12 +617,18 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                         if port > 0 {
                             let s_api = session.clone();
                             tokio::spawn(async move {
-                                let _ = crate::api_mcp::run_local_http_server(
+                                if let Err(error) = crate::api_mcp::run_local_http_server(
                                     s_api,
                                     port,
                                     "zalo_history.db".into(),
                                 )
-                                .await;
+                                .await
+                                {
+                                    crate::logger::log_error(
+                                        "gui::api_mcp_server",
+                                        &error.to_string(),
+                                    );
+                                }
                             });
                         }
                     }
