@@ -1586,12 +1586,27 @@ impl ZaloGuiApp {
                                                     ui.add_space(8.0);
                                                     ui.horizontal(|ui| {
                                                         ui.label(RichText::new("Độ nhạy Micro (Gain):").color(pal.text_primary).size(12.8));
-                                                        let mut gain_val = self.settings.mic_gain_percent;
-                                                        if ui.add(egui::Slider::new(&mut gain_val, 0..=200).suffix("%")).changed() {
-                                                            self.settings.mic_gain_percent = gain_val;
-                                                            crate::media::set_mic_gain_percent(gain_val);
-                                                            self.settings.save();
-                                                        }
+                                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                            let mut gain_val = self.settings.mic_gain_percent;
+                                                            let changed = ui.scope(|ui| {
+                                                                let visuals = ui.visuals_mut();
+                                                                visuals.widgets.inactive.fg_stroke = Stroke::new(2.0_f32, pal.primary);
+                                                                visuals.widgets.hovered.fg_stroke = Stroke::new(2.0_f32, pal.primary_hover);
+                                                                visuals.widgets.active.fg_stroke = Stroke::new(2.0_f32, pal.primary);
+                                                                visuals.selection.bg_fill = pal.primary;
+                                                                ui.add_sized(
+                                                                    [230.0, 20.0],
+                                                                    egui::Slider::new(&mut gain_val, 0..=200).suffix("%"),
+                                                                )
+                                                                .changed()
+                                                            })
+                                                            .inner;
+                                                            if changed {
+                                                                self.settings.mic_gain_percent = gain_val;
+                                                                crate::media::set_mic_gain_percent(gain_val);
+                                                                self.settings.save();
+                                                            }
+                                                        });
                                                     });
                                                     ui.add_space(4.0);
                                                     ui.horizontal(|ui| {
