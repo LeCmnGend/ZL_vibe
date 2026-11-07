@@ -3819,23 +3819,38 @@ pub(super) fn render_hover_reaction_bar(
     if ctx_menu_open || ctx.memory(|m| m.any_popup_open()) {
         return None;
     }
-    let bar_w = 130.0_f32;
-    let bar_h = 32.0_f32;
+    let bar_w = 100.0_f32;
+    let bar_h = 34.0_f32;
+    let like_size = 26.0_f32;
     let clip = ctx.screen_rect();
-    let x = if outgoing {
-        (bubble_rect.right() - bar_w).clamp(clip.left() + 8.0, clip.right() - bar_w - 8.0)
+    let min_x = clip.left() + 8.0;
+    let max_bar_x = (clip.right() - bar_w - 8.0).max(min_x);
+    let preferred_x = if outgoing {
+        bubble_rect.left() - bar_w - 6.0
     } else {
-        (bubble_rect.right() - bar_w)
-            .max(bubble_rect.left())
-            .clamp(clip.left() + 8.0, clip.right() - bar_w - 8.0)
+        bubble_rect.right() + 6.0
     };
-    let y = if bubble_rect.top() >= bar_h + 6.0 {
-        bubble_rect.top() - bar_h - 4.0
-    } else {
-        bubble_rect.bottom() + 4.0
-    };
-    let bar_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bar_w, bar_h));
-    let hover_zone = bubble_rect.union(bar_rect).expand2(Vec2::splat(10.0));
+    let bar_x = preferred_x.clamp(min_x, max_bar_x);
+    let min_y = clip.top() + 8.0;
+    let max_bar_y = (clip.bottom() - bar_h - 8.0).max(min_y);
+    let bar_y = (bubble_rect.bottom() - bar_h).clamp(min_y, max_bar_y);
+    let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, bar_h));
+    let like_x = (bubble_rect.left() + 8.0).clamp(
+        min_x,
+        (clip.right() - like_size - 8.0).max(min_x),
+    );
+    let like_y = (bubble_rect.bottom() - 9.0).clamp(
+        min_y,
+        (clip.bottom() - like_size - 8.0).max(min_y),
+    );
+    let like_rect = Rect::from_min_size(
+        Pos2::new(like_x, like_y),
+        Vec2::splat(like_size),
+    );
+    let hover_zone = bubble_rect
+        .union(bar_rect)
+        .union(like_rect)
+        .expand2(Vec2::splat(10.0));
     let hover_id = Id::new("active_hover_reaction_bubble");
     let msg_key = format!("{}_{}", msg.id, msg.ts);
     let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
@@ -3860,101 +3875,73 @@ pub(super) fn render_hover_reaction_bar(
     if !should_show {
         return None;
     }
-    let pos = Pos2::new(x, y);
-
     let mut action = None;
 
     egui::Area::new(Id::new(("hover_reaction_bar", idx, msg.ts, &msg.id)))
         .order(egui::Order::Foreground)
-        .fixed_pos(pos)
+        .fixed_pos(Pos2::new(bar_x, bar_y))
         .show(ctx, |ui| {
-            egui::Frame::none()
-                .fill(if pal.is_dark {
-                    Color32::from_rgb(33, 37, 43)
-                } else {
-                    Color32::WHITE
-                })
-                .stroke(Stroke::new(1.0_f32, pal.border))
-                .rounding(Rounding::same(16.0))
-                .shadow(egui::epaint::Shadow {
-                    offset: Vec2::new(0.0, 3.0),
-                    blur: 10.0,
-                    spread: 0.0,
-                    color: Color32::from_black_alpha(if pal.is_dark { 110 } else { 35 }),
-                })
-                .inner_margin(Margin::symmetric(8.0, 4.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
-
-                        let like_button = egui::Button::new(RichText::new("👍").size(16.0))
-                            .fill(Color32::TRANSPARENT)
-                            .min_size(Vec2::splat(22.0))
-                            .rounding(Rounding::same(6.0));
-                        if ui.add(like_button).on_hover_text("Thích").clicked() {
-                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
-                            action = Some(BubbleAction::React("👍"));
-                        }
-
-                        let (sep_rect, _) =
-                            ui.allocate_exact_size(Vec2::new(6.0, 16.0), Sense::hover());
-                        ui.painter().line_segment(
-                            [sep_rect.center_top(), sep_rect.center_bottom()],
-                            Stroke::new(1.0_f32, pal.border),
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let button = |icon: &str| {
+                    egui::Button::new(
+                        RichText::new(icon)
+                            .size(13.5)
+                            .color(pal.text_secondary),
+                    )
+                    .fill(pal.bg_list)
+                    .stroke(Stroke::new(1.0_f32, pal.border))
+                    .min_size(Vec2::splat(29.0))
+                    .rounding(Rounding::same(15.0))
+                };
+                if ui
+                    .add(button(lucide::QUOTE))
+                    .on_hover_text("Trả lời")
+                    .clicked()
+                {
+                    ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                    action = Some(BubbleAction::Reply);
+                }
+                if ui
+                    .add(button(lucide::FORWARD))
+                    .on_hover_text("Chia sẻ")
+                    .clicked()
+                {
+                    ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                    action = Some(BubbleAction::Forward);
+                }
+                let more_response = ui
+                    .add(button(lucide::ELLIPSIS))
+                    .on_hover_text("Thêm tùy chọn");
+                if more_response.clicked() {
+                    let click_pos = more_response.rect.left_bottom();
+                    let current_time = ui.input(|i| i.time);
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            Id::new("active_bubble_context_menu"),
+                            (msg_key.clone(), click_pos, idx),
                         );
-
-                        // Quick Reply (Quote)
-                        let reply_button = egui::Button::new(
-                            RichText::new(lucide::QUOTE)
-                                .size(13.5)
-                                .color(pal.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(Vec2::splat(22.0))
-                        .rounding(Rounding::same(6.0));
-                        if ui.add(reply_button).on_hover_text("Trả lời").clicked() {
-                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
-                            action = Some(BubbleAction::Reply);
-                        }
-
-                        // Quick Forward
-                        let forward_button = egui::Button::new(
-                            RichText::new(lucide::FORWARD)
-                                .size(13.5)
-                                .color(pal.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(Vec2::splat(22.0))
-                        .rounding(Rounding::same(6.0));
-                        if ui.add(forward_button).on_hover_text("Chia sẻ").clicked() {
-                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
-                            action = Some(BubbleAction::Forward);
-                        }
-
-                        let more_button = egui::Button::new(
-                            RichText::new(lucide::ELLIPSIS)
-                                .size(13.5)
-                                .color(pal.text_secondary),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(Vec2::splat(22.0))
-                        .rounding(Rounding::same(6.0));
-                        let more_response = ui.add(more_button).on_hover_text("Thêm tùy chọn");
-                        if more_response.clicked() {
-                            let click_pos = more_response.rect.left_bottom();
-                            let current_time = ui.input(|i| i.time);
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(
-                                    Id::new("active_bubble_context_menu"),
-                                    (msg_key.clone(), click_pos, idx),
-                                );
-                                d.insert_temp(Id::new("bubble_context_menu_open_time"), current_time);
-                                d.remove::<String>(hover_id);
-                            });
-                            ui.ctx().request_repaint();
-                        }
+                        d.insert_temp(Id::new("bubble_context_menu_open_time"), current_time);
+                        d.remove::<String>(hover_id);
                     });
-                });
+                    ui.ctx().request_repaint();
+                }
+            });
+        });
+
+    egui::Area::new(Id::new(("hover_reaction_like", idx, msg.ts, &msg.id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(like_rect.min)
+        .show(ctx, |ui| {
+            let like_button = egui::Button::new(RichText::new("👍").size(14.0))
+                .fill(pal.bg_list)
+                .stroke(Stroke::new(1.0_f32, pal.border))
+                .min_size(Vec2::splat(like_size))
+                .rounding(Rounding::same(like_size / 2.0));
+            if ui.add(like_button).on_hover_text("Thích").clicked() {
+                ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                action = Some(BubbleAction::React("👍"));
+            }
         });
 
     if action.is_some() {
