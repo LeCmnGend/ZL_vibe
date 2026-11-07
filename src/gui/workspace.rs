@@ -1819,7 +1819,7 @@ impl ZaloGuiApp {
                     let picker_reserve = if posting_restricted { 0.0 } else { (if self.sticker_picker_open { 268.0 } else { 0.0 })
                         + (if self.replying_to.is_some() { 48.0 } else { 0.0 })
                         + (if self.pending_clipboard_image.is_some() {
-                            64.0
+                            96.0
                         } else {
                             0.0
                         }) };
@@ -2566,69 +2566,6 @@ impl ZaloGuiApp {
                             self.show_toast(format!(
                                 "Đã dán ảnh ({w}×{h} px) từ Clipboard — nhấn Enter để gửi"
                             ));
-                        }
-                    }
-                    if self.pending_clipboard_image.is_some() {
-                        let mut clear_clip = false;
-                        if ui.input(|i| i.key_pressed(Key::Escape)) {
-                            clear_clip = true;
-                        }
-                        if let Some((ref path, w, h, ref tex)) = self.pending_clipboard_image {
-                            egui::Frame::none()
-                                .fill(pal.bg_elevated)
-                                .inner_margin(Margin::symmetric(14.0, 6.0))
-                                .stroke(Stroke::new(
-                                    1.0_f32,
-                                    pal.primary.linear_multiply(0.55),
-                                ))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            egui::Image::new(tex)
-                                                .fit_to_exact_size(Vec2::new(48.0, 48.0))
-                                                .rounding(Rounding::same(6.0)),
-                                        );
-                                        ui.add_space(6.0);
-                                        ui.vertical(|ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{} Ảnh chụp từ bộ nhớ tạm (Ctrl+V)",
-                                                    lucide::IMAGE
-                                                ))
-                                                .size(12.2)
-                                                .color(pal.primary)
-                                                .strong(),
-                                            );
-                                            let fname = path
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("clipboard.png");
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{fname} · {w}×{h} px — Nhập chú thích bên dưới rồi nhấn Enter để gửi"
-                                                ))
-                                                .size(11.3)
-                                                .color(pal.text_secondary),
-                                            );
-                                        });
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui
-                                                    .small_button(format!("{} Hủy", lucide::X))
-                                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                                    .on_hover_text("Hủy ảnh dán (Esc)")
-                                                    .clicked()
-                                                {
-                                                    clear_clip = true;
-                                                }
-                                            },
-                                        );
-                                    });
-                                });
-                        }
-                        if clear_clip {
-                            self.pending_clipboard_image = None;
                         }
                     }
 
@@ -3418,6 +3355,36 @@ impl ZaloGuiApp {
                                     }
                                 });
                         });
+
+                    if let Some((path, width, height, texture)) = &self.pending_clipboard_image {
+                        let mut remove_image = false;
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("1 ảnh").size(12.0).color(pal.text_primary));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("Xoá tất cả").clicked() { remove_image = true; }
+                            });
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            egui::Frame::none()
+                                .fill(pal.bg_elevated)
+                                .stroke(Stroke::new(1.0_f32, pal.border))
+                                .rounding(Rounding::same(6.0))
+                                .inner_margin(Margin::same(3.0))
+                                .show(ui, |ui| {
+                                    ui.add(egui::Image::new(texture)
+                                        .fit_to_exact_size(Vec2::new(64.0, 64.0))
+                                        .rounding(Rounding::same(4.0)));
+                                });
+                            ui.vertical(|ui| {
+                                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("clipboard.png");
+                                ui.label(RichText::new(name).size(11.5).color(pal.text_secondary));
+                                ui.label(RichText::new(format!("{width}×{height} px")).size(10.8).color(pal.text_muted));
+                            });
+                        });
+                        if remove_image { self.pending_clipboard_image = None; }
+                    }
 
                     if self.screenshot_menu_open {
                         let mut selected = false;
