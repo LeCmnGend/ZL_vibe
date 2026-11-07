@@ -1813,12 +1813,8 @@ impl ZaloGuiApp {
 
                     let contextual_stickers = if posting_restricted { Vec::new() } else { self.resolve_contextual_sticker_suggestions(ctx) };
                     let composer_link_preview = if posting_restricted { None } else { self.resolve_composer_link_preview(ctx) };
-                    // Do NOT subtract `contextual_stickers` height from `picker_reserve`!
-                    // The sticker strip is a true floating overlay (`egui::Area`) above the composer bar
-                    // (matching Zalo PC's `PopoverIdentitiesDefine.STICKER_SUGGESTION`), so the message scroll
-                    // area and composer input box never shift or lose IME focus while typing.
-                    let picker_reserve = if posting_restricted { 0.0 } else { (if self.sticker_picker_open { 268.0 } else { 0.0 })
-                        + (if self.replying_to.is_some() { 48.0 } else { 0.0 })
+                    let picker_reserve = if posting_restricted { 0.0 } else {
+                        (if self.replying_to.is_some() { 48.0 } else { 0.0 })
                         + (if self.pending_clipboard_image.is_some() {
                             96.0
                         } else {
@@ -2466,11 +2462,6 @@ impl ZaloGuiApp {
                                 });
                             });
                     } else {
-                    // 3. Optional Sticker Picker Drawer
-                    if self.sticker_picker_open {
-                        self.render_sticker_picker(ui, &thread_id, is_group, pal);
-                    }
-
                     // 3b. Reply banner (quoted message preview above the composer)
                     if self.replying_to.is_some() {
                         let mut cancel = false;
@@ -2623,6 +2614,7 @@ impl ZaloGuiApp {
                     // 4. Bottom Message Composer Bar (Compact Icon Actions + Spacious Input + Padded Send Button)
                     let mut popup_plus_rect = Rect::NOTHING;
                     let mut popup_emoji_rect = Rect::NOTHING;
+                    let mut popup_sticker_rect = Rect::NOTHING;
                     let composer_frame = egui::Frame::none()
                         .fill(if pal.is_dark {
                             Color32::from_rgba_unmultiplied(33, 37, 43, 190)
@@ -2711,14 +2703,30 @@ impl ZaloGuiApp {
                                             draw_lucide_icon(ui.painter(), plus_rect.center(), lucide::PLUS, 18.0, pal.text_secondary);
                                             if plus_response.on_hover_text("Thêm tệp hoặc ảnh").clicked() {
                                                 self.attach_menu_open = !self.attach_menu_open;
-                                                self.emoji_popup_open = false;
+                                                self.sticker_picker_open = false;
                                             }
                                             let (emoji_rect, emoji_response) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
                                             popup_emoji_rect = emoji_rect;
-                                            draw_lucide_icon(ui.painter(), emoji_rect.center(), lucide::SMILE, 18.0, pal.text_secondary);
+                                            let emoji_active = self.sticker_picker_open
+                                                && self.composer_media_tab == ComposerMediaTab::Emoji;
+                                            if emoji_active || emoji_response.hovered() {
+                                                ui.painter().rect_filled(emoji_rect, Rounding::same(8.0), pal.bg_hover);
+                                            }
+                                            draw_lucide_icon(
+                                                ui.painter(),
+                                                emoji_rect.center(),
+                                                lucide::SMILE,
+                                                18.0,
+                                                if emoji_active || emoji_response.hovered() { pal.primary } else { pal.text_secondary },
+                                            );
                                             if emoji_response.on_hover_text("Biểu tượng cảm xúc").clicked() {
-                                                self.emoji_popup_open = !self.emoji_popup_open;
                                                 self.attach_menu_open = false;
+                                                if self.sticker_picker_open && self.composer_media_tab == ComposerMediaTab::Emoji {
+                                                    self.sticker_picker_open = false;
+                                                } else {
+                                                    self.sticker_picker_open = true;
+                                                    self.composer_media_tab = ComposerMediaTab::Emoji;
+                                                }
                                             }
 
                                             // 1) Compact Sticker Icon Button
@@ -2726,7 +2734,10 @@ impl ZaloGuiApp {
                                                 Vec2::new(34.0, 34.0),
                                                 Sense::click(),
                                             );
-                                            if self.sticker_picker_open || stk_resp.hovered() {
+                                            popup_sticker_rect = stk_rect;
+                                            let sticker_active = self.sticker_picker_open
+                                                && self.composer_media_tab == ComposerMediaTab::Stickers;
+                                            if sticker_active || stk_resp.hovered() {
                                                 ui.painter().rect_filled(
                                                     stk_rect,
                                                     Rounding::same(8.0),
@@ -2737,7 +2748,7 @@ impl ZaloGuiApp {
                                                 ui.painter(),
                                                 stk_rect.center(),
                                                 18.0,
-                                                if self.sticker_picker_open || stk_resp.hovered() {
+                                                if sticker_active || stk_resp.hovered() {
                                                     Color32::from_rgb(251, 191, 36)
                                                 } else {
                                                     pal.text_secondary
@@ -2748,8 +2759,13 @@ impl ZaloGuiApp {
                                                 .on_hover_text("Nhãn dán (Sticker)")
                                                 .clicked()
                                             {
-                                                self.sticker_picker_open =
-                                                    !self.sticker_picker_open;
+                                                self.attach_menu_open = false;
+                                                if self.sticker_picker_open && self.composer_media_tab == ComposerMediaTab::Stickers {
+                                                    self.sticker_picker_open = false;
+                                                } else {
+                                                    self.sticker_picker_open = true;
+                                                    self.composer_media_tab = ComposerMediaTab::Stickers;
+                                                }
                                             }
 
                                             // 2) Compact Photo Upload Icon Button
@@ -3417,7 +3433,7 @@ impl ZaloGuiApp {
                             if let Some(tx) = WORKER_TX.get() { let _ = tx.send(WorkerCmd::TriggerScreenshot); }
                         }
                     }
-                    self.render_composer_popups(ctx, pal, popup_plus_rect, popup_emoji_rect, &thread_id, is_group);
+                    self.render_composer_popups(ctx, pal, popup_plus_rect, popup_emoji_rect, popup_sticker_rect, &thread_id, is_group);
                     ui.painter().hline(
                         composer_frame.response.rect.x_range(),
                         composer_frame.response.rect.top(),

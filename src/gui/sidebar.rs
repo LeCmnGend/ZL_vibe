@@ -1887,13 +1887,14 @@ impl ZaloGuiApp {
         resp.on_hover_cursor(CursorIcon::PointingHand)
     }
 
-    /// Composer popovers: the (+) attachment menu and the quick emoji grid.
+    /// Composer popovers: attachment actions and the unified sticker/emoji picker.
     pub(super) fn render_composer_popups(
         &mut self,
         ctx: &egui::Context,
         pal: &ThemePalette,
         plus_rect: Rect,
         emoji_rect: Rect,
+        sticker_rect: Rect,
         thread_id: &str,
         is_group: bool,
     ) {
@@ -1984,43 +1985,114 @@ impl ZaloGuiApp {
             }
         }
 
-        if self.emoji_popup_open && emoji_rect.is_positive() {
+        let picker_rect = match self.composer_media_tab {
+            ComposerMediaTab::Stickers => sticker_rect,
+            ComposerMediaTab::Emoji => emoji_rect,
+        };
+        if self.sticker_picker_open && picker_rect.is_positive() {
             const QUICK_EMOJIS: [&str; 32] = [
                 "😀", "😂", "🥰", "😍", "😘", "😊", "😉", "😎", "🤔", "😅", "😭", "😡", "😴", "🤗",
                 "😮", "🥲", "👍", "👏", "🙏", "💪", "🤝", "👋", "👀", "✌️", "❤️", "🔥", "🎉", "✨",
                 "🌹", "☕", "🎂", "💯",
             ];
             let mut picked: Option<&str> = None;
-            let area = egui::Area::new(Id::new("composer_emoji_popup"))
+            let width = 344.0_f32;
+            let screen_width = ctx.screen_rect().width();
+            let left = (picker_rect.right() - width)
+                .clamp(8.0, (screen_width - width - 8.0).max(8.0));
+            let area = egui::Area::new(Id::new("composer_media_picker"))
                 .order(egui::Order::Foreground)
                 .pivot(egui::Align2::LEFT_BOTTOM)
-                .fixed_pos(Pos2::new(emoji_rect.left() - 40.0, emoji_rect.top() - 8.0))
+                .fixed_pos(Pos2::new(left, picker_rect.top() - 8.0))
                 .show(ctx, |ui| {
                     popup_frame.show(ui, |ui| {
-                        ui.label(RichText::new("Biểu tượng cảm xúc").size(12.0).color(pal.text_muted));
-                        ui.add_space(4.0);
-                        egui::Grid::new("emoji_grid").spacing(Vec2::new(2.0, 2.0)).show(ui, |ui| {
-                            for (i, e) in QUICK_EMOJIS.iter().enumerate() {
-                                let (r, resp) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
-                                if resp.hovered() {
-                                    ui.painter().rect_filled(r, Rounding::same(8.0), pal.bg_hover);
+                        ui.set_width(width - 12.0);
+                        ui.horizontal(|ui| {
+                            for (tab, title) in [
+                                (ComposerMediaTab::Stickers, "STICKER"),
+                                (ComposerMediaTab::Emoji, "EMOJI"),
+                            ] {
+                                let active = self.composer_media_tab == tab;
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new((width - 24.0) / 2.0, 32.0),
+                                    Sense::click(),
+                                );
+                                if active {
+                                    ui.painter().hline(
+                                        rect.x_range(),
+                                        rect.bottom(),
+                                        Stroke::new(2.0_f32, pal.primary),
+                                    );
                                 }
-                                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *e, FontId::proportional(19.0), pal.text_primary);
-                                if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                                    picked = Some(e);
-                                }
-                                if i % 8 == 7 {
-                                    ui.end_row();
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    title,
+                                    FontId::proportional(12.5),
+                                    if active { pal.primary } else { pal.text_secondary },
+                                );
+                                if response.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                    self.composer_media_tab = tab;
                                 }
                             }
                         });
+                        ui.add_space(4.0);
+                        match self.composer_media_tab {
+                            ComposerMediaTab::Stickers => {
+                                self.render_sticker_picker(ui, thread_id, is_group, pal);
+                            }
+                            ComposerMediaTab::Emoji => {
+                                ui.label(RichText::new("Biểu tượng cảm xúc").size(12.0).color(pal.text_muted));
+                                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                                    egui::Grid::new("composer_emoji_grid")
+                                        .spacing(Vec2::new(2.0, 2.0))
+                                        .show(ui, |ui| {
+                                            for (i, emoji) in QUICK_EMOJIS.iter().enumerate() {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    Vec2::splat(36.0),
+                                                    Sense::click(),
+                                                );
+                                                if response.hovered() {
+                                                    ui.painter().rect_filled(
+                                                        rect,
+                                                        Rounding::same(8.0),
+                                                        pal.bg_hover,
+                                                    );
+                                                }
+                                                ui.painter().text(
+                                                    rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    *emoji,
+                                                    FontId::proportional(21.0),
+                                                    pal.text_primary,
+                                                );
+                                                if response
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .clicked()
+                                                {
+                                                    picked = Some(emoji);
+                                                }
+                                                if i % 8 == 7 {
+                                                    ui.end_row();
+                                                }
+                                            }
+                                        });
+                                });
+                            }
+                        }
+                        if ui.button("×").on_hover_text("Đóng").clicked() {
+                            self.sticker_picker_open = false;
+                        }
                     });
                 });
-            if area.response.clicked_elsewhere() && !pointer_in(emoji_rect) {
-                self.emoji_popup_open = false;
+            if area.response.clicked_elsewhere()
+                && !pointer_in(emoji_rect)
+                && !pointer_in(sticker_rect)
+            {
+                self.sticker_picker_open = false;
             }
-            if let Some(e) = picked {
-                self.input_message.push_str(e);
+            if let Some(emoji) = picked {
+                self.input_message.push_str(emoji);
                 self.composer_focus_pending = true;
             }
         }

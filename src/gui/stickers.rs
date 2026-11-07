@@ -13,6 +13,13 @@ pub(super) enum StickerTab {
     Store,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum ComposerMediaTab {
+    #[default]
+    Stickers,
+    Emoji,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ThreadFilter {
     All,
@@ -1800,6 +1807,7 @@ impl ZaloGuiApp {
             let q = crate::chat::normalize_sticker_keyword(self.input_message.trim());
             if !q.is_empty() {
                 self.sticker_picker_open = true;
+                self.composer_media_tab = ComposerMediaTab::Stickers;
                 self.sticker_tab = StickerTab::Search;
                 self.sticker_search_query = q.clone();
                 self.last_sticker_search_dispatched = q.clone();

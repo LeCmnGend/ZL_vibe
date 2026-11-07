@@ -729,6 +729,7 @@ pub struct ZaloGuiApp {
     in_chat_search_focus_pending: bool,
     // Sticker picker & image cache state
     sticker_picker_open: bool,
+    composer_media_tab: ComposerMediaTab,
     sticker_tab: StickerTab,
     sticker_textures: HashMap<String, TextureHandle>,
     loading_stickers: HashSet<String>,
@@ -840,7 +841,6 @@ pub struct ZaloGuiApp {
     typing_indicators: HashMap<String, String>,
     /// Known member counts for group threads (header subtitle "N thành viên").
     group_member_counts: HashMap<String, usize>,
-    emoji_popup_open: bool,
     attach_menu_open: bool,
     screenshot_menu_open: bool,
     list_filter_menu_open: bool,
@@ -1169,6 +1169,7 @@ impl ZaloGuiApp {
             in_chat_search_query: String::new(),
             in_chat_search_focus_pending: false,
             sticker_picker_open: false,
+            composer_media_tab: ComposerMediaTab::Stickers,
             sticker_tab: StickerTab::Popular,
             sticker_textures: HashMap::new(),
             loading_stickers: HashSet::new(),
@@ -1279,7 +1280,6 @@ impl ZaloGuiApp {
             nav_section: NavSection::Messages,
             typing_indicators: HashMap::new(),
             group_member_counts: HashMap::new(),
-            emoji_popup_open: false,
             attach_menu_open: false,
             screenshot_menu_open: false,
             list_filter_menu_open: false,
