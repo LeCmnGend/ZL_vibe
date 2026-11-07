@@ -755,11 +755,59 @@ impl ZaloGuiApp {
     }
 
     fn render_nav_footer(&mut self, ui: &mut egui::Ui, pal: &ThemePalette, full: bool) {
-        if icon_button(ui, lucide::USERS, 30.0, 16.0, self.contacts_view_open, pal, "Quản lý danh bạ").clicked() {
+        let mut contacts_clicked = false;
+        let mut phone_sync_clicked = false;
+        if full {
+            contacts_clicked = icon_button(
+                ui,
+                lucide::USERS,
+                30.0,
+                16.0,
+                self.contacts_view_open,
+                pal,
+                "Quản lý danh bạ",
+            )
+            .clicked();
+            phone_sync_clicked = icon_button(
+                ui,
+                lucide::REFRESH,
+                30.0,
+                16.0,
+                false,
+                pal,
+                "Đồng bộ tin nhắn từ điện thoại",
+            )
+            .clicked();
+        } else {
+            ui.vertical_centered(|ui| {
+                contacts_clicked = icon_button(
+                    ui,
+                    lucide::USERS,
+                    36.0,
+                    17.0,
+                    self.contacts_view_open,
+                    pal,
+                    "Quản lý danh bạ",
+                )
+                .clicked();
+                ui.add_space(6.0);
+                phone_sync_clicked = icon_button(
+                    ui,
+                    lucide::REFRESH,
+                    36.0,
+                    17.0,
+                    false,
+                    pal,
+                    "Đồng bộ tin nhắn từ điện thoại",
+                )
+                .clicked();
+            });
+        }
+        if contacts_clicked {
             self.contacts_view_open = !self.contacts_view_open;
             self.feed_modal_open = false;
         }
-        if icon_button(ui, lucide::REFRESH, 30.0, 16.0, false, pal, "Đồng bộ tin nhắn từ điện thoại").clicked() {
+        if phone_sync_clicked {
             self.phone_sync_progress = 0.05;
             self.phone_sync_status = "Đang gửi yêu cầu đồng bộ tin nhắn tới điện thoại…".into();
             if let Some(tx) = WORKER_TX.get() {
