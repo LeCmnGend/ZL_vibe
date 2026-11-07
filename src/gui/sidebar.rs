@@ -4,6 +4,7 @@
 //! avatar column. State is persisted in `AppSettings` and both auto-collapse on narrow windows.
 
 use super::*;
+use zeroize::Zeroize;
 
 /// Expanded / collapsed widths of the navigation sidebar.
 pub(super) const NAV_W_EXPANDED: f32 = 236.0;
@@ -260,7 +261,13 @@ impl ZaloGuiApp {
         };
         let in_section = match self.nav_section {
             NavSection::Messages => !(self.settings.hidden_threads.contains(&t.id) || t.presentation.hidden),
-            NavSection::Hidden => self.settings.hidden_threads.contains(&t.id) || t.presentation.hidden,
+            NavSection::Hidden => {
+                self.hidden_chat_unlocked
+                    && (self.settings.hidden_threads.contains(&t.id)
+                        || t.presentation.hidden
+                        || crate::hidden_chat::thread_identity(t)
+                            .is_some_and(|id| self.hidden_chat_ids.contains(&id)))
+            }
             NavSection::Other => false,
             NavSection::Unread => self.unread_counts.get(&t.id).copied().unwrap_or(0) > 0,
             NavSection::Strangers => !t.is_group && matches!(self.friendship_of(t), F::Stranger),
@@ -274,7 +281,11 @@ impl ZaloGuiApp {
                 !t.is_group && matches!(self.friendship_of(t), F::IncomingPending)
             }
         };
-        let hidden = self.settings.hidden_threads.contains(&t.id) || t.presentation.hidden;
+        let hidden = self.settings.hidden_threads.contains(&t.id)
+            || t.presentation.hidden
+            || self
+                .hidden_chat_ids
+                .contains(&crate::hidden_chat::thread_identity(t).unwrap_or_default());
         base && in_section && (self.nav_section == NavSection::Hidden || !hidden)
     }
 
@@ -366,6 +377,33 @@ impl ZaloGuiApp {
         match action {
             NavAction::Section => {
                 if let Some(sec) = item_section {
+                    if sec == NavSection::Hidden && self.nav_section != NavSection::Hidden {
+                        self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+                        self.hidden_chat_unlocked = false;
+                        self.hidden_chat_dialog_open = true;
+                        self.hidden_chat_loading = false;
+                        self.hidden_chat_pin.zeroize();
+                        self.hidden_chat_status.clear();
+                    } else if sec != NavSection::Hidden && self.nav_section == NavSection::Hidden {
+                        self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+                        self.hidden_chat_unlocked = false;
+                        self.hidden_chat_dialog_open = false;
+                        self.hidden_chat_pin.zeroize();
+                        if self.threads.get(self.selected_thread_index).is_some_and(|thread| {
+                            crate::hidden_chat::thread_identity(thread)
+                                .is_some_and(|id| self.hidden_chat_ids.contains(&id))
+                        }) {
+                            self.selected_thread_index = self
+                                .threads
+                                .iter()
+                                .position(|thread| {
+                                    !self.hidden_chat_ids.contains(
+                                        &crate::hidden_chat::thread_identity(thread).unwrap_or_default(),
+                                    )
+                                })
+                                .unwrap_or(0);
+                        }
+                    }
                     self.nav_section = sec;
                     if sec != NavSection::Messages {
                         self.thread_filter = ThreadFilter::All;
@@ -401,6 +439,88 @@ impl ZaloGuiApp {
                     self.show_toast(msg);
                 }
             }
+        }
+    }
+
+    pub(super) fn render_hidden_chat_dialog(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
+        if !self.is_logged_in || !self.hidden_chat_dialog_open {
+            return;
+        }
+        let mut open = true;
+        let mut cancel = false;
+        let mut submit = false;
+        egui::Window::new("Mở khóa trò chuyện ẩn")
+            .id(Id::new("hidden_chat_pin_dialog"))
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Nhập mã PIN ẩn của tài khoản Zalo để tải các hội thoại.");
+                ui.add(
+                    egui::TextEdit::singleline(&mut *self.hidden_chat_pin)
+                        .password(true)
+                        .char_limit(4)
+                        .hint_text("PIN gồm 4 chữ số")
+                        .desired_width(220.0),
+                );
+                if !self.hidden_chat_status.is_empty() {
+                    ui.label(RichText::new(&self.hidden_chat_status).color(pal.danger));
+                }
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!self.hidden_chat_loading, egui::Button::new("Mở khóa")).clicked() {
+                        submit = true;
+                    }
+                    if self.hidden_chat_loading {
+                        ui.spinner();
+                    }
+                    if ui.button("Hủy").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if cancel {
+            open = false;
+        }
+        self.hidden_chat_dialog_open = open;
+        if !open {
+            self.nav_section = NavSection::Messages;
+            self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+            self.hidden_chat_loading = false;
+            self.hidden_chat_pin.zeroize();
+            self.hidden_chat_status.clear();
+            return;
+        }
+        if !submit {
+            return;
+        }
+        if self.hidden_chat_pin.len() != 4
+            || !self.hidden_chat_pin.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            self.hidden_chat_status = "PIN phải gồm 4 chữ số.".into();
+            return;
+        }
+        let Some(tx) = WORKER_TX.get() else {
+            self.hidden_chat_status = "Worker chưa sẵn sàng.".into();
+            return;
+        };
+        let pin = std::mem::replace(
+            &mut self.hidden_chat_pin,
+            zeroize::Zeroizing::new(String::new()),
+        );
+        self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+        if tx
+            .send(WorkerCmd::UnlockHiddenChats {
+                owner: self.user_uin.clone(),
+                generation: self.hidden_chat_generation,
+                pin,
+            })
+            .is_ok()
+        {
+            self.hidden_chat_loading = true;
+            self.hidden_chat_status = "Đang xác minh PIN…".into();
+        } else {
+            self.hidden_chat_status = "Không gửi được yêu cầu mở khóa.".into();
         }
     }
 
@@ -1073,14 +1193,16 @@ impl ZaloGuiApp {
                         Self::paint_empty_state(
                             ui,
                             pal,
-                            if self.nav_section == NavSection::Other { lucide::ARCHIVE } else { lucide::EYE_OFF },
+                            lucide::ARCHIVE,
                             "Sắp có",
-                            if self.nav_section == NavSection::Other {
-                                "Hộp thư \"Khác\" sẽ gom các hội thoại ít ưu tiên. Tính năng đang được phát triển."
-                            } else {
-                                "Trò chuyện ẩn (khoá bằng mã PIN) đang được phát triển."
-                            },
+                            "Hộp thư \"Khác\" sẽ gom các hội thoại ít ưu tiên. Tính năng đang được phát triển.",
                         );
+                    }
+                    return;
+                }
+                if self.nav_section == NavSection::Hidden && !self.hidden_chat_unlocked {
+                    if full {
+                        Self::paint_empty_state(ui, pal, lucide::EYE_OFF, "Trò chuyện ẩn", "Nhập mã PIN ẩn để xem các hội thoại.");
                     }
                     return;
                 }
@@ -1440,6 +1562,7 @@ impl ZaloGuiApp {
                         Self::paint_empty_state(ui, pal, lucide::SEARCH, "Không tìm thấy", "Không có hội thoại hoặc tin nhắn phù hợp.");
                     } else {
                         let (icon, title, body) = match self.nav_section {
+                            NavSection::Hidden => (lucide::EYE_OFF, "Chưa có trò chuyện ẩn", "Tài khoản chưa có hội thoại nào được ẩn."),
                             NavSection::Unread => (lucide::CHECK_CHECK, "Đã đọc hết", "Bạn không còn tin nhắn chưa đọc."),
                             NavSection::Strangers => (lucide::USER_SEARCH, "Không có người lạ", "Tin nhắn từ người chưa kết bạn sẽ hiện ở đây."),
                             NavSection::FriendRequests => (lucide::USER_PLUS, "Chưa có lời mời", "Lời mời kết bạn mới sẽ hiện ở đây."),

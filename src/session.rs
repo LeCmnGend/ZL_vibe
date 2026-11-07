@@ -1289,11 +1289,16 @@ impl Session {
     }
 
     pub async fn get(&self, url: &str) -> Result<Value> {
-        self.send(Method::GET, url, None).await
+        self.send(Method::GET, url, None, false).await
+    }
+
+    /// Fetch a response that contains private protocol material without logging its body.
+    pub(crate) async fn get_sensitive(&self, url: &str) -> Result<Value> {
+        self.send(Method::GET, url, None, true).await
     }
 
     pub async fn post_form(&self, url: &str, body: String) -> Result<Value> {
-        self.send(Method::POST, url, Some(body)).await
+        self.send(Method::POST, url, Some(body), false).await
     }
 
     /// True only when an error is a transport failure or HTTP 404 (#27).
@@ -1450,7 +1455,7 @@ impl Session {
         Ok(v)
     }
 
-    async fn send(&self, m: Method, url: &str, body: Option<String>) -> Result<Value> {
+    async fn send(&self, m: Method, url: &str, body: Option<String>, sensitive: bool) -> Result<Value> {
         let start = std::time::Instant::now();
         if is_url_blocked_by_privacy(url) {
             let method = m.as_str().to_string();
@@ -1518,15 +1523,17 @@ impl Session {
             Ok(r) => r,
             Err(e) => {
                 let e = e.without_url();
-                crate::logger::log_request(
-                    &method,
-                    url,
-                    None,
-                    latency_ms,
-                    body.as_deref().unwrap_or(""),
-                    None,
-                    Some(&e.to_string()),
-                );
+                if !sensitive {
+                    crate::logger::log_request(
+                        &method,
+                        url,
+                        None,
+                        latency_ms,
+                        body.as_deref().unwrap_or(""),
+                        None,
+                        Some(&e.to_string()),
+                    );
+                }
                 return Err(e.into());
             }
         };
@@ -1536,10 +1543,10 @@ impl Session {
         }
         let status = resp.status();
         let text = resp.text().await?;
-        if self.verbose {
+        if self.verbose && !sensitive {
             eprintln!("← {status} {}", truncate(&text, 400));
         }
-        if self.dump {
+        if self.dump && !sensitive {
             self.dump_exchange(&method, url, status.as_u16(), &text);
         }
 
@@ -1550,17 +1557,22 @@ impl Session {
             None
         };
 
-        crate::logger::log_request(
-            &method,
-            url,
-            Some(status.as_u16()),
-            latency_ms,
-            body.as_deref().unwrap_or(""),
-            Some(&text),
-            err_str.as_deref(),
-        );
+        if !sensitive {
+            crate::logger::log_request(
+                &method,
+                url,
+                Some(status.as_u16()),
+                latency_ms,
+                body.as_deref().unwrap_or(""),
+                Some(&text),
+                err_str.as_deref(),
+            );
+        }
 
         if is_err {
+            if sensitive {
+                bail!("HTTP {status} from hidden-chat endpoint");
+            }
             bail!("HTTP {status} from {url}: {}", truncate(&text, 300));
         }
         if text.trim().is_empty() {

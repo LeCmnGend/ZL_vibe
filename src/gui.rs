@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
+use zeroize::Zeroize;
 
 use eframe::egui::{
     self, Align, Color32, CursorIcon, FontId, Id, Key, Layout, Margin, Pos2, Rect, RichText,
@@ -67,6 +68,11 @@ pub enum GuiEvent {
     LoginFailed(String),
     ThreadsUpdated(Vec<Thread>),
     AccountThreadsUpdated { uin: String, threads: Vec<Thread> },
+    HiddenChatsUnlocked {
+        owner: String,
+        generation: u64,
+        result: Result<HashSet<String>, String>,
+    },
     MessageSent {
         client_message_id: String,
         thread_id: String,
@@ -667,6 +673,13 @@ pub struct ZaloGuiApp {
     // Chat screen state
     threads: Vec<Thread>,
     selected_thread_index: usize,
+    hidden_chat_ids: HashSet<String>,
+    hidden_chat_unlocked: bool,
+    hidden_chat_dialog_open: bool,
+    hidden_chat_loading: bool,
+    hidden_chat_generation: u64,
+    hidden_chat_pin: zeroize::Zeroizing<String>,
+    hidden_chat_status: String,
     thread_filter: ThreadFilter,
     search_query: String,
     input_message: String,
@@ -1114,6 +1127,13 @@ impl ZaloGuiApp {
             qr_status: "Đang tạo mã QR đăng nhập…".into(),
             threads: Vec::new(),
             selected_thread_index: 0,
+            hidden_chat_ids: HashSet::new(),
+            hidden_chat_unlocked: false,
+            hidden_chat_dialog_open: false,
+            hidden_chat_loading: false,
+            hidden_chat_generation: 0,
+            hidden_chat_pin: zeroize::Zeroizing::new(String::new()),
+            hidden_chat_status: String::new(),
             thread_filter: ThreadFilter::All,
             search_query: String::new(),
             input_message: String::new(),
@@ -1348,6 +1368,13 @@ impl ZaloGuiApp {
                         self.user_avatar = avatar;
                     }
                     self.threads.clear();
+                    self.hidden_chat_ids.clear();
+                    self.hidden_chat_unlocked = false;
+                    self.hidden_chat_dialog_open = false;
+                    self.hidden_chat_loading = false;
+                    self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+                    self.hidden_chat_pin.zeroize();
+                    self.hidden_chat_status.clear();
                     self.unread_counts.clear();
                     self.history_reached_start.clear();
                     self.selected_thread_index = 0;
@@ -1358,6 +1385,36 @@ impl ZaloGuiApp {
                 GuiEvent::LoginFailed(err) => {
                     self.login_in_progress = false;
                     self.login_status_msg = format!("Lỗi đăng nhập: {err}");
+                }
+                GuiEvent::HiddenChatsUnlocked { owner, generation, result } => {
+                    if owner != self.user_uin
+                        || !self.is_logged_in
+                        || generation != self.hidden_chat_generation
+                        || !self.hidden_chat_dialog_open
+                    {
+                        continue;
+                    }
+                    self.hidden_chat_loading = false;
+                    self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+                    match result {
+                        Ok(ids) => {
+                            for id in &ids {
+                                let Some(thread) = crate::hidden_chat::thread_from_identity(id) else {
+                                    continue;
+                                };
+                                if !self.threads.iter().any(|existing| {
+                                    crate::hidden_chat::thread_identity(existing).as_deref() == Some(id)
+                                }) {
+                                    self.threads.push(thread);
+                                }
+                            }
+                            self.hidden_chat_ids = ids;
+                            self.hidden_chat_unlocked = true;
+                            self.hidden_chat_status.clear();
+                            self.hidden_chat_dialog_open = false;
+                        }
+                        Err(error) => self.hidden_chat_status = error,
+                    }
                 }
                 GuiEvent::AccountThreadsUpdated { .. } => unreachable!("account event normalized above"),
                 GuiEvent::ThreadsUpdated(updates) => {
@@ -1588,6 +1645,13 @@ impl ZaloGuiApp {
                     self.user_name.clear();
                     self.user_uin.clear();
                     self.threads.clear();
+                    self.hidden_chat_ids.clear();
+                    self.hidden_chat_unlocked = false;
+                    self.hidden_chat_dialog_open = false;
+                    self.hidden_chat_loading = false;
+                    self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+                    self.hidden_chat_pin.zeroize();
+                    self.hidden_chat_status.clear();
                     self.selected_thread_index = 0;
                     self.qr_texture = None;
                     self.qr_status = "Đang xin mã QR mới…".into();
@@ -1604,6 +1668,13 @@ impl ZaloGuiApp {
                     self.user_name = name.clone();
                     self.user_avatar = avatar;
                     self.threads = threads;
+                    self.hidden_chat_ids.clear();
+                    self.hidden_chat_unlocked = false;
+                    self.hidden_chat_dialog_open = false;
+                    self.hidden_chat_loading = false;
+                    self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
+                    self.hidden_chat_pin.zeroize();
+                    self.hidden_chat_status.clear();
                     self.selected_thread_index = 0;
                     self.status_msg = format!("Đã chuyển sang tài khoản {name}");
                     self.show_toast(format!("Đã chuyển sang tài khoản {name}"));

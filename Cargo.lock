@@ -973,10 +973,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tokio",
  "tokio-tungstenite",
  "unicode-normalization",
  "windows 0.54.0",
+ "zeroize",
  "zstd",
 ]
 

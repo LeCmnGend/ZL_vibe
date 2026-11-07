@@ -41,6 +41,8 @@ zstd = "0.14.3"
 calamine = { version = "0.38", default-features = false }
 rand = "0.8"
 unicode-normalization = "0.1"
+subtle = "2"
+zeroize = "1"
 
 # --- Windows ARM64 tuning -------------------------------------------------
 # Windows on ARM (Snapdragon) has no guaranteed native OpenGL driver: older

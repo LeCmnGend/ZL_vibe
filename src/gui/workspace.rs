@@ -61,6 +61,7 @@ impl ZaloGuiApp {
             };
         let list_expanded = !self.settings.list_collapsed && !list_forced;
         self.render_nav_sidebar(ctx, pal, nav_expanded, nav_forced);
+        self.render_hidden_chat_dialog(ctx, pal);
         let list_max_w = (screen_w * 0.42).clamp(260.0, 440.0);
         self.render_conversation_list(ctx, pal, list_expanded, list_forced, list_max_w);
 

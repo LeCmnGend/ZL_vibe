@@ -210,6 +210,11 @@ pub enum WorkerCmd {
         is_group: bool,
         hide: bool,
     },
+    UnlockHiddenChats {
+        owner: String,
+        generation: u64,
+        pin: zeroize::Zeroizing<String>,
+    },
     DeleteThread {
         thread_id: String,
         is_group: bool,
@@ -1191,6 +1196,23 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     &s, &thread_id, is_group, hide,
                                 )
                                 .await;
+                            });
+                        }
+                        WorkerCmd::UnlockHiddenChats { owner, generation, mut pin } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::hidden_chat::unlock(&s, &mut pin)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::HiddenChatsUnlocked {
+                                    owner,
+                                    generation,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
                             });
                         }
                         WorkerCmd::DeleteThread {
