@@ -737,6 +737,7 @@ pub mod lucide {
     pub const FOLDER_OPEN: &str = "\u{e247}";
     pub const CHEVRON_RIGHT: &str = "\u{e06f}";
     pub const CHEVRON_DOWN: &str = "\u{e06d}";
+    pub const CHEVRON_UP: &str = "\u{e070}";
     pub const USER: &str = "\u{e19f}";
     pub const NEWSPAPER: &str = "\u{e124}";
     pub const INBOX: &str = "\u{e0f7}";
