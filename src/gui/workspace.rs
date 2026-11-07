@@ -2514,6 +2514,43 @@ impl ZaloGuiApp {
                                     }
                                     self.composer_focus_pending = true;
                                 }
+                                BubbleAction::OpenMentionProfile(name) => {
+                                    let uid = m
+                                        .resolved_mention_uids
+                                        .get(&name)
+                                        .or_else(|| {
+                                            m.resolved_mention_uids
+                                                .get(name.trim_start_matches('@'))
+                                        })
+                                        .cloned()
+                                        .or_else(|| {
+                                            self.group_members_map
+                                                .get(&thread_id)
+                                                .and_then(|members| {
+                                                    members.iter().find(|member| {
+                                                        member.name.eq_ignore_ascii_case(&name)
+                                                    })
+                                                })
+                                                .map(|member| member.id.clone())
+                                        });
+                                    if let Some(uid) = uid {
+                                        self.feed_modal_open = true;
+                                        self.feed_modal_tab = FeedModalTab::Profile;
+                                        self.feed_target_uid = uid.clone();
+                                        self.feed_loading_profile = true;
+                                        self.feed_profile_error = None;
+                                        self.trigger_feed_timeline_load();
+                                        if let Some(tx) = WORKER_TX.get() {
+                                            let _ = tx.send(WorkerCmd::FetchSocialProfile {
+                                                target_uid: uid,
+                                            });
+                                        }
+                                    } else {
+                                        self.show_toast(format!(
+                                            "Không tìm thấy hồ sơ thành viên @{name} trong nhóm đã tải"
+                                        ));
+                                    }
+                                }
                                 BubbleAction::JumpToQuoted(reference) => {
                                     let index = self
                                         .threads
