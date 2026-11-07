@@ -480,6 +480,7 @@ struct AppSettings {
     play_notification_sound: bool,
     // 5. Tin nhắn
     quick_messages_enabled: bool,
+    send_hd_original: bool,
     hidden_chat_pin_enabled: bool,
     split_priority_inbox: bool,
     excel_paste_mode: String, // "image" | "text" | "ask"
@@ -582,6 +583,7 @@ impl Default for AppSettings {
             enable_notifications: true,
             play_notification_sound: false,
             quick_messages_enabled: true,
+            send_hd_original: true,
             hidden_chat_pin_enabled: true,
             split_priority_inbox: false,
             excel_paste_mode: "ask".into(),
@@ -720,7 +722,6 @@ pub struct ZaloGuiApp {
     selected_message_keys: HashSet<(String, i64)>,
     message_details: Option<ChatMessage>,
     filter_starred_only: bool,
-    pub(crate) send_hd_original: bool,
     pub(crate) typing_map: HashMap<String, (String, std::time::Instant)>,
     pub(crate) last_typing_ping_at: std::time::Instant,
     active_call: Option<ActiveCallOverlay>,
@@ -1175,7 +1176,6 @@ impl ZaloGuiApp {
             selected_message_keys: HashSet::new(),
             message_details: None,
             filter_starred_only: false,
-            send_hd_original: true,
             typing_map: HashMap::new(),
             last_typing_ping_at: std::time::Instant::now(),
             active_call: None,

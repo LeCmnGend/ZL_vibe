@@ -2973,7 +2973,7 @@ impl ZaloGuiApp {
                                         images_only: false,
                                         caption: String::new(),
                                         preset_path: Some(dpath),
-                                        original_hd: self.send_hd_original,
+                                        original_hd: self.settings.send_hd_original,
                                     });
                                 }
                             }
@@ -3150,71 +3150,9 @@ impl ZaloGuiApp {
                                                                 images_only: true,
                                                                 caption: cap,
                                                                 preset_path: None,
-                                                                original_hd: self.send_hd_original,
+                                                                original_hd: self.settings.send_hd_original,
                                                             });
                                                     }
-                                                }
-                                            }
-
-                                            // HD Original Quality Toggle Button
-                                            if composer_width >= 340.0 {
-                                                let hd_active = self.send_hd_original;
-                                                let (hd_rect, hd_resp) = ui.allocate_exact_size(
-                                                    Vec2::new(32.0, 24.0),
-                                                    Sense::click(),
-                                                );
-                                                let hd_bg = if hd_active {
-                                                    if hd_resp.hovered() {
-                                                        pal.primary_hover
-                                                    } else {
-                                                        pal.primary
-                                                    }
-                                                } else if hd_resp.hovered() {
-                                                    pal.bg_hover
-                                                } else {
-                                                    pal.bg_input
-                                                };
-                                                let hd_text_col = if hd_active {
-                                                    Color32::WHITE
-                                                } else {
-                                                    pal.text_secondary
-                                                };
-                                                ui.painter().rect_filled(
-                                                    hd_rect,
-                                                    Rounding::same(6.0),
-                                                    hd_bg,
-                                                );
-                                                if !hd_active {
-                                                    ui.painter().rect_stroke(
-                                                        hd_rect,
-                                                        Rounding::same(6.0),
-                                                        Stroke::new(1.0_f32, pal.border),
-                                                    );
-                                                }
-                                                ui.painter().text(
-                                                    hd_rect.center(),
-                                                    egui::Align2::CENTER_CENTER,
-                                                    "HD",
-                                                    FontId::proportional(11.0),
-                                                    hd_text_col,
-                                                );
-                                                let hd_tooltip = if hd_active {
-                                                    "Chế độ gửi ảnh gốc Original / HD: ĐANG BẬT (Ảnh không bị nén, giữ nguyên 100% chất lượng)"
-                                                } else {
-                                                    "Chế độ gửi ảnh gốc Original / HD: Đang TẮT (Bấm để bật gửi ảnh chất lượng cao không nén)"
-                                                };
-                                                if hd_resp
-                                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                                    .on_hover_text(hd_tooltip)
-                                                    .clicked()
-                                                {
-                                                    self.send_hd_original = !self.send_hd_original;
-                                                    let msg = if self.send_hd_original {
-                                                        "Đã BẬT gửi ảnh gốc Original / HD (không nén)"
-                                                    } else {
-                                                        "Đã TẮT gửi ảnh gốc Original (chế độ thường)"
-                                                    };
-                                                    self.show_toast(msg.to_string());
                                                 }
                                             }
 
@@ -3257,7 +3195,7 @@ impl ZaloGuiApp {
                                                                 images_only: false,
                                                                 caption: cap,
                                                                 preset_path: None,
-                                                                original_hd: self.send_hd_original,
+                                                                original_hd: self.settings.send_hd_original,
                                                             });
                                                     }
                                                 }
@@ -3732,7 +3670,7 @@ impl ZaloGuiApp {
                                                     images_only: true,
                                                     caption: cap,
                                                     preset_path: Some(clip_path),
-                                                    original_hd: self.send_hd_original,
+                                                    original_hd: self.settings.send_hd_original,
                                                 });
                                             }
                                         }

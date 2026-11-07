@@ -2697,6 +2697,18 @@ impl ZaloGuiApp {
                                                             render_toggle_switch(ui, &mut self.settings.show_typing_indicator, pal);
                                                         });
                                                     });
+                                                    ui.add_space(8.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.vertical(|ui| {
+                                                            ui.label(RichText::new("Gửi ảnh chất lượng cao (HD)").color(pal.text_primary).size(13.2));
+                                                            ui.label(RichText::new("Giữ nguyên ảnh gốc, không nén khi gửi").color(pal.text_secondary).size(11.8));
+                                                        });
+                                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                            if render_toggle_switch(ui, &mut self.settings.send_hd_original, pal).changed() {
+                                                                self.settings.save();
+                                                            }
+                                                        });
+                                                    });
                                                 });
                                         }
                                         SettingsTab::Utilities => {
