@@ -3032,7 +3032,7 @@ impl ZaloGuiApp {
                         })
                         .inner_margin(Margin {
                             left: 16.0,
-                            right: 0.0,
+                            right: 8.0,
                             top: 11.0,
                             bottom: 11.0,
                         })
