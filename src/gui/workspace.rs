@@ -2034,7 +2034,7 @@ impl ZaloGuiApp {
                     }
                     let msg_area_height = (ui.available_height()
                         - typing_reserve
-                        - 68.0
+                        - 62.0
                         - composer_extra_h
                         - picker_reserve)
                         .max(100.0);
