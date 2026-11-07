@@ -8166,7 +8166,7 @@ pub async fn request_phone_sync_v2(s: &Session, public_key: &str) -> Result<Valu
         "/api/transfer-sync-v2/request-sync?{}&params={params}",
         s.common_params()
     );
-    let mut last_error = "Sync-V2 HTTP endpoints unavailable".to_string();
+    let mut errors = Vec::with_capacity(3);
 
     for endpoint in ["conversation", "file"] {
         match s.get_endpoint(endpoint, &path).await {
@@ -8175,9 +8175,9 @@ pub async fn request_phone_sync_v2(s: &Session, public_key: &str) -> Result<Valu
                 if response.get("error_code").and_then(Value::as_i64) == Some(0) {
                     return Ok(response);
                 }
-                last_error = format!("{endpoint} endpoint: {response}");
+                errors.push(format!("{endpoint} endpoint: {response}"));
             }
-            Err(err) => last_error = err.to_string(),
+            Err(err) => errors.push(format!("{endpoint} endpoint: {err}")),
         }
     }
 
@@ -8192,9 +8192,9 @@ pub async fn request_phone_sync_v2(s: &Session, public_key: &str) -> Result<Valu
             if response.get("error_code").and_then(Value::as_i64) == Some(0) {
                 return Ok(response);
             }
-            last_error = format!("file POST endpoint: {response}");
+            errors.push(format!("file POST endpoint: {response}"));
         }
-        Err(err) => last_error = err.to_string(),
+        Err(err) => errors.push(format!("file POST endpoint: {err}")),
     }
 
     // Preserve the existing WebSocket request as a fallback when the HTTP routes fail.
@@ -8237,8 +8237,9 @@ pub async fn request_phone_sync_v2(s: &Session, public_key: &str) -> Result<Valu
         }));
     }
 
-    crate::logger::log_error("chat::request_phone_sync_v2", &last_error);
-    Err(anyhow::anyhow!("Sync-V2 HTTP and WebSocket requests failed: {last_error}"))
+    let error_summary = errors.join("; ");
+    crate::logger::log_error("chat::request_phone_sync_v2", &error_summary);
+    Err(anyhow::anyhow!("Sync-V2 HTTP and WebSocket requests failed: {error_summary}"))
 }
 
 /// Cancel an active mobile message sync request (`cancelTransferMessage` @ `app.asar:14372356`, cmd `12700`, #68).

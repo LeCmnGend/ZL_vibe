@@ -3543,7 +3543,7 @@ pub(super) fn bubble_context_menu(
                         ui.separator();
                         ui.label(RichText::new("Thêm cảm xúc").size(11.5).color(pal.text_muted));
                         ui.horizontal_wrapped(|ui| {
-                            for &(code, _, tooltip) in REACTION_LIST {
+                            for (code, _, tooltip) in REACTION_LIST {
                                 if ui.button(code).on_hover_text(tooltip).clicked() {
                                     action = Some(BubbleAction::React(code));
                                     close_menu = true;

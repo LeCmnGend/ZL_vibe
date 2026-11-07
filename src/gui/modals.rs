@@ -6070,7 +6070,7 @@ impl ZaloGuiApp {
                             .frame(
                                 egui::Frame::none()
                                     .fill(pal.bg_sidebar)
-                                    .stroke(Stroke::new(1.0, pal.border)),
+                                    .stroke(Stroke::new(1.0_f32, pal.border)),
                             )
                             .show(vctx, |ui| {
                                 render_image_viewer_gallery(
@@ -8330,7 +8330,7 @@ fn render_image_viewer_gallery(
     let yesterday = today.pred_opt();
     let mut last_day = Some(i64::MIN);
     egui::ScrollArea::vertical()
-        .id_source("image_viewer_gallery_scroll")
+        .id_salt("image_viewer_gallery_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add_space(4.0);
@@ -8363,7 +8363,7 @@ fn render_image_viewer_gallery(
                 };
                 ui.painter().rect_filled(rect, Rounding::same(5.0), fill);
                 if index == selected {
-                    ui.painter().rect_stroke(rect, Rounding::same(5.0), Stroke::new(1.0, pal.primary));
+                    ui.painter().rect_stroke(rect, Rounding::same(5.0), Stroke::new(1.0_f32, pal.primary));
                 }
                 if let Some(texture) = textures.get(&photo.tex_key) {
                     let [w, h] = texture.size();
