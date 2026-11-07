@@ -1466,39 +1466,32 @@ mod theme_tests {
 // Layout helpers shared by the redesigned workspace
 // ---------------------------------------------------------------------------
 
-/// Conversation-list timestamp: `HH:MM` today, `Hôm qua`, weekday `T2…CN` within a week, else `dd/mm`.
+/// Conversation-list timestamp: elapsed minutes/hours today, then `dd/mm` or `dd/mm/yy`.
 pub(super) fn format_list_time(ts_ms: i64, fallback: &str) -> String {
     if ts_ms <= 0 {
         return fallback.to_string();
     }
     let now = crate::timefmt::now_ms();
-    let days = crate::timefmt::local_day_index(now) - crate::timefmt::local_day_index(ts_ms);
-    match days {
-        i64::MIN..=0 => crate::timefmt::hm_from_ms(ts_ms),
-        1 => "Hôm qua".to_string(),
-        2..=6 => weekday_short(crate::timefmt::local_weekday(ts_ms)).to_string(),
-        _ => {
-            let (y, m, d) = crate::timefmt::local_ymd(ts_ms);
-            let (ny, _, _) = crate::timefmt::local_ymd(now);
-            if y == ny {
-                format!("{d:02}/{m:02}")
-            } else {
-                format!("{d:02}/{m:02}/{:02}", y.rem_euclid(100))
-            }
-        }
+    let elapsed = now.saturating_sub(ts_ms);
+    if elapsed < 0 {
+        return crate::timefmt::hm_from_ms(ts_ms);
     }
-}
+    if elapsed < 60_000 {
+        return "vừa xong".to_string();
+    }
+    if elapsed < 60 * 60 * 1000 {
+        return format!("{} phút", elapsed / 60_000);
+    }
+    if elapsed < 24 * 60 * 60 * 1000 {
+        return format!("{} giờ", elapsed / (60 * 60 * 1000));
+    }
 
-/// `T2`…`T7`, `CN` for Monday = 1 … Sunday = 7.
-pub(super) fn weekday_short(wd: u32) -> &'static str {
-    match wd {
-        1 => "T2",
-        2 => "T3",
-        3 => "T4",
-        4 => "T5",
-        5 => "T6",
-        6 => "T7",
-        _ => "CN",
+    let (y, m, d) = crate::timefmt::local_ymd(ts_ms);
+    let (ny, _, _) = crate::timefmt::local_ymd(now);
+    if y == ny {
+        format!("{d:02}/{m:02}")
+    } else {
+        format!("{d:02}/{m:02}/{:02}", y.rem_euclid(100))
     }
 }
 

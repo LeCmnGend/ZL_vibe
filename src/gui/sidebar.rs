@@ -1880,7 +1880,7 @@ impl ZaloGuiApp {
     }
 
     fn paint_thread_row(&mut self, ui: &mut egui::Ui, pal: &ThemePalette, i: usize, selected: bool, unread: usize) -> egui::Response {
-        let (name, is_group, avatar, ts, fallback_time, is_cloud) = {
+        let (name, is_group, avatar, ts, fallback_time, is_cloud, is_pinned) = {
             let t = &self.threads[i];
             (
                 t.name.clone(),
@@ -1889,6 +1889,13 @@ impl ZaloGuiApp {
                 t.messages.last().map(|m| normalize_ts_ms(m.ts)).unwrap_or(0),
                 t.time.clone(),
                 Self::is_cloud_thread(t),
+                self.settings.pinned_threads.contains(&t.id)
+                    || t.presentation.pinned
+                    || crate::chat::is_pinned_in_list(
+                        &t.id,
+                        t.is_group,
+                        &self.settings.pinned_threads,
+                    ),
             )
         };
         let preview = self.thread_preview_text(&self.threads[i]);
@@ -1923,7 +1930,17 @@ impl ZaloGuiApp {
             ui.painter().galley(Pos2::new(row.right() - 12.0 - tw, row.top() + 15.0), g, pal.text_muted);
             tw
         };
-        let name_max = (row.right() - text_left - time_w - 20.0).max(30.0);
+        let pin_w = if is_pinned { 16.0 } else { 0.0 };
+        if is_pinned {
+            draw_lucide_icon(
+                ui.painter(),
+                Pos2::new(row.right() - 12.0 - time_w - 10.0, row.top() + 16.0),
+                lucide::PIN,
+                11.5,
+                pal.text_muted,
+            );
+        }
+        let name_max = (row.right() - text_left - time_w - pin_w - 20.0).max(30.0);
         let name_col = if selected && pal.is_dark { Color32::WHITE } else { pal.text_primary };
         let g_name = single_line_galley(ui, &name, 14.5, name_col, name_max);
         ui.painter().galley(Pos2::new(text_left, row.top() + 13.0), g_name, name_col);
