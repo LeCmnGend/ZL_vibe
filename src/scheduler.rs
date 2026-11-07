@@ -135,7 +135,9 @@ pub fn compute_preset_timestamp(now_ts: i64, preset: SchedulePreset) -> i64 {
 pub fn parse_custom_schedule_input(input: &str, now_ts: i64) -> Result<i64, String> {
     let s = input.trim();
     if s.is_empty() {
-        return Err("Vui lòng nhập thời gian hẹn giờ (ví dụ: 08:00, +30m, 2026-12-31 09:30)".into());
+        return Err(
+            "Vui lòng nhập thời gian hẹn giờ (ví dụ: 08:00, +30m, 2026-12-31 09:30)".into(),
+        );
     }
     if let Some(rest) = s.strip_prefix('+') {
         let rest = rest.trim();
@@ -166,13 +168,47 @@ pub fn parse_custom_schedule_input(input: &str, now_ts: i64) -> Result<i64, Stri
         .single()
         .ok_or_else(|| "Không xác định được múi giờ hệ thống".to_string())?;
 
-    // Try full datetime formats first
+    // Try full datetime formats first (including `%H:%M · %d/%m/%Y` emitted by `format_schedule_time`)
+    let rel_cand = s.strip_prefix('+').unwrap_or(s).trim();
+    if let Some(secs) = rel_cand.strip_suffix('s') {
+        if let Ok(n) = secs.trim().parse::<i64>() {
+            if n <= 0 {
+                return Err("Thời gian hẹn giờ phải lớn hơn thời điểm hiện tại".into());
+            }
+            return Ok(now_ts + n);
+        }
+    }
+    if let Some(mins) = rel_cand
+        .strip_suffix("ph")
+        .or_else(|| rel_cand.strip_suffix('p'))
+        .or_else(|| rel_cand.strip_suffix('m'))
+    {
+        if let Ok(n) = mins.trim().parse::<i64>() {
+            if n <= 0 {
+                return Err("Thời gian hẹn giờ phải lớn hơn thời điểm hiện tại".into());
+            }
+            return Ok(now_ts + n * 60);
+        }
+    }
+    if let Some(hours) = rel_cand
+        .strip_suffix('h')
+        .or_else(|| rel_cand.strip_suffix('g'))
+    {
+        if let Ok(n) = hours.trim().parse::<i64>() {
+            if n <= 0 {
+                return Err("Thời gian hẹn giờ phải lớn hơn thời điểm hiện tại".into());
+            }
+            return Ok(now_ts + n * 3600);
+        }
+    }
     for fmt in [
         "%Y-%m-%d %H:%M",
         "%Y-%m-%d %H:%M:%S",
         "%d/%m/%Y %H:%M",
         "%d/%m/%Y %H:%M:%S",
         "%d-%m-%Y %H:%M",
+        "%H:%M · %d/%m/%Y",
+        "%H:%M %d/%m/%Y",
     ] {
         if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
             if let Some(ldt) = Local.from_local_datetime(&ndt).single() {
@@ -402,10 +438,7 @@ pub fn claim_due_scheduled_messages(db_path: &str, now_ts: i64) -> Result<Vec<Sc
 /// Mark a claimed scheduled message as sent (removes it from active queue).
 pub fn mark_scheduled_sent(db_path: &str, id: i64) -> Result<()> {
     let conn = open_scheduler_db(db_path)?;
-    conn.execute(
-        "DELETE FROM scheduled_messages WHERE id = ?1",
-        params![id],
-    )?;
+    conn.execute("DELETE FROM scheduled_messages WHERE id = ?1", params![id])?;
     Ok(())
 }
 
@@ -437,7 +470,10 @@ mod tests {
         assert!(compute_preset_timestamp(now, SchedulePreset::Today18h) > now);
         assert!(compute_preset_timestamp(now, SchedulePreset::Tomorrow08h) > now);
 
-        assert_eq!(parse_custom_schedule_input("+30m", now).unwrap(), now + 1800);
+        assert_eq!(
+            parse_custom_schedule_input("+30m", now).unwrap(),
+            now + 1800
+        );
         assert_eq!(parse_custom_schedule_input("+2h", now).unwrap(), now + 7200);
         assert!(parse_custom_schedule_input("08:30", now).unwrap() > now);
         assert!(parse_custom_schedule_input("-5m", now).is_err());
@@ -489,7 +525,9 @@ mod tests {
         assert_eq!(list_pending_scheduled(db, None).unwrap().len(), 1);
 
         // Not due yet at now + 100
-        assert!(claim_due_scheduled_messages(db, now + 100).unwrap().is_empty());
+        assert!(claim_due_scheduled_messages(db, now + 100)
+            .unwrap()
+            .is_empty());
 
         // Due at now + 300
         let due = claim_due_scheduled_messages(db, now + 300).unwrap();

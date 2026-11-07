@@ -113,6 +113,24 @@ impl ChatMessage {
 
     /// Keep aggregate counts and event replay cursors across cache/network merges.
     pub fn merge_reaction_metadata(&mut self, incoming: &Self) -> bool {
+        let before_total = crate::reactions::total_count(&self.reaction_summaries);
+        let changed = self.merge_reaction_metadata_inner(incoming);
+        crate::reactions::trace_count_change(
+            &format!(
+                "merge_reaction_metadata incoming_total={} incoming_snapshot={} incoming_authoritative={} incoming_versions={}",
+                crate::reactions::total_count(&incoming.reaction_summaries),
+                incoming.reaction_snapshot,
+                incoming.reaction_authoritative_snapshot,
+                incoming.reaction_versions.len()
+            ),
+            &self.id,
+            before_total,
+            crate::reactions::total_count(&self.reaction_summaries),
+        );
+        changed
+    }
+
+    fn merge_reaction_metadata_inner(&mut self, incoming: &Self) -> bool {
         let model_changed = self.merge_message_metadata(incoming);
         let previous_provenance = self.reaction_snapshot_provenance.clone();
         let before = (
@@ -241,6 +259,21 @@ impl ChatMessage {
     }
 
     pub fn apply_reaction(&mut self, event: &crate::reactions::ReactionEvent) -> bool {
+        let before_total = crate::reactions::total_count(&self.reaction_summaries);
+        let changed = self.apply_reaction_inner(event);
+        crate::reactions::trace_count_change(
+            &format!(
+                "apply_reaction event={} sender={}",
+                event.event_id, event.sender_id
+            ),
+            &self.id,
+            before_total,
+            crate::reactions::total_count(&self.reaction_summaries),
+        );
+        changed
+    }
+
+    fn apply_reaction_inner(&mut self, event: &crate::reactions::ReactionEvent) -> bool {
         if event.sender_id.is_empty() || event.r_type < -1 {
             return false;
         }
@@ -2100,12 +2133,25 @@ pub async fn send_attachment_ext(
             send_obj.insert("rawUrl".into(), json!(normal_url));
             send_obj.insert("hdUrl".into(), json!(hd_url));
             send_obj.insert("thumbUrl".into(), json!(thumb_url));
-            send_obj.insert("oriUrl".into(), json!(if is_original_hd { &ori_url } else { &normal_url }));
+            send_obj.insert(
+                "oriUrl".into(),
+                json!(if is_original_hd {
+                    &ori_url
+                } else {
+                    &normal_url
+                }),
+            );
             send_obj.insert("normalUrl".into(), json!(normal_url));
-            send_obj.insert("hdSize".into(), json!(if is_original_hd { total_size } else { 0 }));
+            send_obj.insert(
+                "hdSize".into(),
+                json!(if is_original_hd { total_size } else { 0 }),
+            );
             send_obj.insert("isHD".into(), json!(if is_original_hd { 1 } else { 0 }));
             send_obj.insert("hd".into(), json!(if is_original_hd { 1 } else { 0 }));
-            send_obj.insert("isOriginal".into(), json!(if is_original_hd { 1 } else { 0 }));
+            send_obj.insert(
+                "isOriginal".into(),
+                json!(if is_original_hd { 1 } else { 0 }),
+            );
             send_obj.insert("zsource".into(), json!(-1));
             send_obj.insert("jcp".into(), json!("{\"convertible\":true}"));
             send_obj.insert("imei".into(), json!(s.imei));
@@ -2646,7 +2692,10 @@ pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
         let tag = &after[..=end];
         cursor = &after[end + 1..];
 
-        if tag.get(1..5).map_or(false, |s| s.eq_ignore_ascii_case("meta")) {
+        if tag
+            .get(1..5)
+            .map_or(false, |s| s.eq_ignore_ascii_case("meta"))
+        {
             let key = extract_meta_attr(tag, "property")
                 .or_else(|| extract_meta_attr(tag, "name"))
                 .unwrap_or_default()
@@ -2671,7 +2720,11 @@ pub async fn scrape_opengraph_metadata(url: &str) -> Option<LinkMetadata> {
                 }
                 _ => {}
             }
-        } else if og_title.is_empty() && tag.get(1..6).map_or(false, |s| s.eq_ignore_ascii_case("title")) {
+        } else if og_title.is_empty()
+            && tag
+                .get(1..6)
+                .map_or(false, |s| s.eq_ignore_ascii_case("title"))
+        {
             if let Some(close) = cursor.find("</") {
                 let raw_t = unescape_html_entities(&cursor[..close]);
                 if !raw_t.is_empty() {
@@ -3905,8 +3958,14 @@ pub(crate) async fn forward_message_with_client_id(
                 if !bytes.is_empty() {
                     let temp_path = std::env::temp_dir().join(format!("zalo_fwd_{now}.jpg"));
                     if std::fs::write(&temp_path, &bytes).is_ok() {
-                        let caption = if clean_text == "[Hình ảnh]" { "" } else { clean_text };
-                        let res = send_attachment(s, target_id, target_is_group, &temp_path, caption).await;
+                        let caption = if clean_text == "[Hình ảnh]" {
+                            ""
+                        } else {
+                            clean_text
+                        };
+                        let res =
+                            send_attachment(s, target_id, target_is_group, &temp_path, caption)
+                                .await;
                         let _ = std::fs::remove_file(&temp_path);
                         if let Ok((resp_v, _)) = res {
                             return Ok(resp_v);
@@ -4378,7 +4437,15 @@ fn extract_pinned_id_from_value(item: &Value) -> Option<String> {
         }
     }
     if let Some(obj) = item.as_object() {
-        for key in ["convId", "id", "conversId", "threadId", "grid", "uid", "targetId"] {
+        for key in [
+            "convId",
+            "id",
+            "conversId",
+            "threadId",
+            "grid",
+            "uid",
+            "targetId",
+        ] {
             if let Some(v) = obj.get(key) {
                 if let Some(s) = v.as_str() {
                     let trimmed = s.trim();
@@ -4420,7 +4487,15 @@ pub fn parse_pinned_conversations(resp: &Value) -> Vec<String> {
     if let Some(arr) = data_node.as_array() {
         check_array(arr);
     } else if let Some(obj) = data_node.as_object() {
-        for key in ["conversations", "pins", "pinned", "convs", "data", "list", "items"] {
+        for key in [
+            "conversations",
+            "pins",
+            "pinned",
+            "convs",
+            "data",
+            "list",
+            "items",
+        ] {
             if let Some(arr) = obj.get(key).and_then(Value::as_array) {
                 check_array(arr);
             }
@@ -6878,10 +6953,15 @@ fn parse_chat_message(it: &Value) -> Option<ChatMessage> {
 fn extract_reactions(it: &Value) -> Vec<String> {
     let mut res = Vec::new();
     if let Some(r) = it.get("reacts").or_else(|| it.get("reactions")) {
-        let arr_opt = r.get("reactions").and_then(Value::as_array).or_else(|| r.as_array());
+        let arr_opt = r
+            .get("reactions")
+            .and_then(Value::as_array)
+            .or_else(|| r.as_array());
         if let Some(arr) = arr_opt {
             for item in arr {
-                let icon = item.as_str().or_else(|| item.get("rIcon").and_then(Value::as_str));
+                let icon = item
+                    .as_str()
+                    .or_else(|| item.get("rIcon").and_then(Value::as_str));
                 if let Some(icon) = icon {
                     let em = icon_to_emoji(icon);
                     if !res.contains(&em.to_string()) {
@@ -7156,6 +7236,12 @@ pub fn merge_previews(threads: &mut Vec<Thread>, resp: &Value) {
                         existing.reactions = parsed.reactions;
                     }
                     if !parsed.reaction_summaries.is_empty() {
+                        crate::reactions::trace_count_change(
+                            "merge_previews:overwrite_summaries",
+                            &existing.id,
+                            crate::reactions::total_count(&existing.reaction_summaries),
+                            crate::reactions::total_count(&parsed.reaction_summaries),
+                        );
                         existing.reaction_summaries = parsed.reaction_summaries;
                     }
                     existing.is_pinned = existing.is_pinned || parsed.is_pinned;
@@ -8074,9 +8160,7 @@ pub struct SeenEvent {
 }
 
 /// Parse `act_type: "typing"` and `act_type: "seen"` controls from WebSocket `ev.payload` or `lp_control`.
-pub fn extract_typing_and_seen_controls(
-    data_node: &Value,
-) -> (Vec<TypingEvent>, Vec<SeenEvent>) {
+pub fn extract_typing_and_seen_controls(data_node: &Value) -> (Vec<TypingEvent>, Vec<SeenEvent>) {
     let mut typing_events = Vec::new();
     let mut seen_events = Vec::new();
     let mut candidates: Vec<&Value> = Vec::new();
@@ -8097,7 +8181,10 @@ pub fn extract_typing_and_seen_controls(
 
     for item in candidates {
         let c = item.get("content").unwrap_or(item);
-        let act_type = c.get("act_type").and_then(Value::as_str).unwrap_or_default();
+        let act_type = c
+            .get("act_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let act = c.get("act").and_then(Value::as_str).unwrap_or_default();
 
         let raw_data = c.get("data").unwrap_or(c);
@@ -8562,7 +8649,8 @@ pub fn extract_mobile_sync_controls(data_node: &Value) -> Vec<MobileSyncControlE
                 let is_last = parsed_data
                     .get("isLast")
                     .and_then(|v| v.as_i64())
-                    .unwrap_or(0) == 1;
+                    .unwrap_or(0)
+                    == 1;
                 if !url.is_empty() {
                     out.push(MobileSyncControlEvent::SyncV2Batch {
                         url,
@@ -8798,8 +8886,14 @@ mod tests {
         merge_thread_into(&mut target, incoming, true);
         let m = &target.messages[0];
         assert_eq!(m.text, "[Đã thu hồi] Ảnh đẹp nè");
-        assert_eq!(m.link_url.as_deref(), Some("https://res-zalo.zadn.vn/photo.jpg"));
-        assert_eq!(m.link_thumb.as_deref(), Some("https://res-zalo.zadn.vn/thumb.jpg"));
+        assert_eq!(
+            m.link_url.as_deref(),
+            Some("https://res-zalo.zadn.vn/photo.jpg")
+        );
+        assert_eq!(
+            m.link_thumb.as_deref(),
+            Some("https://res-zalo.zadn.vn/thumb.jpg")
+        );
         assert_eq!(m.sticker_id, Some(123));
     }
 
@@ -10523,13 +10617,21 @@ mod send_identity_tests {
 
     #[test]
     fn test_is_safe_external_image_url() {
-        assert!(is_safe_external_image_url("https://photo-stal-6.zdn.vn/gr/jpg/test.jpg"));
-        assert!(is_safe_external_image_url("https://example.com/banner.webp"));
-        assert!(!is_safe_external_image_url("http://localhost:8080/test.png"));
+        assert!(is_safe_external_image_url(
+            "https://photo-stal-6.zdn.vn/gr/jpg/test.jpg"
+        ));
+        assert!(is_safe_external_image_url(
+            "https://example.com/banner.webp"
+        ));
+        assert!(!is_safe_external_image_url(
+            "http://localhost:8080/test.png"
+        ));
         assert!(!is_safe_external_image_url("http://127.0.0.1/admin.png"));
         assert!(!is_safe_external_image_url("https://10.0.0.1/secret.jpg"));
         assert!(!is_safe_external_image_url("http://192.168.1.1/router.png"));
-        assert!(!is_safe_external_image_url("http://169.254.169.254/latest/meta-data.png"));
+        assert!(!is_safe_external_image_url(
+            "http://169.254.169.254/latest/meta-data.png"
+        ));
         assert!(!is_safe_external_image_url("local:///Users/mac/test.png"));
     }
 
@@ -10542,7 +10644,11 @@ mod send_identity_tests {
         });
         assert_eq!(
             parse_pinned_conversations(&v1),
-            vec!["u10001".to_string(), "g20002".to_string(), "30003".to_string()]
+            vec![
+                "u10001".to_string(),
+                "g20002".to_string(),
+                "30003".to_string()
+            ]
         );
 
         // Format 2: Object with "conversations" or "pins" key
@@ -10583,7 +10689,11 @@ mod send_identity_tests {
 
     #[test]
     fn test_is_pinned_in_list_handles_prefixes_and_types() {
-        let pinned = vec!["u10001".to_string(), "g20002".to_string(), "30003".to_string()];
+        let pinned = vec![
+            "u10001".to_string(),
+            "g20002".to_string(),
+            "30003".to_string(),
+        ];
 
         // 1-1 user thread (is_group = false)
         assert!(is_pinned_in_list("10001", false, &pinned));

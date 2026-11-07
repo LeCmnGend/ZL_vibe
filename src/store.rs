@@ -29,15 +29,6 @@ pub struct StoredThread {
     pub last_ts: i64,
 }
 
-/// A span in which messages may be missing (see `MessageStore::add_missing_range`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MissingRange {
-    pub conv_id: String,
-    pub from_ts: i64,
-    pub to_ts: i64,
-    pub reason: String,
-}
-
 pub struct MessageStore {
     pub conn: Connection,
 }
@@ -54,39 +45,21 @@ pub fn db_path_for_account(uin: &str) -> String {
 }
 
 impl MessageStore {
-    /// Compact the currently opened database when it exceeds the requested threshold.
-    pub fn compact_if_needed(&self, max_bytes: u64) -> Result<bool> {
-        let pages: u64 = self.conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
-        let page_size: u64 = self.conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
-        if pages.saturating_mul(page_size) <= max_bytes {
-            return Ok(false);
-        }
-        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
-        Ok(true)
-    }
-
     /// Messages per thread loaded at startup / on refresh. The list only needs the newest one
     /// for ordering and preview; opening a thread reads deeper (`LoadGroupHistory`).
     pub const PRELOAD_MSGS: usize = 20;
 
     /// Open SQLite database at `path` and initialize table schemas and indices if absent.
-    ///
-    /// `":memory:"` opens an in-memory database. The bare legacy name `"zalo_history.db"` is
-    /// redirected to the per-user [`crate::paths::history_db`] so older call sites never create
-    /// a stray copy in the working directory. The file is restricted to the owner on Unix.
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let path = resolve_db_path(path.as_ref());
-        let conn = if path.as_os_str() == ":memory:" {
+    pub fn open(path: &str) -> Result<Self> {
+        let conn = if path == ":memory:" {
             Connection::open_in_memory()?
         } else {
-            let c = Connection::open(&path)?;
-            crate::paths::restrict_file(&path);
-            c
+            Connection::open(path)?
         };
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
-                msg_id TEXT NOT NULL,
+                msg_id TEXT PRIMARY KEY,
                 thread_id TEXT NOT NULL,
                 sender_id TEXT,
                 sender_name TEXT,
@@ -94,8 +67,7 @@ impl MessageStore {
                 msg_type TEXT,
                 ts INTEGER,
                 is_outgoing INTEGER,
-                raw_json TEXT,
-                PRIMARY KEY(thread_id, msg_id)
+                raw_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_thread_ts ON messages(thread_id, ts);
             CREATE TABLE IF NOT EXISTS threads (
@@ -103,21 +75,6 @@ impl MessageStore {
                 name TEXT,
                 is_group INTEGER,
                 last_ts INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS missing_ranges (
-                id INTEGER PRIMARY KEY,
-                conv_id TEXT NOT NULL,
-                from_ts INTEGER NOT NULL,
-                to_ts INTEGER NOT NULL,
-                reason TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                dismissed INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS thread_activity (
-                thread_id TEXT PRIMARY KEY,
-                is_group INTEGER NOT NULL,
-                last_msg_id TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
             );",
         )?;
         // Migration 1: one-time cleanup of placeholder rows. This DELETE used to run (a full
@@ -131,115 +88,7 @@ impl MessageStore {
             )?;
         }
 
-        // Transactional migration from the original globally keyed message ID.
-        let thread_pk: i64 = conn.query_row("SELECT pk FROM pragma_table_info('messages') WHERE name='thread_id'", [], |row| row.get(0))?;
-        if thread_pk == 0 {
-            let migration = conn.unchecked_transaction()?;
-            migration.execute_batch("ALTER TABLE messages RENAME TO messages_v1;
-                CREATE TABLE messages (msg_id TEXT NOT NULL, thread_id TEXT NOT NULL,
-                    sender_id TEXT, sender_name TEXT, text TEXT, msg_type TEXT,
-                    ts INTEGER, is_outgoing INTEGER, raw_json TEXT, PRIMARY KEY(thread_id,msg_id));
-                INSERT INTO messages SELECT msg_id,thread_id,sender_id,sender_name,text,msg_type,ts,is_outgoing,raw_json FROM messages_v1;
-                DROP TABLE messages_v1;
-                CREATE INDEX idx_thread_ts ON messages(thread_id,ts);")?;
-            migration.commit()?;
-        }
-
         Ok(Self { conn })
-    }
-
-    /// Record a span in which messages may be missing (`conv_id = "*"`: any conversation),
-    /// e.g. after the server evicted part of an offline queue. An open range for the same
-    /// conversation that starts at the same time is extended instead of duplicated.
-    /// Returns `true` when a new range was added.
-    pub fn add_missing_range(&self, conv_id: &str, from_ts: i64, to_ts: i64, reason: &str) -> Result<bool> {
-        let extended = self.conn.execute(
-            "UPDATE missing_ranges SET to_ts = MAX(to_ts, ?3)
-             WHERE conv_id = ?1 AND from_ts = ?2 AND dismissed = 0",
-            params![conv_id, from_ts, to_ts],
-        )?;
-        if extended > 0 {
-            return Ok(false);
-        }
-        self.conn.execute(
-            "INSERT INTO missing_ranges (conv_id, from_ts, to_ts, reason, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![conv_id, from_ts, to_ts, reason, crate::timefmt::now_ms()],
-        )?;
-        Ok(true)
-    }
-
-    /// Ranges the user has not dismissed yet, oldest first.
-    pub fn open_missing_ranges(&self) -> Result<Vec<MissingRange>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT conv_id, from_ts, to_ts, reason FROM missing_ranges
-             WHERE dismissed = 0 ORDER BY from_ts ASC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(MissingRange {
-                conv_id: r.get(0)?,
-                from_ts: r.get(1)?,
-                to_ts: r.get(2)?,
-                reason: r.get(3)?,
-            })
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
-
-    /// "Đóng" on the missing-messages banner.
-    pub fn dismiss_missing_ranges(&self) -> Result<()> {
-        self.conn
-            .execute("UPDATE missing_ranges SET dismissed = 1 WHERE dismissed = 0", [])?;
-        Ok(())
-    }
-
-    /// Timestamp of the newest stored message, if any.
-    pub fn newest_message_ts(&self) -> Result<Option<i64>> {
-        Ok(self
-            .conn
-            .query_row("SELECT MAX(ts) FROM messages WHERE ts > 0", [], |r| r.get::<_, Option<i64>>(0))?)
-    }
-
-    /// Remember each conversation's last message id (`get-last-msgs` → `clearUnreads`).
-    pub fn upsert_thread_activity(&mut self, rows: &[(String, bool, String)]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        let now = crate::timefmt::now_ms();
-        for (thread_id, is_group, last_msg_id) in rows {
-            tx.execute(
-                "INSERT INTO thread_activity (thread_id, is_group, last_msg_id, updated_at)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(thread_id) DO UPDATE SET
-                     is_group = excluded.is_group,
-                     last_msg_id = excluded.last_msg_id,
-                     updated_at = excluded.updated_at",
-                params![thread_id, if *is_group { 1 } else { 0 }, last_msg_id, now],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// `(thread_id, last_msg_id)` for every conversation seen in `get-last-msgs`.
-    pub fn thread_activity(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT thread_id, last_msg_id FROM thread_activity")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
-
-    /// Up to `limit` newest `(numeric msg_id, ts)` pairs, to fit [`crate::sync_state::MsgIdClock`].
-    pub fn msg_id_ts_pairs(&self, limit: usize) -> Result<Vec<(u64, i64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT msg_id, ts FROM messages WHERE ts > 0 ORDER BY ts DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
-        Ok(rows
-            .filter_map(|r| r.ok())
-            .filter_map(|(id, ts)| id.parse::<u64>().ok().map(|n| (n, ts)))
-            .collect())
     }
 
     /// Insert a message. Returns `true` if a new row was inserted, `false` if already existed.
@@ -260,21 +109,27 @@ impl MessageStore {
             ],
         )?;
         if rows == 0 && !msg.raw_json.is_empty() {
-            self.conn.execute(
-                "UPDATE messages SET raw_json = ?1, msg_type = ?2, text = ?4 WHERE msg_id = ?3 AND thread_id = ?5",
-                params![msg.raw_json, msg.msg_type, msg.msg_id, msg.text, msg.thread_id],
-            )?;
+            let _ = self.conn.execute(
+                "UPDATE messages SET raw_json = ?1, msg_type = ?2, text = ?4 WHERE msg_id = ?3",
+                params![msg.raw_json, msg.msg_type, msg.msg_id, msg.text],
+            );
         }
         Ok(rows > 0)
     }
 
     /// Delete a message from local SQLite store when user selects "Xóa chỉ ở phía tôi".
     pub fn delete_message(&mut self, thread_id: &str, msg_id: &str, ts: i64) -> Result<()> {
-        let key = if msg_id.is_empty() { format!("{thread_id}_{ts}") } else { msg_id.to_owned() };
-        self.conn.execute(
-            "DELETE FROM messages WHERE thread_id = ?1 AND msg_id = ?2",
-            params![thread_id, key],
-        )?;
+        if !msg_id.is_empty() {
+            let _ = self
+                .conn
+                .execute("DELETE FROM messages WHERE msg_id = ?1", params![msg_id]);
+        }
+        if ts > 0 && !thread_id.is_empty() {
+            let _ = self.conn.execute(
+                "DELETE FROM messages WHERE thread_id = ?1 AND ts = ?2",
+                params![thread_id, ts],
+            );
+        }
         Ok(())
     }
 
@@ -337,12 +192,12 @@ impl MessageStore {
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(thread_id) DO UPDATE SET
                  name = CASE
-                    WHEN excluded.name = ''
-                      OR excluded.name = excluded.thread_id
-                      OR excluded.name = 'Nhóm ' || excluded.thread_id
-                      OR excluded.name = 'Người dùng ' || excluded.thread_id
-                    THEN threads.name
-                    ELSE excluded.name
+                     WHEN excluded.name IS NOT NULL AND excluded.name != ''
+                          AND excluded.name NOT LIKE 'Người dùng %'
+                          AND excluded.name NOT LIKE 'Nhóm %'
+                          AND (threads.name IS NULL OR threads.name = '' OR threads.name LIKE 'Người dùng %' OR threads.name LIKE 'Nhóm %')
+                     THEN excluded.name
+                     ELSE COALESCE(NULLIF(threads.name, ''), excluded.name)
                  END,
                  is_group = excluded.is_group,
                  last_ts = MAX(COALESCE(last_ts, 0), excluded.last_ts)",
@@ -377,12 +232,12 @@ impl MessageStore {
             // *oldest* rows, so a thread longer than the limit reopened on stale messages.
             "SELECT msg_id, thread_id, sender_id, sender_name, text, msg_type, ts, is_outgoing, raw_json
              FROM (
-                 SELECT msg_id, thread_id, sender_id, sender_name, text, msg_type, ts, is_outgoing, raw_json, rowid AS sort_rowid
+                 SELECT msg_id, thread_id, sender_id, sender_name, text, msg_type, ts, is_outgoing, raw_json
                  FROM messages
                  WHERE thread_id = ?1
-                 ORDER BY ts DESC, rowid DESC
+                 ORDER BY ts DESC
                  LIMIT ?2
-             ) ORDER BY ts ASC, sort_rowid ASC",
+             ) ORDER BY ts ASC",
         )?;
 
         let rows = stmt.query_map(params![thread_id, limit as i64], |row| {
@@ -432,15 +287,11 @@ impl MessageStore {
 
     /// Hydrate `threads` with persisted threads and message history from SQLite.
     /// Returns the total number of messages loaded into `threads`.
-    pub fn hydrate_threads(&self, threads: &mut Vec<Thread>, limit_per_thread: usize) -> Result<usize> {
-        self.hydrate_scoped(threads, limit_per_thread, true)
-    }
-
-    pub fn hydrate_selected_threads(&self, threads: &mut Vec<Thread>, limit_per_thread: usize) -> Result<usize> {
-        self.hydrate_scoped(threads, limit_per_thread, false)
-    }
-
-    fn hydrate_scoped(&self, threads: &mut Vec<Thread>, limit_per_thread: usize, include_unlisted: bool) -> Result<usize> {
+    pub fn hydrate_threads(
+        &self,
+        threads: &mut Vec<Thread>,
+        limit_per_thread: usize,
+    ) -> Result<usize> {
         crate::chat::deduplicate_threads(threads, None);
 
         let stored_threads = self.all_threads().unwrap_or_default();
@@ -449,13 +300,33 @@ impl MessageStore {
                 continue;
             }
             if let Some(existing) = threads.iter_mut().find(|t| t.id == st.thread_id) {
-                if crate::chat::is_generic_thread_name(&existing.name)
-                    && !crate::chat::is_generic_thread_name(&st.name)
-                {
+                if !st.name.is_empty() && !crate::chat::is_generic_thread_name(&st.name) {
                     existing.name = st.name;
                 }
                 existing.is_group = existing.is_group || st.is_group;
-            } else if include_unlisted {
+            } else if !st.is_group
+                && st.name.contains("Cloud của tôi")
+                && threads
+                    .iter()
+                    .any(|t| !t.is_group && t.name.contains("Cloud của tôi"))
+            {
+                // Migrate stale session-scoped `send2me_id` ("Cloud của tôi") in SQLite to the active session's `id`.
+                // Normal contacts/groups must NEVER be merged by display name alone (#63).
+                if let Some(live_id) = threads
+                    .iter()
+                    .find(|t| !t.is_group && t.name.contains("Cloud của tôi"))
+                    .map(|t| t.id.clone())
+                {
+                    let _ = self.conn.execute(
+                        "UPDATE messages SET thread_id = ?1 WHERE thread_id = ?2",
+                        params![live_id, st.thread_id],
+                    );
+                    let _ = self.conn.execute(
+                        "DELETE FROM threads WHERE thread_id = ?1",
+                        params![st.thread_id],
+                    );
+                }
+            } else {
                 threads.push(Thread {
                     presentation: Default::default(),
                     unread: Default::default(),
@@ -474,8 +345,32 @@ impl MessageStore {
             }
         }
 
+        // Primary-key lookups for the messages actually in memory. This used to load every
+        // (msg_id, thread_id) row in the database into a HashMap on each call. One transaction
+        // around them: in autocommit every SELECT takes and drops the file lock, ~50 µs on
+        // Windows, which made 62k lookups cost 3 s.
+        let tx = self.conn.unchecked_transaction()?;
+        let mut owner_of = self
+            .conn
+            .prepare("SELECT thread_id FROM messages WHERE msg_id = ?1")?;
+
         let mut loaded_count = 0;
         for t in threads.iter_mut() {
+            let before = t.messages.len();
+            let tid = t.id.clone();
+            t.messages.retain(|m| {
+                owner_of
+                    .query_row(params![m.id], |r| r.get::<_, String>(0))
+                    .map_or(true, |owner| owner == tid)
+            });
+            if t.messages.len() != before && t.messages.is_empty() {
+                t.preview.clear();
+                t.time.clear();
+                let _ = self.conn.execute(
+                    "UPDATE threads SET last_ts = 0 WHERE thread_id = ?1",
+                    params![t.id],
+                );
+            }
             let saved_msgs = self.messages_for(&t.id, limit_per_thread)?;
             for sm in saved_msgs {
                 let time = if sm.ts > 0 {
@@ -508,10 +403,7 @@ impl MessageStore {
                             .get("cateId")
                             .or_else(|| val.get("catId"))
                             .and_then(|v| v.as_u64());
-                        sticker_type = val
-                            .get("type")
-                            .and_then(|v| v.as_u64())
-                            .map(|n| n as u32);
+                        sticker_type = val.get("type").and_then(|v| v.as_u64()).map(|n| n as u32);
                         reply_to_id = val
                             .get("reply_to_id")
                             .and_then(|v| v.as_str())
@@ -531,7 +423,10 @@ impl MessageStore {
                                 .collect();
                         }
                         if let Some(sums) = val.get("reaction_summaries") {
-                            if let Ok(parsed_sums) = serde_json::from_value::<Vec<crate::reactions::ReactionSummary>>(sums.clone()) {
+                            if let Ok(parsed_sums) = serde_json::from_value::<
+                                Vec<crate::reactions::ReactionSummary>,
+                            >(sums.clone())
+                            {
                                 reaction_summaries = parsed_sums;
                             }
                         }
@@ -608,7 +503,10 @@ impl MessageStore {
                     (!existing.id.is_empty() && existing.id == cm.id)
                         || (existing.text == cm.text
                             && existing.is_outgoing == cm.is_outgoing
-                            && (existing.ts == cm.ts || (existing.ts != 0 && cm.ts != 0 && (existing.ts - cm.ts).abs() < 5000)))
+                            && (existing.ts == cm.ts
+                                || (existing.ts != 0
+                                    && cm.ts != 0
+                                    && (existing.ts - cm.ts).abs() < 5000)))
                 }) {
                     if existing.sticker_id.is_none() && cm.sticker_id.is_some() {
                         existing.sticker_id = cm.sticker_id;
@@ -634,6 +532,12 @@ impl MessageStore {
                         existing.reactions = cm.reactions;
                     }
                     if existing.reaction_summaries.is_empty() && !cm.reaction_summaries.is_empty() {
+                        crate::reactions::trace_count_change(
+                            "store:load_from_db",
+                            &existing.id,
+                            0,
+                            crate::reactions::total_count(&cm.reaction_summaries),
+                        );
                         existing.reaction_summaries = cm.reaction_summaries;
                     }
                     existing.is_pinned = existing.is_pinned || cm.is_pinned;
@@ -653,6 +557,8 @@ impl MessageStore {
                 }
             }
         }
+        drop(owner_of);
+        tx.commit()?;
         crate::chat::deduplicate_threads(threads, None);
         Ok(loaded_count)
     }
@@ -684,7 +590,10 @@ impl From<&ChatMessage> for StoredMessage {
             meta.insert("reactions".into(), serde_json::json!(m.reactions));
         }
         if !m.reaction_summaries.is_empty() {
-            meta.insert("reaction_summaries".into(), serde_json::json!(m.reaction_summaries));
+            meta.insert(
+                "reaction_summaries".into(),
+                serde_json::json!(m.reaction_summaries),
+            );
         }
         if m.is_pinned {
             meta.insert("is_pinned".into(), serde_json::json!(true));
@@ -719,7 +628,11 @@ impl From<&ChatMessage> for StoredMessage {
                 format!("msg_{}", m.ts)
             },
             thread_id: String::new(),
-            sender_id: if m.is_outgoing { "0".into() } else { m.sender.clone() },
+            sender_id: if m.is_outgoing {
+                "0".into()
+            } else {
+                m.sender.clone()
+            },
             sender_name: m.sender.clone(),
             text: m.text.clone(),
             msg_type,
@@ -768,11 +681,7 @@ fn persist_threads_inner(store: &mut MessageStore, threads: &[Thread]) -> Result
 }
 
 /// Convenience helper: open `zalo_history.db` (or `path`) and hydrate `threads` with saved history.
-pub fn load_history_into_threads(
-    path: impl AsRef<std::path::Path>,
-    threads: &mut Vec<Thread>,
-    limit_per_thread: usize,
-) {
+pub fn load_history_into_threads(path: &str, threads: &mut Vec<Thread>, limit_per_thread: usize) {
     if let Ok(store) = MessageStore::open(path) {
         let _ = store.hydrate_threads(threads, limit_per_thread);
     }
@@ -788,10 +697,7 @@ pub struct ImportReport {
 
 /// Import / migrate message history from an existing SQLite database (`.db`/`.sqlite`),
 /// a JSON backup (`threads_cache.json` or export JSON), or a directory containing them (#9).
-pub fn import_history_from_path(
-    src: &std::path::Path,
-    dst_db_path: &str,
-) -> Result<ImportReport> {
+pub fn import_history_from_path(src: &std::path::Path, dst_db_path: &str) -> Result<ImportReport> {
     if !src.exists() {
         anyhow::bail!("Đường dẫn nguồn không tồn tại: {}", src.display());
     }
@@ -816,7 +722,10 @@ pub fn import_history_from_path(
                 let p = entry.path();
                 if p.is_file() && !files_to_import.contains(&p) {
                     if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                        if matches!(ext.to_ascii_lowercase().as_str(), "db" | "sqlite" | "sqlite3" | "json") {
+                        if matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "db" | "sqlite" | "sqlite3" | "json"
+                        ) {
                             files_to_import.push(p);
                         }
                     }
@@ -885,9 +794,13 @@ pub fn import_history_from_path(
                     dst.conn.execute_batch("COMMIT")?;
                     report.threads_imported += tc;
                     report.messages_imported += mc;
-                    report
-                        .sources_read
-                        .push(file_path.file_name().unwrap_or_default().to_string_lossy().into());
+                    report.sources_read.push(
+                        file_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into(),
+                    );
                 }
                 Err(e) => {
                     let _ = dst.conn.execute_batch("ROLLBACK");
@@ -899,9 +812,13 @@ pub fn import_history_from_path(
                 let added = persist_threads(&mut dst, &threads)?;
                 report.threads_imported += threads.len();
                 report.messages_imported += added;
-                report
-                    .sources_read
-                    .push(file_path.file_name().unwrap_or_default().to_string_lossy().into());
+                report.sources_read.push(
+                    file_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into(),
+                );
             } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
                 if let Some(arr) = val.get("threads").and_then(|v| v.as_array()) {
                     let threads: Vec<Thread> = arr
@@ -912,20 +829,33 @@ pub fn import_history_from_path(
                         let added = persist_threads(&mut dst, &threads)?;
                         report.threads_imported += threads.len();
                         report.messages_imported += added;
-                        report
-                            .sources_read
-                            .push(file_path.file_name().unwrap_or_default().to_string_lossy().into());
+                        report.sources_read.push(
+                            file_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into(),
+                        );
                     }
                 }
             }
         } else if bytes.len() >= 4096 {
             if let Some(decrypted_bytes) = try_decrypt_zalo_pc_database(&bytes) {
                 let tmp_dir = std::env::temp_dir();
-                let tmp_name = format!("ctdozlite_import_{}_{}.db", std::process::id(), report.sources_read.len());
+                let tmp_name = format!(
+                    "ctdozlite_import_{}_{}.db",
+                    std::process::id(),
+                    report.sources_read.len()
+                );
                 let tmp_path = tmp_dir.join(tmp_name);
                 if std::fs::write(&tmp_path, &decrypted_bytes).is_ok() {
                     if let Ok(src_conn) = Connection::open(&tmp_path) {
-                        let _ = import_official_zalo_pc_db(&src_conn, &mut dst, &file_path, &mut report);
+                        let _ = import_official_zalo_pc_db(
+                            &src_conn,
+                            &mut dst,
+                            &file_path,
+                            &mut report,
+                        );
                     }
                     let _ = std::fs::remove_file(&tmp_path);
                 }
@@ -978,7 +908,8 @@ fn scan_and_import_zalo_data_dir(
     }
 
     // 3. Build contact/group name dictionary from Index.db
-    let mut id_to_name: std::collections::HashMap<String, (String, bool)> = std::collections::HashMap::new();
+    let mut id_to_name: std::collections::HashMap<String, (String, bool)> =
+        std::collections::HashMap::new();
     for idx_path in index_files {
         if let Ok(bytes) = std::fs::read(&idx_path) {
             if let Some(dec) = decrypt_sqlcipher_bytes(&bytes, cipher_key.as_bytes()) {
@@ -999,20 +930,37 @@ fn scan_and_import_zalo_data_dir(
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.extension().and_then(|e| e.to_str()) == Some("db") {
-                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                    let stem = p
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_string();
                     if let Ok(bytes) = std::fs::read(&p) {
                         if let Some(dec) = decrypt_sqlcipher_bytes(&bytes, cipher_key.as_bytes()) {
-                            let tmp_p = std::env::temp_dir().join(format!("msg_{}_{}.db", std::process::id(), stem));
+                            let tmp_p = std::env::temp_dir().join(format!(
+                                "msg_{}_{}.db",
+                                std::process::id(),
+                                stem
+                            ));
                             if std::fs::write(&tmp_p, &dec).is_ok() {
                                 if let Ok(conn) = Connection::open(&tmp_p) {
                                     let thread_id = stem.clone();
-                                    let (t_name, is_group) = id_to_name
-                                        .get(&thread_id)
-                                        .cloned()
-                                        .unwrap_or_else(|| {
-                                            (format!("Người dùng {thread_id}"), thread_id.starts_with('g'))
+                                    let (t_name, is_group) =
+                                        id_to_name.get(&thread_id).cloned().unwrap_or_else(|| {
+                                            (
+                                                format!("Người dùng {thread_id}"),
+                                                thread_id.starts_with('g'),
+                                            )
                                         });
-                                    let _ = import_message_table(&conn, dst, &thread_id, &t_name, is_group, &cipher_key, report);
+                                    let _ = import_message_table(
+                                        &conn,
+                                        dst,
+                                        &thread_id,
+                                        &t_name,
+                                        is_group,
+                                        &cipher_key,
+                                        report,
+                                    );
                                 }
                                 let _ = std::fs::remove_file(&tmp_p);
                             }
@@ -1091,7 +1039,7 @@ fn import_message_table(
 ) -> Result<()> {
     let mut stmt = match src_conn.prepare(
         "SELECT msgId, cliMsgId, fromUid, toUid, dName, msgType, sendDttm, message, quote
-         FROM message ORDER BY CAST(sendDttm AS INTEGER) ASC"
+         FROM message ORDER BY CAST(sendDttm AS INTEGER) ASC",
     ) {
         Ok(s) => s,
         Err(_) => return Ok(()),
@@ -1113,7 +1061,8 @@ fn import_message_table(
     })?;
 
     for r in rows.flatten() {
-        let (msg_id, cli_msg_id, from_uid, _to_uid, dname, mtype, send_dttm, raw_msg, quote_str) = r;
+        let (msg_id, cli_msg_id, from_uid, _to_uid, dname, mtype, send_dttm, raw_msg, quote_str) =
+            r;
         let ts: i64 = send_dttm.parse().unwrap_or(0);
         let is_outgoing = from_uid == "0" || from_uid.is_empty();
         let (text, mut meta) = decode_zalo_cipher_payload_with_meta(&raw_msg, cipher_key, mtype);
@@ -1132,15 +1081,31 @@ fn import_message_table(
             _ => "chat.text",
         };
         msgs.push(StoredMessage {
-            msg_id: if !msg_id.is_empty() { msg_id } else { cli_msg_id },
+            msg_id: if !msg_id.is_empty() {
+                msg_id
+            } else {
+                cli_msg_id
+            },
             thread_id: thread_id.to_string(),
             sender_id: from_uid,
-            sender_name: if !dname.is_empty() { dname } else { if is_outgoing { "Tôi".into() } else { thread_name.into() } },
+            sender_name: if !dname.is_empty() {
+                dname
+            } else {
+                if is_outgoing {
+                    "Tôi".into()
+                } else {
+                    thread_name.into()
+                }
+            },
             text,
             msg_type: msg_type_str.to_string(),
             ts,
             is_outgoing,
-            raw_json: if meta.is_empty() { String::new() } else { serde_json::Value::Object(meta).to_string() },
+            raw_json: if meta.is_empty() {
+                String::new()
+            } else {
+                serde_json::Value::Object(meta).to_string()
+            },
         });
     }
 
@@ -1167,28 +1132,44 @@ fn import_message_table(
 
     report.threads_imported += 1;
     report.messages_imported += added;
-    report.sources_read.push(format!("ZaloPC: {thread_name} ({thread_id})"));
+    report
+        .sources_read
+        .push(format!("ZaloPC: {thread_name} ({thread_id})"));
     Ok(())
 }
 
 /// Recover the 32-character XOR key from LevelDB in `Partitions/zalo/Local Storage/leveldb`.
 pub fn recover_zalo_localstorage_key(base_dir: &std::path::Path) -> String {
-    let cand_dirs = vec![base_dir.join("Partitions").join("zalo").join("Local Storage").join("leveldb")];
+    let cand_dirs = vec![base_dir
+        .join("Partitions")
+        .join("zalo")
+        .join("Local Storage")
+        .join("leveldb")];
 
     let mut key = vec![None; 32];
-    let u_pat = "z_ecrp_".encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+    let u_pat = "z_ecrp_"
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect::<Vec<u8>>();
 
     for ldb_dir in cand_dirs {
-        let Ok(entries) = std::fs::read_dir(ldb_dir) else { continue; };
+        let Ok(entries) = std::fs::read_dir(ldb_dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let p = entry.path();
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
             if ext != "ldb" && ext != "log" {
                 continue;
             }
-            let Ok(b) = std::fs::read(&p) else { continue; };
+            let Ok(b) = std::fs::read(&p) else {
+                continue;
+            };
             let mut pos = 0;
-            while let Some(rel) = b[pos..].windows(u_pat.len()).position(|w| w == u_pat.as_slice()) {
+            while let Some(rel) = b[pos..]
+                .windows(u_pat.len())
+                .position(|w| w == u_pat.as_slice())
+            {
                 let idx = pos + rel + u_pat.len();
                 pos = idx;
                 let mut chars = Vec::new();
@@ -1199,14 +1180,23 @@ pub fn recover_zalo_localstorage_key(base_dir: &std::path::Path) -> String {
                 }
                 if chars.len() >= 32 {
                     let prefix = b"{\"version\":";
-                    let cand: Vec<u32> = chars.iter().take(prefix.len()).zip(prefix.iter()).map(|(c, p)| c ^ (*p as u32)).collect();
+                    let cand: Vec<u32> = chars
+                        .iter()
+                        .take(prefix.len())
+                        .zip(prefix.iter())
+                        .map(|(c, p)| c ^ (*p as u32))
+                        .collect();
                     if cand.iter().all(|x| (*x as u8 as char).is_ascii_hexdigit()) {
                         for (i, v) in cand.iter().enumerate() {
                             key[i] = Some(*v as u8 as char);
                         }
                         let suffix = b",\"list_recent\":[{\"";
                         if chars.len() >= 14 + suffix.len() {
-                            let cand2: Vec<u32> = chars[14..14+suffix.len()].iter().zip(suffix.iter()).map(|(c, p)| c ^ (*p as u32)).collect();
+                            let cand2: Vec<u32> = chars[14..14 + suffix.len()]
+                                .iter()
+                                .zip(suffix.iter())
+                                .map(|(c, p)| c ^ (*p as u32))
+                                .collect();
                             if cand2.iter().all(|x| (*x as u8 as char).is_ascii_hexdigit()) {
                                 for (i, v) in cand2.iter().enumerate() {
                                     key[14 + i] = Some(*v as u8 as char);
@@ -1268,7 +1258,10 @@ pub fn decrypt_sqlcipher_bytes(bytes: &[u8], passphrase: &[u8]) -> Option<Vec<u8
         if p == 0 {
             dec_buf = page[16..page_size - reserve].to_vec();
             let decryptor = Aes256CbcDec::new((&derived_key).into(), iv.into());
-            if decryptor.decrypt_padded_mut::<NoPadding>(&mut dec_buf).is_err() {
+            if decryptor
+                .decrypt_padded_mut::<NoPadding>(&mut dec_buf)
+                .is_err()
+            {
                 return None;
             }
             // Check SQLite magic page size (offset 0..2 in decrypted buffer)
@@ -1281,7 +1274,10 @@ pub fn decrypt_sqlcipher_bytes(bytes: &[u8], passphrase: &[u8]) -> Option<Vec<u8
         } else {
             dec_buf = page[0..page_size - reserve].to_vec();
             let decryptor = Aes256CbcDec::new((&derived_key).into(), iv.into());
-            if decryptor.decrypt_padded_mut::<NoPadding>(&mut dec_buf).is_err() {
+            if decryptor
+                .decrypt_padded_mut::<NoPadding>(&mut dec_buf)
+                .is_err()
+            {
                 return None;
             }
             out.extend_from_slice(&dec_buf);
@@ -1415,7 +1411,9 @@ pub fn jxl_to_jpg_url(url: &str) -> String {
     if without_flag.contains("e2esession=") {
         return without_flag;
     }
-    without_flag.replace("/jxl/", "/jpg/").replace(".jxl", ".jpg")
+    without_flag
+        .replace("/jxl/", "/jpg/")
+        .replace(".jxl", ".jpg")
 }
 
 fn extract_zalo_message_text_and_meta(
@@ -1429,10 +1427,26 @@ fn extract_zalo_message_text_and_meta(
         }
         if let Some(arr) = val.as_array() {
             for item in arr {
-                let title = item.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or_default();
-                let desc = item.get("description").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or_default();
-                let href = item.get("href").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or_default();
-                let thumb = item.get("thumb").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or_default();
+                let title = item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_default();
+                let desc = item
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_default();
+                let href = item
+                    .get("href")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_default();
+                let thumb = item
+                    .get("thumb")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_default();
                 if !title.is_empty() || !desc.is_empty() {
                     if !href.is_empty() {
                         meta.insert("link_url".into(), serde_json::json!(href));
@@ -1452,9 +1466,18 @@ fn extract_zalo_message_text_and_meta(
             }
         }
         if mtype == 4 || val.get("catId").is_some() {
-            if let Some(sid) = val.get("id").and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok())) {
-                let cid = val.get("catId").and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok())).unwrap_or(0);
-                let st = val.get("type").and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok())).unwrap_or(7);
+            if let Some(sid) = val
+                .get("id")
+                .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            {
+                let cid = val
+                    .get("catId")
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    .unwrap_or(0);
+                let st = val
+                    .get("type")
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    .unwrap_or(7);
                 meta.insert("stickerId".into(), serde_json::json!(sid));
                 meta.insert("cateId".into(), serde_json::json!(cid));
                 meta.insert("type".into(), serde_json::json!(st));
@@ -1464,12 +1487,22 @@ fn extract_zalo_message_text_and_meta(
         // Photo (msgType == 2)
         if mtype == 2 || val.get("oriUrl").is_some() || val.get("thumbUrl").is_some() {
             let ori = jxl_to_jpg_url(
-                val.get("oriUrl").or_else(|| val.get("normalUrl")).and_then(|v| v.as_str()).unwrap_or_default(),
+                val.get("oriUrl")
+                    .or_else(|| val.get("normalUrl"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
             );
             let thumb = jxl_to_jpg_url(
-                val.get("thumbUrl").or_else(|| val.get("oriUrl")).and_then(|v| v.as_str()).unwrap_or_default(),
+                val.get("thumbUrl")
+                    .or_else(|| val.get("oriUrl"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
             );
-            let title = val.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[Hình ảnh]");
+            let title = val
+                .get("title")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("[Hình ảnh]");
             if !ori.is_empty() {
                 meta.insert("link_url".into(), serde_json::json!(ori));
             }
@@ -1489,9 +1522,21 @@ fn extract_zalo_message_text_and_meta(
             }
         }
         let href = val.get("href").and_then(|v| v.as_str()).unwrap_or_default();
-        let title = val.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != "sendBubbleMessage").unwrap_or_default();
-        let desc = val.get("description").or_else(|| val.get("desc")).and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != "Cuộc gọi").unwrap_or_default();
-        let thumb = val.get("thumb").and_then(|v| v.as_str()).unwrap_or_default();
+        let title = val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty() && *s != "sendBubbleMessage")
+            .unwrap_or_default();
+        let desc = val
+            .get("description")
+            .or_else(|| val.get("desc"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty() && *s != "Cuộc gọi")
+            .unwrap_or_default();
+        let thumb = val
+            .get("thumb")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if !href.is_empty() {
             meta.insert("link_url".into(), serde_json::json!(href));
         }
@@ -1520,42 +1565,31 @@ fn extract_zalo_message_text_and_meta(
     (xored.to_string(), meta)
 }
 
-
 fn import_official_zalo_pc_db(
     src_conn: &Connection,
     dst: &mut MessageStore,
     file_path: &std::path::Path,
     report: &mut ImportReport,
 ) -> Result<()> {
-    let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("import_pc");
+    let stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("import_pc");
     let cipher_key = "de039414865b856ea650d3305b1f387f";
-    import_message_table(src_conn, dst, stem, stem, stem.starts_with('g'), cipher_key, report)
-}
-
-/// Redirect the legacy bare `zalo_history.db` name to the per-user data directory.
-fn resolve_db_path(path: &std::path::Path) -> std::path::PathBuf {
-    if path == std::path::Path::new("zalo_history.db") {
-        crate::paths::history_db()
-    } else {
-        path.to_path_buf()
-    }
+    import_message_table(
+        src_conn,
+        dst,
+        stem,
+        stem,
+        stem.starts_with('g'),
+        cipher_key,
+        report,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn selected_history_does_not_add_other_threads() {
-        let mut store = MessageStore::open(":memory:").unwrap();
-        for id in ["a", "b"] {
-            store.upsert_thread(&StoredThread { thread_id: id.into(), name: id.into(), is_group: true, last_ts: 1 }).unwrap();
-        }
-        let mut threads = vec![Thread { presentation: Default::default(), unread: Default::default(), id: "a".into(), name: "a".into(), preview: String::new(), time: String::new(), avatar: None, is_group: true, messages: Vec::new() }];
-        store.hydrate_selected_threads(&mut threads, 10).unwrap();
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].id, "a");
-    }
 
     #[test]
     fn local_time_when_hydrating_seconds_and_milliseconds() {
@@ -1616,52 +1650,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_ranges_extend_and_dismiss() {
-        let store = MessageStore::open(":memory:").unwrap();
-        assert!(store.add_missing_range("*", 1_000, 2_000, "evict:510_1").unwrap());
-        assert!(!store.add_missing_range("*", 1_000, 5_000, "evict:510_1").unwrap(), "same start extends");
-        assert!(store.add_missing_range("*", 9_000, 9_500, "reset").unwrap());
-        let open = store.open_missing_ranges().unwrap();
-        assert_eq!(open.len(), 2);
-        assert_eq!((open[0].from_ts, open[0].to_ts), (1_000, 5_000));
-        store.dismiss_missing_ranges().unwrap();
-        assert!(store.open_missing_ranges().unwrap().is_empty());
-        // A dismissed range is not extended: a new gap with the same start is new again.
-        assert!(store.add_missing_range("*", 1_000, 6_000, "evict:510_1").unwrap());
-    }
-
-    #[test]
-    fn thread_activity_and_clock_pairs() {
-        let mut store = MessageStore::open(":memory:").unwrap();
-        store
-            .upsert_thread_activity(&[("111".into(), false, "8440000000000".into()), ("222".into(), true, "8430000000000".into())])
-            .unwrap();
-        store.upsert_thread_activity(&[("111".into(), false, "8441000000000".into())]).unwrap();
-        let mut rows = store.thread_activity().unwrap();
-        rows.sort();
-        assert_eq!(rows, vec![("111".into(), "8441000000000".into()), ("222".into(), "8430000000000".into())]);
-
-        assert_eq!(store.newest_message_ts().unwrap(), None);
-        for (id, ts) in [("8440959449359", 1_793_550_037_212i64), ("local_1", 1_793_550_000_000), ("7674131260947", 1_774_875_484_698)] {
-            let m = StoredMessage {
-                msg_id: id.into(),
-                thread_id: "111".into(),
-                sender_id: String::new(),
-                sender_name: String::new(),
-                text: String::new(),
-                msg_type: String::new(),
-                ts,
-                is_outgoing: false,
-                raw_json: String::new(),
-            };
-            store.upsert_message(&m).unwrap();
-        }
-        assert_eq!(store.newest_message_ts().unwrap(), Some(1_793_550_037_212));
-        let pairs = store.msg_id_ts_pairs(10).unwrap();
-        assert_eq!(pairs, vec![(8_440_959_449_359, 1_793_550_037_212), (7_674_131_260_947, 1_774_875_484_698)]);
-    }
-
-    #[test]
     fn test_messages_for_returns_ordered_rows() {
         let mut store = MessageStore::open(":memory:").unwrap();
         let thread_id = "thread_order_test";
@@ -1715,7 +1703,10 @@ mod tests {
 
         // A limit keeps the *newest* rows, still returned oldest-first.
         let newest = store.messages_for(thread_id, 2).unwrap();
-        assert_eq!(newest.iter().map(|m| m.ts).collect::<Vec<_>>(), vec![200, 300]);
+        assert_eq!(
+            newest.iter().map(|m| m.ts).collect::<Vec<_>>(),
+            vec![200, 300]
+        );
     }
 
     #[test]
@@ -1900,59 +1891,13 @@ mod tests {
         let enc: String = plain
             .chars()
             .enumerate()
-            .map(|(i, c)| char::from_u32((c as u32) ^ (key_chars[i % key_chars.len()] as u32)).unwrap())
+            .map(|(i, c)| {
+                char::from_u32((c as u32) ^ (key_chars[i % key_chars.len()] as u32)).unwrap()
+            })
             .collect();
         assert_eq!(
             decode_zalo_cipher_payload(&enc, key),
             "Này bố kiểm tra mail xem ạ"
         );
-    }
-}
-
-#[cfg(test)]
-mod identity_tests {
-    use super::*;
-    fn message(thread_id: &str) -> StoredMessage {
-        StoredMessage { msg_id: "same-id".into(), thread_id: thread_id.into(), sender_id: "sender".into(), sender_name: "Same name".into(), text: thread_id.into(), msg_type: "text".into(), ts: 1, is_outgoing: false, raw_json: "{}".into() }
-    }
-    #[test]
-    fn same_message_id_is_scoped_to_thread_and_delete_does_not_cross_threads() {
-        let mut store = MessageStore::open(":memory:").unwrap();
-        assert!(store.upsert_message(&message("a")).unwrap());
-        assert!(store.upsert_message(&message("b")).unwrap());
-        let mut update = message("a"); update.text = "edited".into();
-        assert!(!store.upsert_message(&update).unwrap());
-        assert_eq!(store.messages_for("a",10).unwrap()[0].text,"edited");
-        assert_eq!(store.messages_for("b",10).unwrap()[0].text,"b");
-        let mut simultaneous = message("a"); simultaneous.msg_id = "other-id".into();
-        assert!(store.upsert_message(&simultaneous).unwrap());
-        store.delete_message("a","same-id",1).unwrap();
-        let remaining = store.messages_for("a",10).unwrap();
-        assert_eq!(remaining.len(),1); assert_eq!(remaining[0].msg_id,"other-id");
-        assert_eq!(store.messages_for("b",10).unwrap().len(),1);
-    }
-    #[test]
-    fn old_pages_do_not_erase_group_name_or_recency() {
-        let mut store = MessageStore::open(":memory:").unwrap();
-        let mut thread = StoredThread {thread_id:"123".into(),name:"Nhóm có tên".into(),is_group:true,last_ts:99};
-        store.upsert_thread(&thread).unwrap();
-        thread.name = "Nhóm 123".into(); thread.last_ts = 1;
-        store.upsert_thread(&thread).unwrap();
-        thread.name.clear(); store.upsert_thread(&thread).unwrap();
-        let saved = store.all_threads().unwrap();
-        assert_eq!(saved[0].name,"Nhóm có tên"); assert_eq!(saved[0].last_ts,99);
-    }
-    #[test]
-    fn migrates_legacy_database_without_losing_messages() {
-        let dir = std::env::temp_dir().join(format!("ctdoz-migration-{}-{}",std::process::id(),crate::param_cipher::random_hex(8)));
-        std::fs::create_dir_all(&dir).unwrap(); let path = dir.join("history.db");
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("CREATE TABLE messages (msg_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL,sender_id TEXT,sender_name TEXT,text TEXT,msg_type TEXT,ts INTEGER,is_outgoing INTEGER,raw_json TEXT);
-            INSERT INTO messages VALUES ('same-id','a','','','old','text',1,0,'{}');").unwrap();
-        drop(conn);
-        let mut store = MessageStore::open(path.to_str().unwrap()).unwrap();
-        assert_eq!(store.messages_for("a",10).unwrap()[0].text,"old");
-        assert!(store.upsert_message(&message("b")).unwrap());
-        drop(store); std::fs::remove_dir_all(dir).unwrap();
     }
 }

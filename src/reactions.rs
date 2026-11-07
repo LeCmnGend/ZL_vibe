@@ -4,6 +4,91 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Opt-in switch for the reaction wire trace (`ZALO_REACTION_TRACE=1`).
+const TRACE_ENV: &str = "ZALO_REACTION_TRACE";
+/// Local-only trace file; `*.log` is gitignored.
+const TRACE_FILE: &str = "reaction_trace.log";
+/// Hard cap per logged payload so a trace never grows unbounded or captures whole message bodies.
+const TRACE_MAX_CHARS: usize = 60000;
+
+/// Total reaction count of a message, as the UI would display it.
+pub fn total_count(summaries: &[ReactionSummary]) -> u64 {
+    summaries.iter().map(|s| s.count).sum()
+}
+
+/// Trace one batch of reaction events handed to the UI: how many matched a loaded message.
+pub fn trace_batch(total: usize, matched: usize, applied: usize, unmatched_ids: &[String]) {
+    if std::env::var_os(TRACE_ENV).is_none() {
+        return;
+    }
+    use std::io::Write;
+    let sample: Vec<&str> = unmatched_ids.iter().take(5).map(String::as_str).collect();
+    let line = format!(
+        "{} BATCH events={total} matched_a_message={matched} changed_count={applied} unmatched={} sample_unmatched_msg_ids={sample:?}\n",
+        crate::login::unix_now(),
+        unmatched_ids.len()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(TRACE_FILE)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// Trace one change of a message's reaction count together with the code path that caused it.
+/// Opt-in via `ZALO_REACTION_TRACE`; only ids and counts are written.
+pub fn trace_count_change(source: &str, msg_id: &str, before: u64, after: u64) {
+    if before == after || std::env::var_os(TRACE_ENV).is_none() {
+        return;
+    }
+    use std::io::Write;
+    let line = format!(
+        "{} COUNT msg={msg_id} {before}->{after} via {source}\n",
+        crate::login::unix_now()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(TRACE_FILE)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// `true` when a decoded socket payload mentions reactions in any field name or value.
+pub fn payload_mentions_reaction(payload: &Value) -> bool {
+    let text = payload.to_string().to_ascii_lowercase();
+    text.contains("react") || text.contains("rtype")
+}
+
+/// Append reaction-related socket payloads to a local trace so the real wire shape can be inspected.
+/// Off unless `ZALO_REACTION_TRACE` is set; IDs only appear as they do on the wire, secrets never
+/// pass through here because the payload is already the decrypted chat/control body.
+pub fn trace_ws_payload(cmd: u16, sub_cmd: u8, payload: &Value) {
+    if std::env::var_os(TRACE_ENV).is_none() || !payload_mentions_reaction(payload) {
+        return;
+    }
+    use std::io::Write;
+    let mut body = payload.to_string();
+    if body.chars().count() > TRACE_MAX_CHARS {
+        body = body.chars().take(TRACE_MAX_CHARS).collect();
+        body.push_str("…[cut]");
+    }
+    let line = format!(
+        "{} cmd={cmd} sub={sub_cmd} {body}\n",
+        crate::login::unix_now()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(TRACE_FILE)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReactionSummary {
@@ -530,10 +615,288 @@ pub fn apply_reaction_event(summaries: &mut Vec<ReactionSummary>, event: &Reacti
     }
 }
 
+/// Event ledger that owns reaction counts for messages touched by live `chat.reaction` events.
+///
+/// Evidence (`reaction_trace.log`): the `610_1`/`611_1` queues replay every unacknowledged event
+/// on each start, usually BEFORE the message is loaded, while history later delivers a stale
+/// snapshot total. Counting rules that follow from that:
+/// * events are keyed by id, so a replay never adds twice;
+/// * events seen before their message exists are kept and applied once it loads;
+/// * count per type = `base` + distinct live events, where `base` is whatever part of the first
+///   snapshot the known events cannot explain (`snapshot - events`, never negative).
+#[derive(Debug, Default)]
+pub struct ReactionInbox {
+    events: std::collections::HashMap<String, BTreeMap<String, ReactionEvent>>,
+    bases: std::collections::HashMap<String, BTreeMap<i32, u64>>,
+    matched: std::collections::HashSet<String>,
+}
+
+fn message_keys(msg: &crate::chat::ChatMessage) -> Vec<String> {
+    [&msg.id, &msg.client_message_id]
+        .into_iter()
+        .filter(|k| known_id(k))
+        .cloned()
+        .collect()
+}
+
+fn event_key(event: &ReactionEvent) -> Option<String> {
+    if known_id(&event.message_id) {
+        Some(event.message_id.clone())
+    } else if known_id(&event.client_message_id) {
+        Some(event.client_message_id.clone())
+    } else {
+        None
+    }
+}
+
+/// Effective per-type counts and per-sender counts after replaying events in order.
+/// A clear (`rType == -1`) removes that sender's earlier reactions.
+fn effective_counts(
+    events: &BTreeMap<String, ReactionEvent>,
+) -> (BTreeMap<i32, u64>, BTreeMap<String, BTreeMap<i32, u64>>) {
+    let mut ordered: Vec<&ReactionEvent> = events.values().collect();
+    ordered.sort_by(|a, b| event_order(a, b));
+    let mut per_sender: BTreeMap<String, BTreeMap<i32, u64>> = BTreeMap::new();
+    for ev in ordered {
+        if ev.r_type < -1 {
+            continue;
+        }
+        let mine = per_sender.entry(ev.sender_id.clone()).or_default();
+        if ev.r_type == -1 {
+            mine.clear();
+        } else {
+            *mine.entry(ev.r_type).or_default() += 1;
+        }
+    }
+    let mut totals: BTreeMap<i32, u64> = BTreeMap::new();
+    for kinds in per_sender.values() {
+        for (kind, n) in kinds {
+            *totals.entry(*kind).or_default() += n;
+        }
+    }
+    (totals, per_sender)
+}
+
+impl ReactionInbox {
+    /// Store events by message and event id. Replays and duplicates are ignored.
+    pub fn record(&mut self, events: &[ReactionEvent]) {
+        for ev in events {
+            let Some(key) = event_key(ev) else { continue };
+            let id = if known_id(&ev.event_id) {
+                ev.event_id.clone()
+            } else if known_id(&ev.client_event_id) {
+                format!("c{}", ev.client_event_id)
+            } else {
+                format!("{}:{}:{}", ev.sender_id, ev.ts, ev.r_type)
+            };
+            self.events
+                .entry(key)
+                .or_default()
+                .entry(id)
+                .or_insert_with(|| ev.clone());
+        }
+    }
+
+    /// Events whose message has not been loaded yet.
+    pub fn pending_len(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|(key, _)| !self.matched.contains(*key))
+            .map(|(_, evs)| evs.len())
+            .sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// Recompute counts for every loaded message that has events. Returns `true` if any changed.
+    pub fn apply_to(&mut self, messages: &mut [crate::chat::ChatMessage]) -> bool {
+        let mut changed = false;
+        for msg in messages.iter_mut() {
+            let keys = message_keys(msg);
+            let Some(key) = keys.iter().find(|k| self.events.contains_key(*k)).cloned() else {
+                continue;
+            };
+            let before = total_count(&msg.reaction_summaries);
+            let (totals, per_sender) = effective_counts(&self.events[&key]);
+            let base = self.bases.entry(key.clone()).or_insert_with(|| {
+                let mut snapshot: BTreeMap<i32, u64> = BTreeMap::new();
+                for s in &msg.reaction_summaries {
+                    let kind = s.r_type.or_else(|| type_for_icon(&s.emoji));
+                    if let Some(kind) = kind {
+                        *snapshot.entry(kind).or_default() += s.count;
+                    }
+                }
+                snapshot
+                    .into_iter()
+                    .map(|(kind, n)| {
+                        (
+                            kind,
+                            n.saturating_sub(totals.get(&kind).copied().unwrap_or(0)),
+                        )
+                    })
+                    .collect()
+            });
+            let mut summaries: Vec<ReactionSummary> = Vec::new();
+            let mut kinds: std::collections::BTreeSet<i32> = totals.keys().copied().collect();
+            kinds.extend(base.keys().copied());
+            for kind in kinds {
+                let n =
+                    base.get(&kind).copied().unwrap_or(0) + totals.get(&kind).copied().unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let mut summary = ReactionSummary {
+                    emoji: emoji_for_type(kind).into(),
+                    r_type: Some(kind),
+                    count: n,
+                    ..Default::default()
+                };
+                for (sender, mine) in &per_sender {
+                    if let Some(c) = mine.get(&kind) {
+                        summary.reactor_ids.push(sender.clone());
+                        summary.reactor_counts.insert(sender.clone(), *c);
+                    }
+                }
+                summaries.push(summary);
+            }
+            summaries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.r_type.cmp(&b.r_type)));
+            self.matched.insert(key);
+            let after = total_count(&summaries);
+            if summaries != msg.reaction_summaries {
+                msg.reaction_summaries = summaries;
+                msg.reactions = legacy_emojis(&msg.reaction_summaries);
+                msg.reaction_snapshot = true;
+                trace_count_change("ReactionInbox::apply_to", &msg.id, before, after);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Record events, then apply everything to the given messages.
+    pub fn ingest(
+        &mut self,
+        events: &[ReactionEvent],
+        messages: &mut [crate::chat::ChatMessage],
+    ) -> bool {
+        self.record(events);
+        self.apply_to(messages)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Shape captured from the live socket (`cmd=610`): sender is `uidFrom:"0"` (the account itself),
+    /// every event has its own `msgId`. Replaying the same frame must never add to the count.
+    fn wire_frame(ids: &[&str]) -> Value {
+        let reacts: Vec<Value> = ids
+            .iter()
+            .map(|id| {
+                json!({
+                    "actionId": id, "cliMsgId": format!("c{id}"), "idTo": "7602591761395115371",
+                    "msgId": id, "msgType": "chat.reaction", "ts": "1793984355844", "ttl": 0,
+                    "uidFrom": "0",
+                    "content": "{\"rIcon\":\":-h\",\"rMsg\":[{\"cMsgID\":1793984341063,\"gMsgID\":\"8460448471161\",\"msgType\":5}],\"rType\":20,\"source\":6}"
+                })
+            })
+            .collect();
+        json!({"data": {"reacts": reacts, "reactGroups": []}})
+    }
+
+    #[test]
+    fn replayed_wire_frames_do_not_inflate_the_count() {
+        let ids: Vec<String> = (0..18).map(|i| format!("84604{i:08}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let frame = wire_frame(&id_refs);
+        let events = parse_reaction_events(&frame["data"]);
+        assert_eq!(events.len(), 18);
+
+        let mut msg = crate::chat::ChatMessage {
+            id: "8460448471161".into(),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            for ev in &events {
+                msg.apply_reaction(ev);
+            }
+        }
+        let total: u64 = msg.reaction_summaries.iter().map(|s| s.count).sum();
+        assert_eq!(total, 18, "same 18 events replayed 3x must still total 18");
+        assert_eq!(msg.reaction_summaries.len(), 1);
+    }
+
+    #[test]
+    fn a_new_event_id_adds_exactly_one() {
+        let frame = wire_frame(&["8460483923587"]);
+        let events = parse_reaction_events(&frame["data"]);
+        let mut msg = crate::chat::ChatMessage::default();
+        msg.apply_reaction(&events[0]);
+        msg.apply_reaction(&events[0]);
+        assert_eq!(msg.reaction_summaries[0].count, 1);
+    }
+
+    /// The real startup order seen in `reaction_trace.log`: the whole `610_1` queue (31 events)
+    /// arrives BEFORE the message is loaded, then a stale history snapshot (20) lands, then the
+    /// queue is replayed on the next start. The count must still be exactly 31.
+    #[test]
+    fn early_events_are_kept_until_the_message_exists_and_survive_replay() {
+        let ids: Vec<String> = (0..31).map(|i| format!("84605{i:08}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let events = parse_reaction_events(&wire_frame(&id_refs)["data"]);
+        assert_eq!(events.len(), 31);
+
+        let mut inbox = ReactionInbox::default();
+        // Phase 1: no message loaded yet -> nothing may be dropped.
+        let none_loaded: Vec<crate::chat::ChatMessage> = Vec::new();
+        let mut loaded = none_loaded;
+        inbox.ingest(&events, &mut loaded);
+        assert_eq!(inbox.pending_len(), 31, "unmatched events must be kept");
+
+        // Phase 2: history loads the message with a STALE snapshot of 20 reactions.
+        let mut msg = crate::chat::ChatMessage {
+            id: "8460448471161".into(),
+            reaction_summaries: parse_reactions(&json!({"reactions":{"0":{"20":20}}})),
+            ..Default::default()
+        };
+        assert_eq!(total_count(&msg.reaction_summaries), 20);
+        let mut loaded = vec![msg.clone()];
+        inbox.ingest(&[], &mut loaded);
+        msg = loaded.remove(0);
+        assert_eq!(
+            total_count(&msg.reaction_summaries),
+            31,
+            "event ledger must win over the stale 20-count snapshot"
+        );
+
+        // Phase 3: next start replays the identical queue -> still 31.
+        let mut loaded = vec![msg];
+        inbox.ingest(&events, &mut loaded);
+        inbox.ingest(&events, &mut loaded);
+        assert_eq!(total_count(&loaded[0].reaction_summaries), 31);
+        assert_eq!(inbox.pending_len(), 0);
+    }
+
+    #[test]
+    fn a_live_event_after_replay_adds_exactly_one() {
+        let ids: Vec<String> = (0..5).map(|i| format!("84605{i:08}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let events = parse_reaction_events(&wire_frame(&id_refs)["data"]);
+        let mut loaded = vec![crate::chat::ChatMessage {
+            id: "8460448471161".into(),
+            ..Default::default()
+        }];
+        let mut inbox = ReactionInbox::default();
+        inbox.ingest(&events, &mut loaded);
+        inbox.ingest(&events, &mut loaded);
+        let live = parse_reaction_events(&wire_frame(&["8460599999999"])["data"]);
+        inbox.ingest(&live, &mut loaded);
+        assert_eq!(total_count(&loaded[0].reaction_summaries), 6);
+    }
     #[test]
     fn heart_count_is_not_unique_user_count() {
         let r =
@@ -573,10 +936,12 @@ mod tests {
                 .count,
             2
         );
-        let six_reacts = parse_reactions(&json!({"reacts":{"reactions":[{"rIcon":":>","count":6}]}}));
+        let six_reacts =
+            parse_reactions(&json!({"reacts":{"reactions":[{"rIcon":":>","count":6}]}}));
         assert_eq!(six_reacts[0].emoji, "😆");
         assert_eq!(six_reacts[0].count, 6);
-        let rtype_reacts = parse_reactions(&json!({"reacts":{"reactions":[{"rType":0,"count":6}]}}));
+        let rtype_reacts =
+            parse_reactions(&json!({"reacts":{"reactions":[{"rType":0,"count":6}]}}));
         assert_eq!(rtype_reacts[0].emoji, "😆");
         assert_eq!(rtype_reacts[0].count, 6);
         let direct_dict = parse_reactions(&json!({"reacts":{"reactions":{"0":6,"3":1}}}));
