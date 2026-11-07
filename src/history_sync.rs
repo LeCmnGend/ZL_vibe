@@ -839,11 +839,11 @@ pub struct SyncV2Keys {
 
 pub fn generate_sync_v2_keys() -> Result<SyncV2Keys> {
     let out = std::process::Command::new("node")
-        .arg("sync_v2_helper.js")
+        .arg("scripts/sync_v2_helper.js")
         .arg("gen-keys")
         .output()?;
     if !out.status.success() {
-        anyhow::bail!("node sync_v2_helper.js gen-keys failed: {}", String::from_utf8_lossy(&out.stderr));
+        anyhow::bail!("node scripts/sync_v2_helper.js gen-keys failed: {}", String::from_utf8_lossy(&out.stderr));
     }
     let keys: SyncV2Keys = serde_json::from_slice(&out.stdout)?;
     Ok(keys)
@@ -871,7 +871,7 @@ pub async fn import_sync_v2_meta(s: &Session, url: &str) -> Result<()> {
     std::fs::write(&temp_meta, &bytes)?;
 
     let out = std::process::Command::new("node")
-        .arg("sync_v2_helper.js")
+        .arg("scripts/sync_v2_helper.js")
         .arg("decrypt-meta")
         .arg(&temp_meta)
         .output()?;
@@ -1058,7 +1058,7 @@ pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
     std::fs::write(&temp_msg, &bytes)?;
 
     let out = std::process::Command::new("node")
-        .arg("sync_v2_helper.js")
+        .arg("scripts/sync_v2_helper.js")
         .arg("decrypt-message")
         .arg(&temp_msg)
         .output()?;
@@ -1069,7 +1069,7 @@ pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
         anyhow::bail!("decrypt-message failed: {}", String::from_utf8_lossy(&out.stderr));
     }
 
-    let decrypted_bytes = std::fs::read("sync_v2_message.bin")?;
+    let decrypted_bytes = std::fs::read(std::env::temp_dir().join("sync_v2_message.bin"))?;
     let decompressed = match zstd::decode_all(std::io::Cursor::new(&decrypted_bytes)) {
         Ok(d) => d,
         Err(_) => decrypted_bytes,
@@ -1120,9 +1120,9 @@ pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
         let _ = crate::chat::clean_sync(s, &pub_k).await;
     }
 
-    let _ = std::fs::remove_file("sync_v2_message.bin");
-    let _ = std::fs::remove_file("sync_v2_session.bin");
-    let _ = std::fs::remove_file("sync_v2_keys.json");
+    let _ = std::fs::remove_file(std::env::temp_dir().join("sync_v2_message.bin"));
+    let _ = std::fs::remove_file(std::env::temp_dir().join("sync_v2_session.bin"));
+    let _ = std::fs::remove_file(std::env::temp_dir().join("sync_v2_keys.json"));
 
     Ok(imported)
 }

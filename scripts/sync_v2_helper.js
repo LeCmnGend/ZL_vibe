@@ -1,8 +1,8 @@
-const fs = require('fs');
+const fs = require('fs');`nconst os = require('os');
 const path = require('path');
 const zproto = require('./zproto_lib.js');
 
-const WASM_PATH = path.resolve(__dirname, '../asar_extracted/pc-dist/libs/libzproto_wasm_bg.ecc0555ba9d0f8867a4699ce943ec745.wasm');
+const WASM_PATH = path.resolve(__dirname, "../../asar_extracted/pc-dist/libs/libzproto_wasm_bg.ecc0555ba9d0f8867a4699ce943ec745.wasm");`n`nconst TEMP_DIR = os.tmpdir();`nconst KEYS_FILE = path.join(TEMP_DIR, "sync_v2_keys.json");`nconst SESSION_FILE = path.join(TEMP_DIR, "sync_v2_session.bin");`nconst MESSAGE_FILE = path.join(TEMP_DIR, "sync_v2_message.bin");
 
 let wasmReady = false;
 
@@ -26,16 +26,16 @@ async function generateV2Keys() {
     };
     ik.free();
     ek.free();
-    fs.writeFileSync('sync_v2_keys.json', JSON.stringify(res, null, 2));
+    fs.writeFileSync(KEYS_FILE), JSON.stringify(res, null, 2));
     return res;
 }
 
 async function decryptMeta(metaFilePath) {
     await initWasm();
-    if (!fs.existsSync('sync_v2_keys.json')) {
+    if (!fs.existsSync(KEYS_FILE)) {
         throw new Error('sync_v2_keys.json not found');
     }
-    const keys = JSON.parse(fs.readFileSync('sync_v2_keys.json', 'utf8'));
+    const keys = JSON.parse(fs.readFileSync(KEYS_FILE), 'utf8'));
     let metaBytes = fs.readFileSync(metaFilePath);
     
     // Strip 4-byte uint32 LE length header if present
@@ -55,7 +55,7 @@ async function decryptMeta(metaFilePath) {
     const plaintext = Buffer.from(res.plaintext);
     res.free();
 
-    fs.writeFileSync('sync_v2_session.bin', sessionRecord);
+    fs.writeFileSync(SESSION_FILE, sessionRecord);
     return {
         sessionRecordHex: sessionRecord.toString('hex'),
         plainLen: plaintext.length
@@ -64,10 +64,10 @@ async function decryptMeta(metaFilePath) {
 
 async function decryptMessage(msgFilePath) {
     await initWasm();
-    if (!fs.existsSync('sync_v2_session.bin')) {
+    if (!fs.existsSync(SESSION_FILE)) {
         throw new Error('sync_v2_session.bin not found');
     }
-    const sessionRecord = fs.readFileSync('sync_v2_session.bin');
+    const sessionRecord = fs.readFileSync(SESSION_FILE);
     let msgBytes = fs.readFileSync(msgFilePath);
 
     // Strip 4-byte uint32 LE length header if present
@@ -82,7 +82,7 @@ async function decryptMessage(msgFilePath) {
     const plaintext = Buffer.from(res.plaintext);
     res.free();
 
-    fs.writeFileSync('sync_v2_message.bin', plaintext);
+    fs.writeFileSync(MESSAGE_FILE, plaintext);
     return {
         plainLen: plaintext.length
     };
