@@ -805,18 +805,21 @@ impl ZaloGuiApp {
             });
         self.nickname_dialog_open = open && !save && !cancel;
         if save {
-            let nickname = self.nickname_edit_value.trim().to_owned();
-            let nickname_key = Self::contact_nickname_key(&self.nickname_edit_id);
-            if nickname.is_empty() {
-                self.settings.contact_nicknames.remove(&nickname_key);
-                self.show_toast("Đã khôi phục tên mặc định");
+            if let Some(tx) = WORKER_TX.get() {
+                if tx
+                    .send(WorkerCmd::SetContactAlias {
+                        user_id: self.nickname_edit_id.clone(),
+                        alias: self.nickname_edit_value.trim().to_owned(),
+                    })
+                    .is_ok()
+                {
+                    self.show_toast("Đang lưu tên gợi nhớ lên Zalo…");
+                } else {
+                    self.show_toast("Không gửi được yêu cầu lưu tên gợi nhớ");
+                }
             } else {
-                self.settings
-                    .contact_nicknames
-                    .insert(nickname_key, nickname);
-                self.show_toast("Đã lưu tên gợi nhớ");
+                self.show_toast("Hãy đăng nhập để lưu tên gợi nhớ lên Zalo");
             }
-            self.settings.save();
             self.nickname_dialog_open = false;
         }
     }

@@ -4206,6 +4206,98 @@ pub async fn get_pinned(s: &Session) -> Result<Value> {
     Ok(s.maybe_decrypt(resp, s.session_key_bytes()).await)
 }
 
+/// Fetch every friend nickname stored by Zalo's alias service.
+///
+/// # Errors
+/// Returns an error when the session is unavailable or the server response is malformed.
+pub async fn get_friend_aliases(s: &Session) -> Result<std::collections::HashMap<String, String>> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+
+    let mut aliases = std::collections::HashMap::new();
+    for page in 1.. {
+        let params = s.encoded_params(&json!({
+            "page": page,
+            "count": 100,
+            "imei": s.imei,
+        }))?;
+        let path = format!("/api/alias/list?{}&params={params}", s.common_params());
+        let response = s.get_endpoint("alias", &path).await?;
+        let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+        let data = parse_alias_response_data(&response)?;
+        let items = data
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("Zalo alias response has no items list"))?;
+        let count = items.len();
+        for item in items {
+            let user_id = item
+                .get("userId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("Zalo alias entry has no userId"))?;
+            let alias = item
+                .get("alias")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("Zalo alias entry has no alias"))?;
+            aliases.insert(user_id.to_owned(), alias.to_owned());
+        }
+        if count < 100 {
+            break;
+        }
+    }
+    Ok(aliases)
+}
+
+fn parse_alias_response_data(response: &Value) -> Result<Value> {
+    let data = response.get("data").unwrap_or(response);
+    if let Some(text) = data.as_str() {
+        return Ok(serde_json::from_str(text)?);
+    }
+    Ok(data.clone())
+}
+
+/// Save or remove a friend nickname on Zalo's alias service.
+///
+/// # Errors
+/// Returns an error when the session, user ID, request, or server response is invalid.
+pub async fn set_friend_alias(s: &Session, user_id: &str, alias: &str) -> Result<()> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let user_id = user_id
+        .trim()
+        .strip_prefix('u')
+        .or_else(|| user_id.trim().strip_prefix('U'))
+        .unwrap_or_else(|| user_id.trim());
+    if user_id.is_empty() {
+        anyhow::bail!("thiếu mã tài khoản");
+    }
+
+    let (endpoint, body) = if alias.trim().is_empty() {
+        ("remove", json!({ "friendId": user_id }))
+    } else {
+        (
+            "update",
+            json!({ "friendId": user_id, "alias": alias.trim(), "imei": s.imei }),
+        )
+    };
+    let params = s.encoded_params(&body)?;
+    let path = format!("/api/alias/{endpoint}?{}&params={params}", s.common_params());
+    let response = s.get_endpoint("alias", &path).await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    if let Some(code) = response.get("error_code").and_then(Value::as_i64) {
+        if code != 0 {
+            anyhow::bail!("Zalo alias request failed with error_code {code}");
+        }
+    }
+    Ok(())
+}
+
 fn extract_pinned_id_from_value(item: &Value) -> Option<String> {
     if let Some(s) = item.as_str() {
         let trimmed = s.trim();

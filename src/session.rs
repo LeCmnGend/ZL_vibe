@@ -131,6 +131,9 @@ pub struct Domains {
     /// `zpw_service_map_v3.sticker[0]` — `/api/message/sticker/*` catalog & search endpoints.
     #[serde(default = "default_sticker")]
     pub sticker: String,
+    /// `zpw_service_map_v3.alias[0]` — `/api/alias/*` friend nicknames.
+    #[serde(default = "default_alias")]
+    pub alias: String,
     /// `zpw_ws[...]` — control websocket endpoints (`wss://wsN-msg.chat.zalo.me`).
     ///
     /// [O] The server hands back full `wss://` URLs in the login config; the client never
@@ -172,6 +175,12 @@ fn default_sticker() -> String {
         .into()
 }
 
+fn default_alias() -> String {
+    crate::endpoints::service("alias")
+        .unwrap_or("https://tt-alias-wpa.chat.zalo.me")
+        .into()
+}
+
 /// [O] `re-notes/02_chat_data.md`: `zpw_ws` = `wss://ws{1..8}-msg.chat.zalo.me`.
 fn default_ws() -> Vec<String> {
     (1..=8)
@@ -199,6 +208,7 @@ impl Default for Domains {
             cloud_msg: default_cloud_msg(),
             voice_call: default_voice_call(),
             sticker: default_sticker(),
+            alias: default_alias(),
             ws: default_ws(),
             service_map_candidates: std::collections::BTreeMap::new(),
             saved_candidates: std::collections::BTreeMap::new(),
@@ -270,6 +280,7 @@ impl Domains {
             ("file", &mut self.file),
             ("voice_call", &mut self.voice_call),
             ("sticker", &mut self.sticker),
+            ("alias", &mut self.alias),
         ] {
             if let Some(v) = service(key) {
                 let prev = slot.trim_end_matches('/').to_string();
@@ -294,6 +305,7 @@ impl Domains {
             ("group_cloud_message", &mut self.cloud_msg),
             ("voice_call", &mut self.voice_call),
             ("sticker", &mut self.sticker),
+            ("alias", &mut self.alias),
         ] {
             let urls: Vec<_> = map.get(key).map(all_urls).unwrap_or_default()
                 .into_iter().filter(|url| is_trusted_zalo_url(url, &["https"])).collect();
@@ -327,6 +339,7 @@ impl Domains {
             "group_cloud_message" | "cloud_msg" => &self.cloud_msg,
             "voice_call" => &self.voice_call,
             "sticker" => &self.sticker,
+            "alias" => &self.alias,
             "auth" => &self.auth,
             "wpa_chat" => &self.wpa_chat,
             _ => "",

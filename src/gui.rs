@@ -224,6 +224,12 @@ pub enum GuiEvent {
     MuteSnapshotSynced(HashMap<String, i64>),
     PinnedSnapshotSynced(Vec<String>),
     PinnedSyncFailed,
+    ContactAliasesSynced(Result<HashMap<String, String>, String>),
+    ContactAliasSaved {
+        user_id: String,
+        alias: String,
+        result: Result<(), String>,
+    },
     MuteEventsReceived(Vec<crate::chat::MuteControlEvent>),
     PhoneSyncProgress {
         progress: f32,
@@ -1746,6 +1752,9 @@ impl ZaloGuiApp {
                     self.status_msg = format!("Đã chuyển sang tài khoản {name}");
                     self.show_toast(format!("Đã chuyển sang tài khoản {name}"));
                     self.history_reached_start.clear();
+                    if let Some(tx) = WORKER_TX.get() {
+                        let _ = tx.send(WorkerCmd::SyncContactAliases);
+                    }
                 }
                 GuiEvent::MessageSent {
                     client_message_id,
@@ -2441,6 +2450,37 @@ impl ZaloGuiApp {
                 }
                 GuiEvent::PinnedSyncFailed => {
                     self.show_toast("Không đồng bộ được danh sách ghim từ máy chủ Zalo");
+                }
+                GuiEvent::ContactAliasesSynced(Ok(aliases)) => {
+                    self.settings.contact_nicknames = aliases
+                        .into_iter()
+                        .map(|(user_id, alias)| (Self::contact_nickname_key(&user_id), alias))
+                        .collect();
+                    self.settings.save();
+                }
+                GuiEvent::ContactAliasesSynced(Err(error)) => {
+                    crate::logger::log_error("contact_aliases_sync", &error);
+                }
+                GuiEvent::ContactAliasSaved {
+                    user_id,
+                    alias,
+                    result: Ok(()),
+                } => {
+                    let key = Self::contact_nickname_key(&user_id);
+                    if alias.trim().is_empty() {
+                        self.settings.contact_nicknames.remove(&key);
+                        self.show_toast("Đã khôi phục tên mặc định");
+                    } else {
+                        self.settings.contact_nicknames.insert(key, alias);
+                        self.show_toast("Đã lưu tên gợi nhớ trên Zalo");
+                    }
+                    self.settings.save();
+                }
+                GuiEvent::ContactAliasSaved {
+                    result: Err(error), ..
+                } => {
+                    self.nickname_dialog_open = true;
+                    self.show_toast(format!("Không lưu được tên gợi nhớ: {error}"));
                 }
                 GuiEvent::MuteEventsReceived(events) => {
                     let mut changed = false;

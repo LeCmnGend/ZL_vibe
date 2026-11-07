@@ -240,6 +240,11 @@ pub enum WorkerCmd {
         threads: Vec<Thread>,
         send_phone_prompt: bool,
     },
+    SyncContactAliases,
+    SetContactAlias {
+        user_id: String,
+        alias: String,
+    },
     SetProxy {
         proxy_url: String,
     },
@@ -3792,6 +3797,36 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ctx_clone.request_repaint();
                             });
                         }
+                        WorkerCmd::SyncContactAliases => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::get_friend_aliases(&s)
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::ContactAliasesSynced(result));
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::SetContactAlias { user_id, alias } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::set_friend_alias(&s, &user_id, &alias)
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::ContactAliasSaved {
+                                    user_id,
+                                    alias,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
                         WorkerCmd::FetchSocialProfile { target_uid } => {
                             let session_clone = session.clone();
                             let gui_tx_clone = gui_tx.clone();
@@ -3939,6 +3974,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ));
                                 egui_ctx.request_repaint();
                                 continue;
+                            }
+                            if let Some(tx) = WORKER_TX.get() {
+                                let _ = tx.send(WorkerCmd::SyncContactAliases);
                             }
                             crate::history_sync::PHONE_SYNC_CANCEL.store(false, Ordering::Relaxed);
                             let session_clone = session.clone();
