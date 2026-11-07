@@ -5915,12 +5915,25 @@ impl ZaloGuiApp {
 
         // The window size is chosen once per opened image, so the user's own resizing sticks.
         let ident = format!("{}|{}", viewer.tex_key, viewer.full_url);
-        let win_size = match &self.media.image_window {
-            Some((id, size)) if *id == ident => *size,
+        let (win_size, win_position, newly_opened) = match &self.media.image_window {
+            Some((id, size, position)) if *id == ident => (*size, *position, false),
             _ => {
                 let size = image_window_size(ctx, natural_dims);
-                self.media.image_window = Some((ident, size));
-                size
+                let parent = ctx.input(|i| i.viewport().outer_rect);
+                let position = parent.map_or_else(
+                    || {
+                        let monitor = ctx.input(|i| i.viewport().monitor_size)
+                            .unwrap_or(Vec2::new(1366.0, 768.0));
+                        Pos2::new((monitor.x - size[0]) * 0.5, (monitor.y - size[1]) * 0.5)
+                    },
+                    |rect| Pos2::new(
+                        rect.center().x - size[0] * 0.5,
+                        rect.center().y - size[1] * 0.5,
+                    ),
+                );
+                let position = [position.x, position.y];
+                self.media.image_window = Some((ident, size, position));
+                (size, position, true)
             }
         };
 
@@ -5937,6 +5950,9 @@ impl ZaloGuiApp {
             .with_title(window_title.clone())
             .with_inner_size(win_size)
             .with_min_inner_size([420.0, 320.0]);
+        if newly_opened {
+            builder = builder.with_position(win_position);
+        }
         if let Some(icon) = media_view::media_window_icon() {
             builder = builder.with_icon(icon);
         }

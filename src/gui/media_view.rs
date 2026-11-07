@@ -54,7 +54,7 @@ pub(super) struct MediaViewState {
     /// Downloads started by clicking a file card: opened with the default app once finished.
     open_when_done: HashSet<String>,
     /// Image viewer window: `(identity of the shown image, initial window size)`.
-    pub(super) image_window: Option<(String, [f32; 2])>,
+    pub(super) image_window: Option<(String, [f32; 2], [f32; 2])>,
     /// Demo-only setup (local thumbnails, `QTZALO_DEMO_*` hooks) has run.
     demo_started: bool,
 }
