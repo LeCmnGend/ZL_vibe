@@ -3942,32 +3942,3 @@ mod quote_navigation_tests {
         }
     }
 }
-
-impl ZaloGuiApp {
-    /// Left-rail button that opens the customer-care page (src/cskh).
-    pub(super) fn render_cskh_nav_button(&mut self, ui: &mut egui::Ui, pal: &ThemePalette) {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(42.0, 42.0), Sense::click());
-        if self.cskh_open {
-            ui.painter()
-                .rect_filled(rect, Rounding::same(11.0), pal.primary.linear_multiply(0.18));
-        } else if resp.hovered() {
-            ui.painter().rect_filled(rect, Rounding::same(11.0), pal.bg_hover);
-        }
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            lucide::SEND,
-            egui::FontId::proportional(19.0),
-            if self.cskh_open { pal.primary_hover } else { pal.text_secondary },
-        );
-        if resp
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Chăm sóc khách hàng")
-            .clicked()
-        {
-            self.feed_modal_open = false;
-            self.cskh_open = !self.cskh_open;
-            self.contacts_view_open = self.cskh_open;
-        }
-    }
-}
