@@ -8379,7 +8379,7 @@ fn render_image_viewer_gallery(
                 } else {
                     ui.painter().text(
                         Pos2::new(rect.center().x, rect.top() + 31.0),
-                        Align2::CENTER_CENTER,
+                        egui::Align2::CENTER_CENTER,
                         lucide::IMAGE,
                         FontId::proportional(18.0),
                         pal.text_muted,
@@ -8390,7 +8390,7 @@ fn render_image_viewer_gallery(
                 }
                 ui.painter().text(
                     Pos2::new(rect.center().x, rect.bottom() - 11.0),
-                    Align2::CENTER_CENTER,
+                    egui::Align2::CENTER_CENTER,
                     if photo.time.is_empty() {
                         "Ảnh"
                     } else {
