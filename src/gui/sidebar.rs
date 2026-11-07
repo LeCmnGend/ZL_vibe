@@ -1248,10 +1248,11 @@ impl ZaloGuiApp {
                     let t = &self.threads[i];
                     let selected = i == self.selected_thread_index;
                     let unread = self.unread_counts.get(&t.id).copied().unwrap_or(0);
-                    let resp = if full {
+                    let (resp, menu_trigger) = if full {
                         self.paint_thread_row(ui, pal, i, selected, unread)
                     } else {
-                        self.paint_thread_avatar_cell(ui, pal, i, selected, unread)
+                        let resp = self.paint_thread_avatar_cell(ui, pal, i, selected, unread);
+                        (resp.clone(), resp)
                     };
                     let t = &self.threads[i];
                     let is_user_pinned = self.settings.pinned_threads.contains(&t.id)
@@ -1265,7 +1266,16 @@ impl ZaloGuiApp {
                     let tgroup_cl = t.is_group;
                     let unread_now = self.unread_counts.get(&t.id).copied().unwrap_or(0) > 0;
                     let last_msg_id_cl = t.messages.last().map(|m| m.id.clone()).unwrap_or_default();
-                            resp.context_menu(|ui| {
+                            let menu_id = Id::new(("conversation_context_menu", tid_cl.as_str()));
+                            if menu_trigger.clicked() || resp.secondary_clicked() {
+                                ui.memory_mut(|memory| memory.toggle_popup(menu_id));
+                            }
+                            egui::popup::popup_below_widget(
+                                ui,
+                                menu_id,
+                                &menu_trigger,
+                                egui::PopupCloseBehavior::CloseOnClickOutside,
+                                |ui| {
                                 ui.set_min_width(205.0);
                                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
                                 ui.spacing_mut().button_padding = Vec2::new(10.0, 6.5);
@@ -1558,8 +1568,9 @@ impl ZaloGuiApp {
                                         Some(ThreadCtxAction::ReportConv(tname_cl.clone()));
                                     ui.close_menu();
                                 }
-                            });
-                    if resp.clicked() {
+                                },
+                            );
+                    if resp.clicked() && !(full && menu_trigger.clicked()) {
                         let t = &self.threads[i];
                         clicked_thread = Some((i, t.id.clone(), t.is_group));
                     }
@@ -1863,7 +1874,7 @@ impl ZaloGuiApp {
         }
     }
 
-    fn paint_thread_row(&mut self, ui: &mut egui::Ui, pal: &ThemePalette, i: usize, selected: bool, unread: usize) -> egui::Response {
+    fn paint_thread_row(&mut self, ui: &mut egui::Ui, pal: &ThemePalette, i: usize, selected: bool, unread: usize) -> (egui::Response, egui::Response) {
         let (name, is_group, avatar, ts, fallback_time, is_cloud, is_pinned) = {
             let t = &self.threads[i];
             (
@@ -1895,6 +1906,29 @@ impl ZaloGuiApp {
         };
         ui.painter().rect_filled(row, Rounding::same(14.0), bg);
 
+        let menu_id = Id::new(("conversation_context_menu", self.threads[i].id.as_str()));
+        let menu_open = ui.memory(|memory| memory.is_popup_open(menu_id));
+        let menu_rect = Rect::from_center_size(
+            Pos2::new(row.right() - 16.0, row.top() + 16.0),
+            Vec2::splat(26.0),
+        );
+        let menu_trigger = ui
+            .interact(menu_rect, menu_id.with("trigger"), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Tùy chọn hội thoại");
+        let show_menu = resp.hovered() || menu_trigger.hovered() || menu_open;
+        if show_menu {
+            ui.painter()
+                .circle_filled(menu_rect.center(), 12.0, pal.bg_hover);
+            draw_lucide_icon(
+                ui.painter(),
+                menu_rect.center(),
+                lucide::ELLIPSIS,
+                15.0,
+                pal.text_secondary,
+            );
+        }
+
         let av_c = Pos2::new(row.left() + 32.0, row.center().y);
         if is_cloud {
             ui.painter().circle_filled(av_c, 24.0, if pal.is_dark { pal.bg_elevated } else { Color32::WHITE });
@@ -1906,25 +1940,30 @@ impl ZaloGuiApp {
 
         let text_left = row.left() + 66.0;
         let time_txt = format_list_time(ts, &fallback_time);
+        let action_w = if show_menu { 30.0 } else { 0.0 };
         let time_w = if time_txt.is_empty() {
             0.0
         } else {
             let g = single_line_galley(ui, &time_txt, 12.0, pal.text_muted, 80.0);
             let tw = g.size().x;
-            ui.painter().galley(Pos2::new(row.right() - 12.0 - tw, row.top() + 15.0), g, pal.text_muted);
+            ui.painter().galley(
+                Pos2::new(row.right() - 12.0 - action_w - tw, row.top() + 15.0),
+                g,
+                pal.text_muted,
+            );
             tw
         };
         let pin_w = if is_pinned { 16.0 } else { 0.0 };
         if is_pinned {
             draw_lucide_icon(
                 ui.painter(),
-                Pos2::new(row.right() - 12.0 - time_w - 10.0, row.top() + 16.0),
+                Pos2::new(row.right() - 12.0 - action_w - time_w - 10.0, row.top() + 16.0),
                 lucide::PIN,
                 11.5,
                 pal.text_muted,
             );
         }
-        let name_max = (row.right() - text_left - time_w - pin_w - 20.0).max(30.0);
+        let name_max = (row.right() - text_left - time_w - pin_w - action_w - 20.0).max(30.0);
         let name_col = if selected && pal.is_dark { Color32::WHITE } else { pal.text_primary };
         let g_name = single_line_galley(ui, &name, 14.5, name_col, name_max);
         ui.painter().galley(Pos2::new(text_left, row.top() + 13.0), g_name, name_col);
@@ -1938,7 +1977,7 @@ impl ZaloGuiApp {
         let g_prev = single_line_galley(ui, &preview, 13.0, prev_col, prev_max);
         ui.painter().galley(Pos2::new(text_left, row.top() + 35.0), g_prev, prev_col);
 
-        resp.on_hover_cursor(CursorIcon::PointingHand)
+        (resp.on_hover_cursor(CursorIcon::PointingHand), menu_trigger)
     }
 
     /// Composer popovers: attachment actions and the unified sticker/emoji picker.
