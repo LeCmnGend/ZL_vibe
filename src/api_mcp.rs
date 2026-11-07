@@ -302,7 +302,10 @@ pub async fn handle_mcp_request(
                         "description": "Liệt kê danh sách bạn bè Zalo (ID và tên hiển thị) từ máy chủ",
                         "inputSchema": {
                             "type": "object",
-                            "properties": {}
+                            "properties": {
+                                "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Số bạn tối đa mỗi trang (mặc định 100)" },
+                                "offset": { "type": "integer", "minimum": 0, "description": "Vị trí bắt đầu (mặc định 0)" }
+                            }
                         }
                     },
                     {
@@ -545,6 +548,15 @@ async fn execute_tool_call(
         "zalo_list_friends" => {
             let s = session.lock().await.clone();
             let send2me_id = s.login.as_ref().map(|l| l.send2me_id.clone());
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .clamp(1, 500) as usize;
+            let requested_offset = args
+                .get("offset")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             match chat::get_friends(&s).await {
                 Ok(threads) => {
                     // get_friends also merges groups and the "Cloud của tôi" thread; keep people only.
@@ -553,7 +565,19 @@ async fn execute_tool_call(
                         .filter(|t| !t.is_group && Some(&t.id) != send2me_id.as_ref())
                         .map(|t| json!({ "id": t.id, "name": t.name }))
                         .collect();
-                    (false, json!({ "friends": items }))
+                    let total = items.len();
+                    let offset = requested_offset.min(total as u64) as usize;
+                    let end = offset.saturating_add(limit).min(total);
+                    (
+                        false,
+                        json!({
+                            "friends": &items[offset..end],
+                            "total": total,
+                            "limit": limit,
+                            "offset": offset,
+                            "has_more": end < total
+                        }),
+                    )
                 }
                 Err(e) => (true, json!({ "error": format!("{e:#}") })),
             }
@@ -753,8 +777,14 @@ pub async fn handle_rest_request(
             )
         }
         ("GET", "/api/v1/friends") => {
-            let (err, val) =
-                execute_tool_call(session, "zalo_list_friends", &json!({}), db_path).await;
+            let limit = query_params
+                .get("limit")
+                .and_then(|value| value.parse::<u64>().ok());
+            let offset = query_params
+                .get("offset")
+                .and_then(|value| value.parse::<u64>().ok());
+            let args = json!({ "limit": limit, "offset": offset });
+            let (err, val) = execute_tool_call(session, "zalo_list_friends", &args, db_path).await;
             (if err { 502 } else { 200 }, val)
         }
         ("GET", "/api/v1/users/lookup") => {
