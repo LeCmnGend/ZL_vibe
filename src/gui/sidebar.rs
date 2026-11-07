@@ -1645,9 +1645,8 @@ impl ZaloGuiApp {
                 }
             }
         }
-        let is_cloud = self.threads.get(idx).map(Self::is_cloud_thread).unwrap_or(false);
         let needs_history = self.threads.get(idx).map_or(true, |t| t.messages.is_empty());
-        if (is_group || is_cloud) && needs_history {
+        if needs_history {
             if let Some(tx) = WORKER_TX.get() {
                 let _ = tx.send(WorkerCmd::LoadGroupHistory { group_id: tid, is_group, have: 0 });
             }

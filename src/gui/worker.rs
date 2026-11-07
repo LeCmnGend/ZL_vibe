@@ -430,6 +430,17 @@ fn account_threads_event(session: &Session, threads: Vec<Thread>) -> GuiEvent {
     }
 }
 
+/// Read imported history from the captured account, never from the current working session.
+fn imported_account_threads(session: &Session) -> anyhow::Result<Vec<Thread>> {
+    let uin = session.login.as_ref()
+        .and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
+        .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản đồng bộ"))?;
+    let mut threads = crate::chat::load_threads_cache_for_account(uin);
+    let store = crate::store::MessageStore::open(crate::store::db_path_for_account(uin))?;
+    store.hydrate_threads(&mut threads, 50)?;
+    Ok(threads)
+}
+
 /// Offline catch-up progress shared by the socket loop and `RefreshThreads`: ids of messages
 /// seen while a catch-up runs, deduplicated across socket and long-poll.
 #[derive(Default)]
@@ -753,7 +764,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                         temp_key,
                                                     } => {
                                                         crate::history_sync::set_latest_mobile_temp_key(&temp_key);
-                                                        let known = crate::chat::load_threads_cache();
+                                                        let known = s_snap.login.as_ref().map(|login| crate::chat::load_threads_cache_for_account(&login.uin)).unwrap_or_default();
                                                         if let Some(wtx) = WORKER_TX.get() {
                                                             let _ = wtx.send(
                                                                 WorkerCmd::SyncPhoneMessages {
@@ -803,14 +814,21 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
 
                                                             match crate::history_sync::import_mobile_backup_container(&s_sync, &url, &encrypted_key).await {
                                                                 Ok(count) => {
-                                                                    let note = format!("🎉 Đã giải mã & đồng bộ thành công {count} tin nhắn từ điện thoại vào ứng dụng!");
+                                                                    let note = if count == 0 {
+                                                                        "Đã đọc gói điện thoại nhưng không có tin mới; tin có thể đã có trong dữ liệu.".to_string()
+                                                                    } else {
+                                                                        format!("Đã nhập {count} tin nhắn mới từ điện thoại.")
+                                                                    };
                                                                     crate::history_sync::set_last_mobile_sync_status(Some(note.clone()));
                                                                     let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(note));
-                                                                    let updated = crate::chat::load_threads_cache();
-                                                                    let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated));
+                                                                    match imported_account_threads(&s_sync) {
+                                                                        Ok(updated) => { let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated)); }
+                                                                        Err(error) => { let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(format!("Đã nhập nhưng không tải được lịch sử: {error}"))); }
+                                                                    }
                                                                 }
                                                                 Err(e) => {
                                                                     let err_note = format!("⚠️ Không thể giải mã gói đồng bộ ({file_name}): {e}");
+                                                                    crate::history_sync::set_last_mobile_sync_status(Some(err_note.clone()));
                                                                     let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(err_note));
                                                                 }
                                                             }
@@ -841,11 +859,17 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
 
                                                                 match crate::history_sync::import_sync_v2_messages(&s_sync, &url).await {
                                                                     Ok(count) => {
-                                                                        let fin = format!("🎉 Đã giải mã & đồng bộ thành công {count} tin nhắn từ điện thoại vào ứng dụng!");
+                                                                        let fin = if count == 0 {
+                                                                            "Đã đọc gói điện thoại nhưng không có tin mới; tin có thể đã có trong dữ liệu.".to_string()
+                                                                        } else {
+                                                                            format!("Đã nhập {count} tin nhắn mới từ điện thoại.")
+                                                                        };
                                                                         crate::history_sync::set_last_mobile_sync_status(Some(fin.clone()));
                                                                         let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(fin));
-                                                                        let updated = crate::chat::load_threads_cache();
-                                                                        let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated));
+                                                                        match imported_account_threads(&s_sync) {
+                                                                        Ok(updated) => { let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated)); }
+                                                                        Err(error) => { let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(format!("Đã nhập nhưng không tải được lịch sử: {error}"))); }
+                                                                    }
                                                                     }
                                                                     Err(e) => {
                                                                         let err = format!("⚠️ Lỗi giải mã tin nhắn Sync v2 ({sync_id}): {e}");
@@ -1789,11 +1813,17 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
 
                                                                 match crate::history_sync::import_mobile_backup_container(&s_sync, &url, &encrypted_key).await {
                                                                     Ok(count) => {
-                                                                        let note = format!("🎉 Đã giải mã & đồng bộ thành công {count} tin nhắn từ điện thoại vào ứng dụng!");
+                                                                        let note = if count == 0 {
+                                                                        "Đã đọc gói điện thoại nhưng không có tin mới; tin có thể đã có trong dữ liệu.".to_string()
+                                                                    } else {
+                                                                        format!("Đã nhập {count} tin nhắn mới từ điện thoại.")
+                                                                    };
                                                                         crate::history_sync::set_last_mobile_sync_status(Some(note.clone()));
                                                                         let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(note));
-                                                                        let updated = crate::chat::load_threads_cache();
-                                                                        let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated));
+                                                                        match imported_account_threads(&s_sync) {
+                                                                        Ok(updated) => { let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated)); }
+                                                                        Err(error) => { let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(format!("Đã nhập nhưng không tải được lịch sử: {error}"))); }
+                                                                    }
                                                                     }
                                                                     Err(e) => {
                                                                         let err_note = format!("⚠️ Không thể giải mã gói đồng bộ ({file_name}): {e}");
@@ -1828,11 +1858,17 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
 
                                                                     match crate::history_sync::import_sync_v2_messages(&s_sync, &url).await {
                                                                         Ok(count) => {
-                                                                            let fin = format!("🎉 Đã giải mã & đồng bộ thành công {count} tin nhắn từ điện thoại vào ứng dụng!");
+                                                                            let fin = if count == 0 {
+                                                                            "Đã đọc gói điện thoại nhưng không có tin mới; tin có thể đã có trong dữ liệu.".to_string()
+                                                                        } else {
+                                                                            format!("Đã nhập {count} tin nhắn mới từ điện thoại.")
+                                                                        };
                                                                             crate::history_sync::set_last_mobile_sync_status(Some(fin.clone()));
                                                                             let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(fin));
-                                                                            let updated = crate::chat::load_threads_cache();
-                                                                            let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated));
+                                                                            match imported_account_threads(&s_sync) {
+                                                                                Ok(updated) => { let _ = gui_tx_sync.send(account_threads_event(&s_sync, updated)); }
+                                                                                Err(error) => { let _ = gui_tx_sync.send(GuiEvent::StatusUpdate(format!("Đã nhập nhưng không tải được lịch sử: {error}"))); }
+                                                                            }
                                                                         }
                                                                         Err(e) => {
                                                                             let err = format!("⚠️ Lỗi giải mã tin nhắn Sync v2 ({sync_id}): {e}");
@@ -3845,6 +3881,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 match res {
                                     Ok((added, active_threads)) => {
                                         let _ = gui_tx_clone.send(GuiEvent::PhoneSyncFinished {
+                                            uin: s.login.as_ref().map(|login| login.uin.clone()).unwrap_or_default(),
                                             threads,
                                             added,
                                             active_threads,
@@ -3854,6 +3891,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     }
                                     Err(e) => {
                                         let _ = gui_tx_clone.send(GuiEvent::PhoneSyncFinished {
+                                            uin: s.login.as_ref().map(|login| login.uin.clone()).unwrap_or_default(),
                                             threads,
                                             added: 0,
                                             active_threads: 0,

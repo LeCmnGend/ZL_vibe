@@ -1377,6 +1377,7 @@ impl ZaloGuiApp {
 
                                 let inner_w = (content_w - 8.0).max(320.0);
                                 egui::ScrollArea::vertical()
+                                    .id_salt(("settings_content", self.settings_tab as u8))
                                     .max_width(content_w)
                                     .max_height((win_h - 86.0).max(240.0))
                                     .auto_shrink([false, false])
@@ -1999,7 +2000,7 @@ impl ZaloGuiApp {
                                                             );
                                                             ui.add_space(6.0);
                                                             if ui
-                                                                .button(RichText::new("Dừng đồng bộ điện thoại").size(13.0))
+                                                                .button(RichText::new("Dừng đồng bộ điện thoại").size(13.0).color(pal.text_primary))
                                                                 .clicked()
                                                             {
                                                                 crate::history_sync::PHONE_SYNC_CANCEL.store(
@@ -2015,7 +2016,8 @@ impl ZaloGuiApp {
                                                                         lucide::REFRESH
                                                                     ))
                                                                     .size(13.0)
-                                                                    .strong(),
+                                                                    .strong()
+                                                                    .color(pal.text_primary),
                                                                 )
                                                                 .clicked()
                                                             {
@@ -2048,7 +2050,7 @@ impl ZaloGuiApp {
                                                             .add(
                                                                 egui::Label::new(
                                                                     RichText::new(format!(
-                                                                        "Tìm hiểu chi tiết cơ chế đồng bộ trong docs/TINH_NANG.md {}",
+                                                                        "Xem dự án gốc và báo lỗi {}",
                                                                         lucide::EXTERNAL_LINK
                                                                     ))
                                                                     .size(11.8)
@@ -2059,7 +2061,7 @@ impl ZaloGuiApp {
                                                             .on_hover_cursor(CursorIcon::PointingHand)
                                                             .clicked()
                                                         {
-                                                            open_external_url("https://github.com/ctdoteam1110/ctdozlite/blob/main/docs/TINH_NANG.md");
+                                                            open_external_url("https://github.com/ctdoteam1110/ctdozlite");
                                                         }
                                                         ui.add_space(4.0);
                                                         let total_msgs: usize = self.threads.iter().map(|t| t.messages.len()).sum();
@@ -2067,10 +2069,10 @@ impl ZaloGuiApp {
                                                         ui.add_space(10.0);
                                                         if crate::history_sync::RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
                                                             ui.label(RichText::new(&self.status_msg).color(pal.primary_hover).size(12.5));
-                                                            if ui.button(RichText::new("Dừng").size(13.0)).clicked() {
+                                                            if ui.button(RichText::new("Dừng").size(13.0).color(pal.text_primary)).clicked() {
                                                                 crate::history_sync::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
                                                             }
-                                                        } else if ui.button(RichText::new(format!("{} Đồng bộ Nhóm & Cloud ngay", lucide::REFRESH)).size(13.0).strong()).clicked() {
+                                                        } else if ui.button(RichText::new(format!("{} Đồng bộ Nhóm & Cloud ngay", lucide::REFRESH)).size(13.0).strong().color(pal.text_primary)).clicked() {
                                                             trigger_sync = true;
                                                         }
                                                     });
@@ -2087,7 +2089,7 @@ impl ZaloGuiApp {
                                                     ui.vertical(|ui| {
                                                         ui.label(RichText::new("Nhập lịch sử tin nhắn từ bản sao lưu SQLite (.db / .sqlite) hoặc JSON (threads_cache.json / bản xuất lịch sử) vào zalo_history.db hiện tại mà không làm mất tin nhắn đang có.").color(pal.text_secondary).size(12.2));
                                                         ui.add_space(8.0);
-                                                        if ui.button(RichText::new("Chọn file lịch sử (.db / .sqlite / .json) để nhập…").size(12.8).strong()).clicked() {
+                                                        if ui.button(RichText::new("Chọn file lịch sử (.db / .sqlite / .json) để nhập…").size(12.8).strong().color(pal.text_primary)).clicked() {
                                                             pick_migrate_file = true;
                                                         }
                                                     });

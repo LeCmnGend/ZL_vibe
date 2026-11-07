@@ -223,6 +223,7 @@ pub enum GuiEvent {
         status: String,
     },
     PhoneSyncFinished {
+        uin: String,
         threads: Vec<Thread>,
         added: usize,
         active_threads: usize,
@@ -2343,12 +2344,16 @@ impl ZaloGuiApp {
                     self.status_msg = status;
                 }
                 GuiEvent::PhoneSyncFinished {
+                    uin,
                     threads,
                     added,
                     active_threads,
                     cancelled,
                     error,
                 } => {
+                    if uin.is_empty() || uin != self.user_uin {
+                        continue;
+                    }
                     self.phone_sync_progress = 0.0;
                     if !threads.is_empty() {
                         for nt in threads {

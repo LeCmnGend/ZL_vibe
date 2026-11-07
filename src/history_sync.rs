@@ -429,6 +429,38 @@ where
     Ok((added, active_threads))
 }
 
+fn sync_thread_id(value: &serde_json::Value) -> Option<String> {
+    let id = match value {
+        serde_json::Value::String(id) => id.trim().to_owned(),
+        serde_json::Value::Number(id) => id.to_string(),
+        _ => return None,
+    };
+    (!id.is_empty() && id != "0").then_some(id)
+}
+
+fn match_imported_thread(
+    mapped_id: &str,
+    is_group: bool,
+    known: &[crate::store::StoredThread],
+) -> String {
+    if let Some(thread) = known.iter().find(|t| t.is_group == is_group && t.thread_id == mapped_id) {
+        return thread.thread_id.clone();
+    }
+    let clean = |id: &str| {
+        if is_group {
+            id.strip_prefix("group_").or_else(|| id.strip_prefix('g')).unwrap_or(id).to_owned()
+        } else {
+            id.strip_prefix('u').unwrap_or(id).to_owned()
+        }
+    };
+    let target = clean(mapped_id);
+    let mut matches = known.iter().filter(|t| t.is_group == is_group && clean(&t.thread_id) == target);
+    match (matches.next(), matches.next()) {
+        (Some(thread), None) => thread.thread_id.clone(),
+        _ => mapped_id.to_owned(),
+    }
+}
+
 /// Download, decrypt, decompress and ingest a mobile backup container (.db.crypt)
 /// into `zalo_history.db` and hydrate `threads_cache.json`.
 pub async fn import_mobile_backup_container(
@@ -576,18 +608,22 @@ pub async fn import_mobile_backup_container(
     if let Some(data) = dec.get("data") {
         if let Some(arr) = data.get("fids").and_then(|v| v.as_array()) {
             for (fid, thread_id_val) in fids.iter().zip(arr.iter()) {
-                if let Some(tid) = thread_id_val.as_str() {
-                    id_map.insert(format!("{fid}.db"), tid.to_string());
+                if let Some(tid) = sync_thread_id(thread_id_val) {
+                    id_map.insert(format!("{fid}.db"), tid);
                 }
             }
         }
         if let Some(arr) = data.get("gids").and_then(|v| v.as_array()) {
             for (gid, thread_id_val) in gids.iter().zip(arr.iter()) {
-                if let Some(tid) = thread_id_val.as_str() {
-                    id_map.insert(format!("group_{gid}.db"), tid.to_string());
+                if let Some(tid) = sync_thread_id(thread_id_val) {
+                    id_map.insert(format!("group_{gid}.db"), tid);
                 }
             }
         }
+    }
+
+    if id_map.is_empty() {
+        anyhow::bail!("Không ánh xạ được hội thoại từ gói đồng bộ điện thoại");
     }
 
     let uin = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
@@ -596,23 +632,40 @@ pub async fn import_mobile_backup_container(
     let temp_dir = std::env::temp_dir().join(format!("ctdozlite_sync_{}", crate::param_cipher::random_hex(8)));
     let _ = std::fs::create_dir_all(&temp_dir);
 
-    let my_uin = 435550501_i64;
     let my_uid = s.login.as_ref().map(|l| l.uin.clone()).unwrap_or_default();
     let my_name = s.login.as_ref().map(|l| l.display_name.clone()).unwrap_or_else(|| "Tôi".into());
 
+    let mut known_threads = store.all_threads()?;
+    let mut stored_ids: std::collections::HashSet<String> =
+        known_threads.iter().map(|thread| thread.thread_id.clone()).collect();
+    for thread in crate::chat::load_threads_cache_for_account(uin) {
+        if !known_threads.iter().any(|known| known.thread_id == thread.id) {
+            known_threads.push(crate::store::StoredThread {
+                thread_id: thread.id,
+                name: thread.name,
+                is_group: thread.is_group,
+                last_ts: 0,
+            });
+        }
+    }
+
     let mut curr_offset = 0;
     let mut total_imported = 0;
+    let mut readable_files = 0;
+    let mut import_error: Option<anyhow::Error> = None;
 
-    for (name, size) in toc {
+    'files: for (name, size) in toc {
         if curr_offset + size > payload.len() {
             break;
         }
         let db_bytes = &payload[curr_offset..curr_offset + size];
         curr_offset += size;
 
-        let Some(thread_id) = id_map.get(&name) else {
+        let Some(mapped_id) = id_map.get(&name) else {
             continue;
         };
+        let is_group = name.starts_with("group_");
+        let thread_id = match_imported_thread(mapped_id, is_group, &known_threads);
 
         let temp_db_path = temp_dir.join(&name);
         if std::fs::write(&temp_db_path, db_bytes).is_err() {
@@ -645,9 +698,34 @@ pub async fn import_mobile_backup_container(
             continue;
         };
 
-        for r in rows.flatten() {
-            let (sender_id_num, cli_msg_id, glb_msg_id, _status, msg_type_num, ts, content_opt, bin_net_opt) = r;
-            let is_outgoing = sender_id_num == my_uin;
+        readable_files += 1;
+        if !stored_ids.contains(&thread_id) {
+            let thread = known_threads.iter().find(|known| known.thread_id == thread_id).cloned()
+                .unwrap_or_else(|| crate::store::StoredThread {
+                    thread_id: thread_id.clone(),
+                    name: String::new(),
+                    is_group,
+                    last_ts: 0,
+                });
+            if let Err(error) = store.upsert_thread(&thread) {
+                import_error = Some(error);
+                break;
+            }
+            stored_ids.insert(thread_id.clone());
+            if !known_threads.iter().any(|known| known.thread_id == thread_id) {
+                known_threads.push(thread);
+            }
+        }
+
+        for row in rows {
+            let (sender_id_num, cli_msg_id, glb_msg_id, _status, msg_type_num, ts, content_opt, bin_net_opt) = match row {
+                Ok(row) => row,
+                Err(error) => {
+                    import_error = Some(error.into());
+                    break 'files;
+                }
+            };
+            let is_outgoing = sender_id_num.to_string() == my_uid;
             let sender_id = if is_outgoing { my_uid.clone() } else { thread_id.clone() };
             let sender_name = if is_outgoing { my_name.clone() } else { String::new() };
 
@@ -704,18 +782,30 @@ pub async fn import_mobile_backup_container(
                 raw_json: String::new(),
             };
 
-            if store.upsert_message(&sm).unwrap_or(false) {
-                total_imported += 1;
+            match store.upsert_message(&sm) {
+                Ok(true) => total_imported += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    import_error = Some(error);
+                    break 'files;
+                }
             }
         }
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 
+    if let Some(error) = import_error {
+        return Err(error.context("Không thể nhập đầy đủ lịch sử điện thoại"));
+    }
+    if !id_map.is_empty() && readable_files == 0 {
+        anyhow::bail!("Không đọc được dữ liệu hội thoại trong gói đồng bộ điện thoại");
+    }
+
     let uin = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
         .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản để lưu lịch sử"))?;
     let mut cached_threads = crate::chat::load_threads_cache_for_account(uin);
-    let _ = store.hydrate_threads(&mut cached_threads, 50);
+    store.hydrate_threads(&mut cached_threads, 50)?;
     crate::chat::save_threads_cache_for_account(&cached_threads, uin);
 
     // Notify Zalo server and phone that snapshot is downloaded, dismissing mobile spinner
@@ -930,7 +1020,10 @@ pub fn parse_sync_chunk(buf: &[u8]) -> Option<Vec<ParsedProtoPartition>> {
 }
 
 pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
-    let uin = s.login.as_ref().map(|l| l.uin.clone()).unwrap_or_default();
+    let uin = s.login.as_ref()
+        .and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
+        .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản để lưu lịch sử"))?
+        .to_owned();
     let sek = s.zpw_sek.clone().unwrap_or_default();
     let cookie_hdr = format!("zpw_sek={sek}; zpw_uin={uin}");
 
@@ -1005,9 +1098,9 @@ pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
 
     let uin = s.login.as_ref().and_then(|login| crate::sync_state::sanitize_uin(&login.uin))
         .ok_or_else(|| anyhow::anyhow!("Không xác định được tài khoản để lưu lịch sử"))?;
-    let mut cached_threads = crate::chat::load_threads_cache_for_account(uin);
-    let _ = store.hydrate_threads(&mut cached_threads, 50);
-    crate::chat::save_threads_cache_for_account(&cached_threads, uin);
+    let mut cached_threads = crate::chat::load_threads_cache_for_account(&uin);
+    store.hydrate_threads(&mut cached_threads, 50)?;
+    crate::chat::save_threads_cache_for_account(&cached_threads, &uin);
 
     if let Some(pub_k) = get_sync_public_key() {
         let _ = crate::chat::clean_sync(s, &pub_k).await;
@@ -1023,6 +1116,20 @@ pub async fn import_sync_v2_messages(s: &Session, url: &str) -> Result<usize> {
 mod tests {
     use super::*;
     use crate::chat::ChatMessage;
+
+    #[test]
+    fn imported_thread_ids_match_known_account_conversations() {
+        let known = vec![
+            crate::store::StoredThread { thread_id: "group_42".into(), name: "Nhóm".into(), is_group: true, last_ts: 0 },
+            crate::store::StoredThread { thread_id: "u42".into(), name: "Bạn".into(), is_group: false, last_ts: 0 },
+        ];
+        assert_eq!(sync_thread_id(&serde_json::json!(42)).as_deref(), Some("42"));
+        assert_eq!(sync_thread_id(&serde_json::json!(" 42 ")).as_deref(), Some("42"));
+        assert!(sync_thread_id(&serde_json::json!(0)).is_none());
+        assert_eq!(match_imported_thread("42", true, &known), "group_42");
+        assert_eq!(match_imported_thread("42", false, &known), "u42");
+        assert_eq!(match_imported_thread("99", false, &known), "99");
+    }
 
     fn thread_with(ids: &[&str]) -> Thread {
         Thread {
