@@ -2716,14 +2716,14 @@ impl ZaloGuiApp {
 
                             let is_ime_busy = self.ime_active || self.ime_just_committed;
                             let trigger_screenshot_hotkey = ui.input(|i| {
-                                (i.modifiers.alt && i.key_pressed(Key::A))
-                                    || ((i.modifiers.command || i.modifiers.ctrl) && i.modifiers.shift && i.key_pressed(Key::A))
-                                    || ((i.modifiers.command || i.modifiers.ctrl) && i.modifiers.shift && i.key_pressed(Key::X))
+                                i.modifiers.ctrl && i.modifiers.alt
+                                    && (i.key_pressed(Key::S) || i.key_pressed(Key::A))
                             });
                             if trigger_screenshot_hotkey {
+                                self.screenshot_menu_open = false;
                                 if let Some(tx) = WORKER_TX.get() {
                                     let _ = tx.send(WorkerCmd::TriggerScreenshot);
-                                    self.show_toast("Đang bật chế độ chụp màn hình… Kéo chuột để chọn vùng cần chụp");
+                                    self.show_toast("Đã mở công cụ chụp màn hình");
                                 }
                             }
                             let is_cmd_enter_mode = self.settings.send_message_key == "cmd_enter";
@@ -2958,37 +2958,27 @@ impl ZaloGuiApp {
                                                 }
                                             }
 
-                                            // 4) Screenshot Icon Button (Chụp ảnh màn hình)
+                                            // Screenshot picker, matching the familiar Zalo crop button.
                                             let (cam_rect, cam_resp) = ui.allocate_exact_size(
-                                                Vec2::new(34.0, 34.0),
-                                                Sense::click(),
+                                                Vec2::new(34.0, 34.0), Sense::click(),
                                             );
-                                            if cam_resp.hovered() {
-                                                ui.painter().rect_filled(
-                                                    cam_rect,
-                                                    Rounding::same(8.0),
-                                                    pal.bg_hover,
-                                                );
+                                            if cam_resp.hovered() || self.screenshot_menu_open {
+                                                ui.painter().rect_filled(cam_rect, Rounding::same(8.0), pal.bg_hover);
                                             }
-                                            draw_icon_camera(
-                                                ui.painter(),
-                                                cam_rect.center(),
-                                                18.0,
-                                                if cam_resp.hovered() {
-                                                    pal.primary_hover
-                                                } else {
-                                                    pal.text_secondary
-                                                },
-                                            );
-                                            if cam_resp
-                                                .on_hover_cursor(CursorIcon::PointingHand)
-                                                .on_hover_text("Chụp ảnh màn hình (Alt+A hoặc click)")
-                                                .clicked()
-                                            {
-                                                if let Some(tx) = WORKER_TX.get() {
-                                                    let _ = tx.send(WorkerCmd::TriggerScreenshot);
-                                                    self.show_toast("Đang bật chế độ chụp màn hình… Kéo chuột để chọn vùng cần chụp");
+                                            let col = if cam_resp.hovered() || self.screenshot_menu_open { pal.primary_hover } else { pal.text_secondary };
+                                            let r = cam_rect.shrink(9.0);
+                                            let p = ui.painter();
+                                            let k = 5.0;
+                                            for (x, sx) in [(r.left(), 1.0), (r.right(), -1.0)] {
+                                                for (y, sy) in [(r.top(), 1.0), (r.bottom(), -1.0)] {
+                                                    p.line_segment([Pos2::new(x, y + sy*k), Pos2::new(x, y)], Stroke::new(1.5_f32, col));
+                                                    p.line_segment([Pos2::new(x, y), Pos2::new(x + sx*k, y)], Stroke::new(1.5_f32, col));
                                                 }
+                                            }
+                                            if cam_resp.on_hover_cursor(CursorIcon::PointingHand)
+                                                .on_hover_text("Chụp ảnh màn hình")
+                                                .clicked() {
+                                                self.screenshot_menu_open = !self.screenshot_menu_open;
                                             }
 
                                             let is_multiline = self.input_message.contains('\n');
@@ -3429,6 +3419,36 @@ impl ZaloGuiApp {
                                 });
                         });
 
+                    if self.screenshot_menu_open {
+                        let mut selected = false;
+                        egui::Area::new(Id::new("screenshot_mode_menu"))
+                            .order(egui::Order::Foreground)
+                            .pivot(egui::Align2::LEFT_BOTTOM)
+                            .fixed_pos(Pos2::new(popup_plus_rect.left() + 74.0, composer_frame.response.rect.top() - 4.0))
+                            .show(ctx, |ui| {
+                                egui::Frame::none().fill(pal.bg_elevated)
+                                    .stroke(Stroke::new(1.0_f32, pal.border))
+                                    .rounding(Rounding::same(9.0))
+                                    .inner_margin(Margin::same(6.0)).show(ui, |ui| {
+                                        ui.set_width(370.0);
+                                        for (label, shortcut) in [
+                                            ("Chụp kèm với cửa sổ Zalo", "Alt + Ctrl + S"),
+                                            ("Chụp KHÔNG kèm cửa sổ Zalo", "Ctrl + Alt + A"),
+                                        ] {
+                                            let response = ui.add_sized(
+                                                [358.0, 36.0],
+                                                egui::Button::new(format!("{label}   ({shortcut})"))
+                                                    .fill(Color32::TRANSPARENT).stroke(Stroke::NONE),
+                                            );
+                                            if response.clicked() { selected = true; }
+                                        }
+                                    });
+                            });
+                        if selected {
+                            self.screenshot_menu_open = false;
+                            if let Some(tx) = WORKER_TX.get() { let _ = tx.send(WorkerCmd::TriggerScreenshot); }
+                        }
+                    }
                     self.render_composer_popups(ctx, pal, popup_plus_rect, popup_emoji_rect, &thread_id, is_group);
                     ui.painter().hline(
                         composer_frame.response.rect.x_range(),

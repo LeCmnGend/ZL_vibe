@@ -829,6 +829,7 @@ pub struct ZaloGuiApp {
     group_member_counts: HashMap<String, usize>,
     emoji_popup_open: bool,
     attach_menu_open: bool,
+    screenshot_menu_open: bool,
     list_filter_menu_open: bool,
     search_focus_pending: bool,
     /// Bytes used by local data (history DB + caches), refreshed in the background.
@@ -1260,6 +1261,7 @@ impl ZaloGuiApp {
             group_member_counts: HashMap::new(),
             emoji_popup_open: false,
             attach_menu_open: false,
+            screenshot_menu_open: false,
             list_filter_menu_open: false,
             search_focus_pending: false,
             local_storage_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
