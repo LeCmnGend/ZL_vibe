@@ -7441,7 +7441,7 @@ pub async fn find_user_by_phone(s: &Session, raw_phone: &str) -> Result<PhoneLoo
     }
     let normalized = normalize_phone_for_lookup(raw_phone);
     if normalized.len() < 8 {
-        anyhow::bail!("Số điện thoại không hợp lệ (cần ít nhất 9 chữ số)");
+        anyhow::bail!("Số điện thoại không hợp lệ (cần ít nhất 8 chữ số)");
     }
     let body = obj(&[
         ("phone", json!(normalized)),
