@@ -84,7 +84,9 @@ pub enum WorkerCmd {
         preset_path: Option<std::path::PathBuf>,
         original_hd: bool,
     },
-    TriggerScreenshot,
+    TriggerScreenshot {
+        include_zalo_window: bool,
+    },
     SendTyping {
         to_id: String,
         is_group: bool,
@@ -3147,11 +3149,15 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ctx_clone.request_repaint();
                             });
                         }
-                        WorkerCmd::TriggerScreenshot => {
+                        WorkerCmd::TriggerScreenshot { include_zalo_window } => {
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
                             tokio::task::spawn_blocking(move || {
-                                capture_screen_interactive(gui_tx_clone, ctx_clone);
+                                capture_screen_interactive(
+                                    gui_tx_clone,
+                                    ctx_clone,
+                                    include_zalo_window,
+                                );
                             });
                         }
                         WorkerCmd::SendTyping { to_id, is_group } => {
@@ -4324,14 +4330,27 @@ async fn download_attachment_with_original_name(
 pub(crate) fn capture_screen_interactive(
     gui_tx: crate::gui::GuiTx,
     ctx: egui::Context,
+    include_zalo_window: bool,
 ) {
+    #[cfg(not(target_os = "windows"))]
+    let _ = include_zalo_window;
+
     #[cfg(target_os = "windows")]
     {
+        if !include_zalo_window {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            ctx.request_repaint();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
         let _ = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", "Start-Process ms-screenclip:"])
             .status();
         let _ = gui_tx.send(crate::gui::GuiEvent::StatusUpdate(
-            "Đã mở công cụ chụp ảnh màn hình — sau khi chụp hãy nhấn Ctrl+V để dán".into(),
+            if include_zalo_window {
+                "Đã mở công cụ chụp ảnh màn hình — sau khi chụp hãy nhấn Ctrl+V để dán".into()
+            } else {
+                "Đã thu nhỏ cửa sổ Zalo để chụp màn hình — mở lại Zalo rồi nhấn Ctrl+V để dán".into()
+            },
         ));
         ctx.request_repaint();
     }

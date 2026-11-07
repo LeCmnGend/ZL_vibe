@@ -2858,14 +2858,19 @@ impl ZaloGuiApp {
                             }
 
                             let is_ime_busy = self.ime_active || self.ime_just_committed;
-                            let trigger_screenshot_hotkey = ui.input(|i| {
-                                i.modifiers.ctrl && i.modifiers.alt
-                                    && (i.key_pressed(Key::S) || i.key_pressed(Key::A))
+                            let screenshot_hotkeys = ui.input(|i| {
+                                let capture_modifier = i.modifiers.ctrl && i.modifiers.alt;
+                                (
+                                    capture_modifier && i.key_pressed(Key::S),
+                                    capture_modifier && i.key_pressed(Key::A),
+                                )
                             });
-                            if trigger_screenshot_hotkey {
+                            if screenshot_hotkeys.0 || screenshot_hotkeys.1 {
                                 self.screenshot_menu_open = false;
                                 if let Some(tx) = WORKER_TX.get() {
-                                    let _ = tx.send(WorkerCmd::TriggerScreenshot);
+                                    let _ = tx.send(WorkerCmd::TriggerScreenshot {
+                                        include_zalo_window: screenshot_hotkeys.0,
+                                    });
                                     self.show_toast("Đã mở công cụ chụp màn hình");
                                 }
                             }
@@ -3627,7 +3632,7 @@ impl ZaloGuiApp {
                     }
 
                     if self.screenshot_menu_open {
-                        let mut selected = false;
+                        let mut selected_mode = None;
                         egui::Area::new(Id::new("screenshot_mode_menu"))
                             .order(egui::Order::Foreground)
                             .pivot(egui::Align2::LEFT_BOTTOM)
@@ -3638,22 +3643,24 @@ impl ZaloGuiApp {
                                     .rounding(Rounding::same(9.0))
                                     .inner_margin(Margin::same(6.0)).show(ui, |ui| {
                                         ui.set_width(370.0);
-                                        for (label, shortcut) in [
-                                            ("Chụp kèm với cửa sổ Zalo", "Alt + Ctrl + S"),
-                                            ("Chụp KHÔNG kèm cửa sổ Zalo", "Ctrl + Alt + A"),
+                                        for (label, shortcut, include_zalo_window) in [
+                                            ("Chụp kèm với cửa sổ Zalo", "Alt + Ctrl + S", true),
+                                            ("Chụp KHÔNG kèm cửa sổ Zalo", "Ctrl + Alt + A", false),
                                         ] {
                                             let response = ui.add_sized(
                                                 [358.0, 36.0],
                                                 egui::Button::new(format!("{label}   ({shortcut})"))
                                                     .fill(Color32::TRANSPARENT).stroke(Stroke::NONE),
                                             );
-                                            if response.clicked() { selected = true; }
+                                            if response.clicked() { selected_mode = Some(include_zalo_window); }
                                         }
                                     });
                             });
-                        if selected {
+                        if let Some(include_zalo_window) = selected_mode {
                             self.screenshot_menu_open = false;
-                            if let Some(tx) = WORKER_TX.get() { let _ = tx.send(WorkerCmd::TriggerScreenshot); }
+                            if let Some(tx) = WORKER_TX.get() {
+                                let _ = tx.send(WorkerCmd::TriggerScreenshot { include_zalo_window });
+                            }
                         }
                     }
                     self.render_composer_popups(ctx, pal, popup_plus_rect, popup_emoji_rect, popup_sticker_rect, &thread_id, is_group);
