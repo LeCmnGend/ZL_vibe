@@ -857,8 +857,8 @@ impl ZaloGuiApp {
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 // Header avatar (44×44)
-                                let (av_rect, _) =
-                                    ui.allocate_exact_size(Vec2::new(40.0, 40.0), Sense::hover());
+                                let (av_rect, avatar_resp) =
+                                    ui.allocate_exact_size(Vec2::new(40.0, 40.0), Sense::click());
                                 paint_user_avatar(
                                     ui.painter(),
                                     av_rect.center(),
@@ -869,6 +869,22 @@ impl ZaloGuiApp {
                                     &self.sticker_textures,
                                     &mut self.loading_stickers,
                                 );
+                                let avatar_resp = avatar_resp
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .on_hover_text(if is_group {
+                                        "Xem thông tin nhóm"
+                                    } else {
+                                        "Xem thông tin tài khoản"
+                                    });
+                                if avatar_resp.clicked() {
+                                    if is_group {
+                                        self.info_drawer_open = true;
+                                        self.settings.info_drawer_open = true;
+                                        self.settings.save();
+                                    } else if !is_cloud_thread {
+                                        view_profile_member = Some(thread_id.clone());
+                                    }
+                                }
                                 let cur_onl = self.user_online_map.get(&thread_id);
                                 if !is_group
                                     && cur_onl.map(|(onl, _)| *onl).unwrap_or(false)
