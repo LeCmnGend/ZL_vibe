@@ -2897,7 +2897,12 @@ impl ZaloGuiApp {
                         } else {
                             Color32::from_rgba_unmultiplied(255, 255, 255, 96)
                         })
-                        .inner_margin(Margin::symmetric(16.0, 11.0))
+                        .inner_margin(Margin {
+                            left: 16.0,
+                            right: 0.0,
+                            top: 11.0,
+                            bottom: 11.0,
+                        })
                         .show(ui, |ui| {
                             // Handle drag-and-drop files onto the chat window
                             let dropped: Vec<std::path::PathBuf> = ui.ctx().input(|i| {
