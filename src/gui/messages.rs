@@ -2560,6 +2560,8 @@ pub(super) enum BubbleAction {
     JumpToQuoted(String),
     Forward,
     React(&'static str),
+    SelectMultiple,
+    ViewDetails,
     TogglePin,
     ToggleStar,
     DeleteForMe,
@@ -3389,8 +3391,6 @@ impl ZaloGuiApp {
 }
 
 
-/// Right-click menu on a chat bubble: reactions, reply, forward, copy, delete-for-me.
-
 fn menu_item(
     ui: &mut egui::Ui,
     icon: &str,
@@ -3406,7 +3406,7 @@ fn menu_item(
     ui.add(button)
 }
 
-/// Right-click menu on a chat bubble / row: quote/reply, forward/share, copy, pin, star, delete-for-me.
+/// Context menu for message actions, opened by right-click or the hover-bar ellipsis.
 pub(super) fn bubble_context_menu(
     ui: &mut egui::Ui,
     bubble: &egui::Response,
@@ -3487,51 +3487,11 @@ pub(super) fn bubble_context_menu(
                     ui.set_min_width(menu_w);
                     ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
 
-                    // 1. Trả lời (Quote)
-                    if menu_item(ui, lucide::QUOTE, "Trả lời", pal.text_primary).clicked() {
-                        action = Some(BubbleAction::Reply);
-                        close_menu = true;
-                    }
-                    let mention_target = display_sender.trim();
-                    if !msg.is_outgoing && !mention_target.is_empty() && mention_target != "Bạn" {
-                        if menu_item(
-                            ui,
-                            "@",
-                            &format!("Nhắc đến @{mention_target}"),
-                            pal.text_primary,
-                        )
-                        .clicked()
-                        {
-                            action = Some(BubbleAction::Mention(mention_target.to_string()));
-                            close_menu = true;
-                        }
-                    }
-                    if let Some(url) = video_play_url(msg) {
-                        if menu_item(ui, ICON_PLAY, "Xem video", pal.text_primary).clicked() {
-                            action = Some(BubbleAction::OpenVideo { url: url.to_string(), title: video_title(msg) });
-                            close_menu = true;
-                        }
-                    }
-                    if let Some((url, suggested_name)) = attachment_download_target(msg) {
-                        if menu_item(ui, lucide::PAPERCLIP, "Tải về và theo dõi", pal.text_primary).clicked() {
-                            action = Some(BubbleAction::Download { url, suggested_name });
-                            close_menu = true;
-                        }
-                    }
-
-                    // 2. Chia sẻ (Forward)
-                    if menu_item(ui, lucide::FORWARD, "Chia sẻ", pal.text_primary).clicked() {
-                        action = Some(BubbleAction::Forward);
-                        close_menu = true;
-                    }
-
-                    // 3. Copy tin nhắn
                     if menu_item(ui, lucide::COPY, "Copy tin nhắn", pal.text_primary).clicked() {
                         ui.ctx().copy_text(msg.text.clone());
                         close_menu = true;
                     }
 
-                    // 4. Ghim tin nhắn
                     let pin_label = if msg.is_pinned {
                         "Bỏ ghim tin nhắn"
                     } else {
@@ -3542,7 +3502,6 @@ pub(super) fn bubble_context_menu(
                         close_menu = true;
                     }
 
-                    // 5. Đánh dấu tin nhắn
                     let star_label = if msg.is_starred {
                         "Bỏ đánh dấu tin nhắn"
                     } else {
@@ -3553,87 +3512,121 @@ pub(super) fn bubble_context_menu(
                         close_menu = true;
                     }
 
-                    // 6. Nếu là ảnh: Xem ảnh phóng to
-                    if is_zalo_photo_message(msg) {
-                        if let Some(thumb_url) = photo_primary_url(msg) {
-                            if menu_item(ui, lucide::SEARCH, "Xem ảnh phóng to", pal.text_primary).clicked() {
-                                action = Some(BubbleAction::OpenImagePopup {
-                                    message_id: msg.id.clone(),
-                                    tex_key: format!("thumb_{}", crate::crypto::md5_hex(thumb_url)),
-                                    full_url: msg
-                                        .link_url
-                                        .clone()
-                                        .filter(|u| !u.is_empty())
-                                        .unwrap_or_else(|| thumb_url.to_string()),
-                                    title: msg
-                                        .link_title
-                                        .clone()
-                                        .filter(|t| {
-                                            !t.is_empty()
-                                                && !t.starts_with("http://")
-                                                && !t.starts_with("https://")
-                                        })
-                                        .unwrap_or_else(|| "Hình ảnh".to_string()),
-                                    sender: if msg.is_outgoing {
-                                        "Bạn".to_string()
-                                    } else {
-                                        msg.sender.clone()
-                                    },
-                                    time: msg.time.clone(),
-                                });
+                    if menu_item(ui, lucide::CHECK_CHECK, "Chọn nhiều tin nhắn", pal.text_primary).clicked() {
+                        action = Some(BubbleAction::SelectMultiple);
+                        close_menu = true;
+                    }
+
+                    if menu_item(ui, lucide::INFO, "Xem chi tiết", pal.text_primary).clicked() {
+                        action = Some(BubbleAction::ViewDetails);
+                        close_menu = true;
+                    }
+
+                    ui.menu_button("Tùy chọn khác", |ui| {
+                        if menu_item(ui, lucide::QUOTE, "Trả lời", pal.text_primary).clicked() {
+                            action = Some(BubbleAction::Reply);
+                            close_menu = true;
+                        }
+                        if menu_item(ui, lucide::FORWARD, "Chia sẻ", pal.text_primary).clicked() {
+                            action = Some(BubbleAction::Forward);
+                            close_menu = true;
+                        }
+
+                        let mention_target = display_sender.trim();
+                        if !msg.is_outgoing && !mention_target.is_empty() && mention_target != "Bạn" {
+                            if menu_item(ui, "@", &format!("Nhắc đến @{mention_target}"), pal.text_primary).clicked() {
+                                action = Some(BubbleAction::Mention(mention_target.to_string()));
                                 close_menu = true;
                             }
                         }
-                    }
 
-                    // 7. Nếu là file / video: Lưu tập tin
-                    if is_zalo_file_or_video_message(msg) {
-                        if let Some(url) = msg.link_url.as_deref().filter(|u| !u.is_empty()) {
-                            let resolved_name = crate::chat::resolve_attachment_file_name(
-                                msg.link_title.as_deref(),
-                                msg.text.trim(),
-                                url,
-                            );
-                            let label = if resolved_name.len() > 18 {
-                                format!("Lưu \"{}…\"", &resolved_name[..16])
-                            } else {
-                                format!("Lưu \"{resolved_name}\"")
-                            };
-                            if menu_item(ui, lucide::PAPERCLIP, &label, pal.text_primary).clicked() {
-                                action = Some(BubbleAction::DownloadFile {
-                                    url: url.to_string(),
-                                    file_name: resolved_name,
-                                });
+                        ui.separator();
+                        ui.label(RichText::new("Thêm cảm xúc").size(11.5).color(pal.text_muted));
+                        ui.horizontal_wrapped(|ui| {
+                            for &(code, _, tooltip) in REACTION_LIST {
+                                if ui.button(code).on_hover_text(tooltip).clicked() {
+                                    action = Some(BubbleAction::React(code));
+                                    close_menu = true;
+                                }
+                            }
+                        });
+
+                        if let Some(url) = video_play_url(msg) {
+                            if menu_item(ui, ICON_PLAY, "Xem video", pal.text_primary).clicked() {
+                                action = Some(BubbleAction::OpenVideo { url: url.to_string(), title: video_title(msg) });
                                 close_menu = true;
                             }
                         }
-                    }
+                        if let Some((url, suggested_name)) = attachment_download_target(msg) {
+                            if menu_item(ui, lucide::PAPERCLIP, "Tải về và theo dõi", pal.text_primary).clicked() {
+                                action = Some(BubbleAction::Download { url, suggested_name });
+                                close_menu = true;
+                            }
+                        }
 
-                    ui.separator();
+                        if is_zalo_photo_message(msg) {
+                            if let Some(thumb_url) = photo_primary_url(msg) {
+                                if menu_item(ui, lucide::SEARCH, "Xem ảnh phóng to", pal.text_primary).clicked() {
+                                    action = Some(BubbleAction::OpenImagePopup {
+                                        message_id: msg.id.clone(),
+                                        tex_key: format!("thumb_{}", crate::crypto::md5_hex(thumb_url)),
+                                        full_url: msg
+                                            .link_url
+                                            .clone()
+                                            .filter(|url| !url.is_empty())
+                                            .unwrap_or_else(|| thumb_url.to_string()),
+                                        title: msg
+                                            .link_title
+                                            .clone()
+                                            .filter(|title| {
+                                                !title.is_empty()
+                                                    && !title.starts_with("http://")
+                                                    && !title.starts_with("https://")
+                                            })
+                                            .unwrap_or_else(|| "Hình ảnh".to_string()),
+                                        sender: if msg.is_outgoing { "Bạn".to_string() } else { msg.sender.clone() },
+                                        time: msg.time.clone(),
+                                    });
+                                    close_menu = true;
+                                }
+                            }
+                        }
 
-                    // 8. Thu hồi tin nhắn (với mọi người)
-                    if msg.is_outgoing
-                        && msg.text.trim() != "[Tin nhắn đã thu hồi]"
-                        && !msg.text.starts_with("[Đã thu hồi]")
-                    {
-                        if menu_item(
-                            ui,
-                            lucide::BAN,
-                            "Thu hồi",
-                            Color32::from_rgb(249, 115, 22),
-                        ).clicked() {
+                        if is_zalo_file_or_video_message(msg) {
+                            if let Some(url) = msg.link_url.as_deref().filter(|url| !url.is_empty()) {
+                                let file_name = crate::chat::resolve_attachment_file_name(
+                                    msg.link_title.as_deref(),
+                                    msg.text.trim(),
+                                    url,
+                                );
+                                let label = if file_name.len() > 18 {
+                                    format!("Lưu \"{}…\"", &file_name[..16])
+                                } else {
+                                    format!("Lưu \"{file_name}\"")
+                                };
+                                if menu_item(ui, lucide::PAPERCLIP, &label, pal.text_primary).clicked() {
+                                    action = Some(BubbleAction::DownloadFile {
+                                        url: url.to_string(),
+                                        file_name,
+                                    });
+                                    close_menu = true;
+                                }
+                            }
+                        }
+
+                        if msg.is_outgoing
+                            && msg.text.trim() != "[Tin nhắn đã thu hồi]"
+                            && !msg.text.starts_with("[Đã thu hồi]")
+                            && menu_item(ui, lucide::BAN, "Thu hồi", Color32::from_rgb(249, 115, 22)).clicked()
+                        {
                             action = Some(BubbleAction::RecallForEveryone);
                             close_menu = true;
                         }
-                    }
+                    });
 
-                    // 9. Xóa chỉ ở phía tôi
-                    if menu_item(
-                        ui,
-                        lucide::TRASH_2,
-                        "Xóa chỉ ở phía tôi",
-                        Color32::from_rgb(239, 68, 68),
-                    ).clicked() {
+                    ui.separator();
+
+                    if menu_item(ui, lucide::TRASH_2, "Xóa", Color32::from_rgb(239, 68, 68)).clicked() {
                         action = Some(BubbleAction::DeleteForMe);
                         close_menu = true;
                     }
@@ -3740,7 +3733,7 @@ pub(super) fn render_hover_reaction_bar(
     idx: usize,
     outgoing: bool,
     pal: &ThemePalette,
-    emoji_textures: &HashMap<String, TextureHandle>,
+    _emoji_textures: &HashMap<String, TextureHandle>,
 ) -> Option<BubbleAction> {
     let ctx_menu_open = ctx.data(|d| {
         d.get_temp::<(String, Pos2, usize)>(Id::new("active_bubble_context_menu")).is_some()
@@ -3748,7 +3741,7 @@ pub(super) fn render_hover_reaction_bar(
     if ctx_menu_open || ctx.memory(|m| m.any_popup_open()) {
         return None;
     }
-    let bar_w = 236.0_f32;
+    let bar_w = 130.0_f32;
     let bar_h = 32.0_f32;
     let clip = ctx.screen_rect();
     let x = if outgoing {
@@ -3816,25 +3809,13 @@ pub(super) fn render_hover_reaction_bar(
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
 
-                        for &(code, key, tooltip) in &REACTION_LIST {
-                            let button_response = if let Some(tex) = emoji_textures.get(key) {
-                                let image = egui::Image::new(tex)
-                                    .fit_to_exact_size(Vec2::splat(20.0));
-                                ui.add(
-                                    egui::ImageButton::new(image)
-                                        .rounding(Rounding::same(6.0)),
-                                )
-                            } else {
-                                ui.add(
-                                    egui::Button::new(RichText::new(code).size(16.0))
-                                        .fill(Color32::TRANSPARENT)
-                                        .rounding(Rounding::same(6.0)),
-                                )
-                            };
-                            if button_response.on_hover_text(tooltip).clicked() {
-                                ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
-                                action = Some(BubbleAction::React(code));
-                            }
+                        let like_button = egui::Button::new(RichText::new("👍").size(16.0))
+                            .fill(Color32::TRANSPARENT)
+                            .min_size(Vec2::splat(22.0))
+                            .rounding(Rounding::same(6.0));
+                        if ui.add(like_button).on_hover_text("Thích").clicked() {
+                            ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
+                            action = Some(BubbleAction::React("👍"));
                         }
 
                         let (sep_rect, _) =
@@ -3870,6 +3851,29 @@ pub(super) fn render_hover_reaction_bar(
                         if ui.add(forward_button).on_hover_text("Chia sẻ").clicked() {
                             ui.ctx().data_mut(|d| d.remove::<String>(hover_id));
                             action = Some(BubbleAction::Forward);
+                        }
+
+                        let more_button = egui::Button::new(
+                            RichText::new(lucide::ELLIPSIS)
+                                .size(13.5)
+                                .color(pal.text_secondary),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(Vec2::splat(22.0))
+                        .rounding(Rounding::same(6.0));
+                        let more_response = ui.add(more_button).on_hover_text("Thêm tùy chọn");
+                        if more_response.clicked() {
+                            let click_pos = more_response.rect.left_bottom();
+                            let current_time = ui.input(|i| i.time);
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    Id::new("active_bubble_context_menu"),
+                                    (msg_key.clone(), click_pos, idx),
+                                );
+                                d.insert_temp(Id::new("bubble_context_menu_open_time"), current_time);
+                                d.remove::<String>(hover_id);
+                            });
+                            ui.ctx().request_repaint();
                         }
                     });
                 });

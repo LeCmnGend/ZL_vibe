@@ -697,6 +697,52 @@ impl ZaloGuiApp {
             });
     }
 
+    pub(super) fn render_message_details_modal(
+        &mut self,
+        ctx: &egui::Context,
+        pal: &ThemePalette,
+    ) {
+        let Some(message) = self.message_details.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Chi tiết tin nhắn")
+            .id(Id::new("message_details_modal"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(420.0, 300.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Người gửi: {}",
+                        if message.is_outgoing { "Bạn" } else { message.sender.as_str() }
+                    ))
+                    .color(pal.text_primary),
+                );
+                ui.label(
+                    RichText::new(format!("Thời gian: {}", message.time))
+                        .color(pal.text_secondary),
+                );
+                if !message.id.is_empty() {
+                    ui.label(
+                        RichText::new(format!("ID: {}", message.id)).color(pal.text_muted),
+                    );
+                }
+                ui.separator();
+                ui.label(RichText::new("Nội dung").color(pal.text_primary).strong());
+                egui::ScrollArea::vertical()
+                    .max_height(190.0)
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(message.text.as_str()).wrap());
+                    });
+            });
+        if !open {
+            self.message_details = None;
+        }
+    }
+
     pub(super) fn render_phone_lookup_modal(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
         if !self.phone_modal_open {
             return;

@@ -87,6 +87,7 @@ impl ZaloGuiApp {
     }
 
     pub(super) fn render_chat_workspace(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
+        self.render_message_details_modal(ctx, pal);
         // Responsive breakpoints based on live viewport width
         // -------------------------------------------------------------------
         let screen_rect = ctx.screen_rect();
@@ -1990,6 +1991,48 @@ impl ZaloGuiApp {
                     let composer_extra_h = if posting_restricted { 0.0 } else { (composer_lines.saturating_sub(1) as f32) * 20.0 };
                     let typing_name = self.typing_indicators.get(&thread_id).cloned();
                     let typing_reserve = if typing_name.is_some() { 24.0 } else { 0.0 };
+                    if self
+                        .message_selection_thread
+                        .as_deref()
+                        .is_some_and(|selected_thread| selected_thread != thread_id.as_str())
+                    {
+                        self.message_selection_thread = None;
+                        self.selected_message_keys.clear();
+                    }
+                    if self.message_selection_thread.as_deref() == Some(thread_id.as_str()) {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "{} tin nhắn đã chọn",
+                                self.selected_message_keys.len()
+                            ));
+                            if !self.selected_message_keys.is_empty()
+                                && ui.button("Sao chép").clicked()
+                            {
+                                let text = self
+                                    .threads
+                                    .get(self.selected_thread_index)
+                                    .map(|thread| {
+                                        thread
+                                            .messages
+                                            .iter()
+                                            .filter(|message| {
+                                                self.selected_message_keys
+                                                    .contains(&(message.id.clone(), message.ts))
+                                            })
+                                            .map(|message| message.text.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    })
+                                    .unwrap_or_default();
+                                ui.ctx().copy_text(text);
+                            }
+                            if ui.button("Hủy").clicked() {
+                                self.message_selection_thread = None;
+                                self.selected_message_keys.clear();
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
                     let msg_area_height = (ui.available_height()
                         - typing_reserve
                         - 68.0
@@ -2204,22 +2247,59 @@ impl ZaloGuiApp {
                                                     } else {
                                                         &thread_name
                                                     };
-                                                    if let Some(action) = render_chat_bubble(
-                                                        ui,
-                                                        msg,
-                                                        prev_same_sender,
-                                                        next_same_sender,
-                                                        is_latest_outgoing,
-                                                        is_group,
-                                                        display_sender_fallback,
-                                                        sender_ava_opt,
-                                                        pal,
-                                                        &self.sticker_textures,
-                                                        &mut self.loading_stickers,
-                                                        &self.emoji_textures,
-                                                        &self.downloads,
-                                                        idx,
-                                                    ) {
+                                                    let message_action = if self
+                                                        .message_selection_thread
+                                                        .as_deref()
+                                                        == Some(thread_id.as_str())
+                                                    {
+                                                        ui.horizontal_top(|ui| {
+                                                            let key = (msg.id.clone(), msg.ts);
+                                                            let mut selected =
+                                                                self.selected_message_keys.contains(&key);
+                                                            if ui.checkbox(&mut selected, "").changed() {
+                                                                if selected {
+                                                                    self.selected_message_keys.insert(key);
+                                                                } else {
+                                                                    self.selected_message_keys.remove(&key);
+                                                                }
+                                                            }
+                                                            render_chat_bubble(
+                                                                ui,
+                                                                msg,
+                                                                prev_same_sender,
+                                                                next_same_sender,
+                                                                is_latest_outgoing,
+                                                                is_group,
+                                                                display_sender_fallback,
+                                                                sender_ava_opt,
+                                                                pal,
+                                                                &self.sticker_textures,
+                                                                &mut self.loading_stickers,
+                                                                &self.emoji_textures,
+                                                                &self.downloads,
+                                                                idx,
+                                                            )
+                                                        })
+                                                        .inner
+                                                    } else {
+                                                        render_chat_bubble(
+                                                            ui,
+                                                            msg,
+                                                            prev_same_sender,
+                                                            next_same_sender,
+                                                            is_latest_outgoing,
+                                                            is_group,
+                                                            display_sender_fallback,
+                                                            sender_ava_opt,
+                                                            pal,
+                                                            &self.sticker_textures,
+                                                            &mut self.loading_stickers,
+                                                            &self.emoji_textures,
+                                                            &self.downloads,
+                                                            idx,
+                                                        )
+                                                    };
+                                                    if let Some(action) = message_action {
                                                         pending_action = Some((idx, action));
                                                     }
                                                     ui.add_space(if next_same_sender {
@@ -2381,6 +2461,16 @@ impl ZaloGuiApp {
                                 BubbleAction::Forward => {
                                     self.forward_msg = Some(m);
                                     self.forward_filter.clear();
+                                }
+                                BubbleAction::SelectMultiple => {
+                                    self.message_selection_thread = Some(thread_id.clone());
+                                    self.selected_message_keys.clear();
+                                    self.selected_message_keys.insert((m.id, m.ts));
+                                    ctx.request_repaint();
+                                }
+                                BubbleAction::ViewDetails => {
+                                    self.message_details = Some(m);
+                                    ctx.request_repaint();
                                 }
                                 BubbleAction::React(r) => {
                                     self.status_msg = format!("Đã gửi cảm xúc {r}");
