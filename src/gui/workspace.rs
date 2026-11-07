@@ -92,7 +92,6 @@ impl ZaloGuiApp {
         // -------------------------------------------------------------------
         let screen_rect = ctx.screen_rect();
         let screen_w = screen_rect.width();
-        let is_narrow_w = false;
         // The right info drawer only fits on wide windows.
         let drawer_allowed = screen_w >= 1000.0;
 
@@ -2910,7 +2909,10 @@ impl ZaloGuiApp {
 
                                     let response = ui
                                         .horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            let composer_width = ui.available_width();
+                                            let is_narrow_composer = composer_width < 500.0;
+                                            ui.spacing_mut().item_spacing.x =
+                                                if is_narrow_composer { 2.0 } else { 4.0 };
 
                                             let (plus_rect, plus_response) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
                                             popup_plus_rect = plus_rect;
@@ -2982,147 +2984,155 @@ impl ZaloGuiApp {
                                                 }
                                             }
 
-                                            // 2) Compact Photo Upload Icon Button
-                                            let (img_rect, img_resp) = ui.allocate_exact_size(
-                                                Vec2::new(34.0, 34.0),
-                                                Sense::click(),
-                                            );
-                                            if img_resp.hovered() {
-                                                ui.painter().rect_filled(
-                                                    img_rect,
-                                                    Rounding::same(8.0),
-                                                    pal.bg_hover,
+                                            // The plus menu keeps image sending available in compact mode.
+                                            if !is_narrow_composer {
+                                                // 2) Compact Photo Upload Icon Button
+                                                let (img_rect, img_resp) = ui.allocate_exact_size(
+                                                    Vec2::new(34.0, 34.0),
+                                                    Sense::click(),
                                                 );
-                                            }
-                                            draw_icon_image(
-                                                ui.painter(),
-                                                img_rect.center(),
-                                                18.0,
                                                 if img_resp.hovered() {
-                                                    pal.accent_online
-                                                } else {
-                                                    pal.text_secondary
-                                                },
-                                            );
-                                            if img_resp
-                                                .on_hover_cursor(CursorIcon::PointingHand)
-                                                .on_hover_text("Gửi hình ảnh")
-                                                .clicked()
-                                            {
-                                                let cap = self.input_message.trim().to_string();
-                                                self.input_message.clear();
-                                                if let Some(tx) = WORKER_TX.get() {
-                                                    let _ =
-                                                        tx.send(WorkerCmd::PickAndSendAttachment {
-                                                            to_id: thread_id.clone(),
-                                                            is_group,
-                                                            images_only: true,
-                                                            caption: cap,
-                                                            preset_path: None,
-                                                            original_hd: self.send_hd_original,
-                                                        });
+                                                    ui.painter().rect_filled(
+                                                        img_rect,
+                                                        Rounding::same(8.0),
+                                                        pal.bg_hover,
+                                                    );
+                                                }
+                                                draw_icon_image(
+                                                    ui.painter(),
+                                                    img_rect.center(),
+                                                    18.0,
+                                                    if img_resp.hovered() {
+                                                        pal.accent_online
+                                                    } else {
+                                                        pal.text_secondary
+                                                    },
+                                                );
+                                                if img_resp
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .on_hover_text("Gửi hình ảnh")
+                                                    .clicked()
+                                                {
+                                                    let cap = self.input_message.trim().to_string();
+                                                    self.input_message.clear();
+                                                    if let Some(tx) = WORKER_TX.get() {
+                                                        let _ =
+                                                            tx.send(WorkerCmd::PickAndSendAttachment {
+                                                                to_id: thread_id.clone(),
+                                                                is_group,
+                                                                images_only: true,
+                                                                caption: cap,
+                                                                preset_path: None,
+                                                                original_hd: self.send_hd_original,
+                                                            });
+                                                    }
                                                 }
                                             }
 
                                             // HD Original Quality Toggle Button
-                                            let hd_active = self.send_hd_original;
-                                            let (hd_rect, hd_resp) = ui.allocate_exact_size(
-                                                Vec2::new(32.0, 24.0),
-                                                Sense::click(),
-                                            );
-                                            let hd_bg = if hd_active {
-                                                if hd_resp.hovered() {
-                                                    pal.primary_hover
+                                            if composer_width >= 340.0 {
+                                                let hd_active = self.send_hd_original;
+                                                let (hd_rect, hd_resp) = ui.allocate_exact_size(
+                                                    Vec2::new(32.0, 24.0),
+                                                    Sense::click(),
+                                                );
+                                                let hd_bg = if hd_active {
+                                                    if hd_resp.hovered() {
+                                                        pal.primary_hover
+                                                    } else {
+                                                        pal.primary
+                                                    }
+                                                } else if hd_resp.hovered() {
+                                                    pal.bg_hover
                                                 } else {
-                                                    pal.primary
-                                                }
-                                            } else if hd_resp.hovered() {
-                                                pal.bg_hover
-                                            } else {
-                                                pal.bg_input
-                                            };
-                                            let hd_text_col = if hd_active {
-                                                Color32::WHITE
-                                            } else {
-                                                pal.text_secondary
-                                            };
-                                            ui.painter().rect_filled(
-                                                hd_rect,
-                                                Rounding::same(6.0),
-                                                hd_bg,
-                                            );
-                                            if !hd_active {
-                                                ui.painter().rect_stroke(
+                                                    pal.bg_input
+                                                };
+                                                let hd_text_col = if hd_active {
+                                                    Color32::WHITE
+                                                } else {
+                                                    pal.text_secondary
+                                                };
+                                                ui.painter().rect_filled(
                                                     hd_rect,
                                                     Rounding::same(6.0),
-                                                    Stroke::new(1.0_f32, pal.border),
+                                                    hd_bg,
                                                 );
-                                            }
-                                            ui.painter().text(
-                                                hd_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                "HD",
-                                                FontId::proportional(11.0),
-                                                hd_text_col,
-                                            );
-                                            let hd_tooltip = if hd_active {
-                                                "Chế độ gửi ảnh gốc Original / HD: ĐANG BẬT (Ảnh không bị nén, giữ nguyên 100% chất lượng)"
-                                            } else {
-                                                "Chế độ gửi ảnh gốc Original / HD: Đang TẮT (Bấm để bật gửi ảnh chất lượng cao không nén)"
-                                            };
-                                            if hd_resp
-                                                .on_hover_cursor(CursorIcon::PointingHand)
-                                                .on_hover_text(hd_tooltip)
-                                                .clicked()
-                                            {
-                                                self.send_hd_original = !self.send_hd_original;
-                                                let msg = if self.send_hd_original {
-                                                    "Đã BẬT gửi ảnh gốc Original / HD (không nén)"
+                                                if !hd_active {
+                                                    ui.painter().rect_stroke(
+                                                        hd_rect,
+                                                        Rounding::same(6.0),
+                                                        Stroke::new(1.0_f32, pal.border),
+                                                    );
+                                                }
+                                                ui.painter().text(
+                                                    hd_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    "HD",
+                                                    FontId::proportional(11.0),
+                                                    hd_text_col,
+                                                );
+                                                let hd_tooltip = if hd_active {
+                                                    "Chế độ gửi ảnh gốc Original / HD: ĐANG BẬT (Ảnh không bị nén, giữ nguyên 100% chất lượng)"
                                                 } else {
-                                                    "Đã TẮT gửi ảnh gốc Original (chế độ thường)"
+                                                    "Chế độ gửi ảnh gốc Original / HD: Đang TẮT (Bấm để bật gửi ảnh chất lượng cao không nén)"
                                                 };
-                                                self.show_toast(msg.to_string());
+                                                if hd_resp
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .on_hover_text(hd_tooltip)
+                                                    .clicked()
+                                                {
+                                                    self.send_hd_original = !self.send_hd_original;
+                                                    let msg = if self.send_hd_original {
+                                                        "Đã BẬT gửi ảnh gốc Original / HD (không nén)"
+                                                    } else {
+                                                        "Đã TẮT gửi ảnh gốc Original (chế độ thường)"
+                                                    };
+                                                    self.show_toast(msg.to_string());
+                                                }
                                             }
 
                                             // 3) Compact File Upload Icon Button
-                                            let (att_rect, att_resp) = ui.allocate_exact_size(
-                                                Vec2::new(34.0, 34.0),
-                                                Sense::click(),
-                                            );
-                                            if att_resp.hovered() {
-                                                ui.painter().rect_filled(
-                                                    att_rect,
-                                                    Rounding::same(8.0),
-                                                    pal.bg_hover,
+                                            // The plus menu keeps file sending available in compact mode.
+                                            if !is_narrow_composer {
+                                                let (att_rect, att_resp) = ui.allocate_exact_size(
+                                                    Vec2::new(34.0, 34.0),
+                                                    Sense::click(),
                                                 );
-                                            }
-                                            draw_icon_attachment(
-                                                ui.painter(),
-                                                att_rect.center(),
-                                                17.0,
                                                 if att_resp.hovered() {
-                                                    pal.primary_hover
-                                                } else {
-                                                    pal.text_secondary
-                                                },
-                                            );
-                                            if att_resp
-                                                .on_hover_cursor(CursorIcon::PointingHand)
-                                                .on_hover_text("Đính kèm File / Video")
-                                                .clicked()
-                                            {
-                                                let cap = self.input_message.trim().to_string();
-                                                self.input_message.clear();
-                                                if let Some(tx) = WORKER_TX.get() {
-                                                    let _ =
-                                                        tx.send(WorkerCmd::PickAndSendAttachment {
-                                                            to_id: thread_id.clone(),
-                                                            is_group,
-                                                            images_only: false,
-                                                            caption: cap,
-                                                            preset_path: None,
-                                                            original_hd: self.send_hd_original,
-                                                        });
+                                                    ui.painter().rect_filled(
+                                                        att_rect,
+                                                        Rounding::same(8.0),
+                                                        pal.bg_hover,
+                                                    );
+                                                }
+                                                draw_icon_attachment(
+                                                    ui.painter(),
+                                                    att_rect.center(),
+                                                    17.0,
+                                                    if att_resp.hovered() {
+                                                        pal.primary_hover
+                                                    } else {
+                                                        pal.text_secondary
+                                                    },
+                                                );
+                                                if att_resp
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .on_hover_text("Đính kèm File / Video")
+                                                    .clicked()
+                                                {
+                                                    let cap = self.input_message.trim().to_string();
+                                                    self.input_message.clear();
+                                                    if let Some(tx) = WORKER_TX.get() {
+                                                        let _ =
+                                                            tx.send(WorkerCmd::PickAndSendAttachment {
+                                                                to_id: thread_id.clone(),
+                                                                is_group,
+                                                                images_only: false,
+                                                                caption: cap,
+                                                                preset_path: None,
+                                                                original_hd: self.send_hd_original,
+                                                            });
+                                                    }
                                                 }
                                             }
 
@@ -3174,14 +3184,13 @@ impl ZaloGuiApp {
                                                 Stroke::new(1.0_f32, pal.border),
                                             );
 
-                                            let send_btn_w =
-                                                if is_narrow_w { 52.0 } else { 76.0 };
+                                            let send_btn_w = if is_narrow_composer { 52.0 } else { 76.0 };
                                             let sched_btn_w = 34.0;
                                             let input_w = (ui.available_width()
                                                 - send_btn_w
                                                 - sched_btn_w
                                                 - 16.0)
-                                                .max(50.0);
+                                                .max(if is_narrow_composer { 32.0 } else { 50.0 });
                                             let hint_str = format!(
                                                 "Nhập tin nhắn tới {}...",
                                                 truncate_chars(&thread_name, 18)
@@ -3318,7 +3327,7 @@ impl ZaloGuiApp {
                                                 Rounding::same(8.0),
                                                 send_bg,
                                             );
-                                            if !is_narrow_w {
+                                            if !is_narrow_composer {
                                                 ui.painter().text(
                                                     Pos2::new(
                                                         send_rect.left() + 15.0,
