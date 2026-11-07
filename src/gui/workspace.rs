@@ -43,10 +43,21 @@ impl ZaloGuiApp {
                     title,
                     sender: if message.is_outgoing {
                         "Bạn".into()
-                    } else if !message.sender.is_empty() && message.sender != "0" {
-                        message.sender.clone()
+                    } else if thread.is_group {
+                        self.group_members_map
+                            .get(thread_id)
+                            .and_then(|members| {
+                                members.iter().find(|member| {
+                                    member.id == message.sender || member.name == message.sender
+                                })
+                            })
+                            .map(|member| {
+                                self.contact_display_name(&member.id, &member.name)
+                            })
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| message.sender.clone())
                     } else {
-                        thread.name.clone()
+                        self.contact_display_name(thread_id, &thread.name)
                     },
                     time: message.time.clone(),
                     ts: message.ts,
@@ -162,7 +173,7 @@ impl ZaloGuiApp {
         let thread_meta = self.threads.get(self.selected_thread_index).map(|t| {
             (
                 t.id.clone(),
-                t.name.clone(),
+                self.contact_display_name(&t.id, &t.name),
                 t.avatar.clone(),
                 t.is_group,
                 t.messages.len(),
@@ -491,7 +502,10 @@ impl ZaloGuiApp {
                                         let q = self.group_member_search.trim().to_lowercase();
                                         let filtered_members: Vec<&crate::chat::SidebarMember> = group_members
                                             .iter()
-                                            .filter(|m| q.is_empty() || m.name.to_lowercase().contains(&q) || m.id.contains(&q))
+                                            .filter(|m| {
+                                                let name = self.contact_display_name(&m.id, &m.name);
+                                                q.is_empty() || name.to_lowercase().contains(&q) || m.id.contains(&q)
+                                            })
                                             .collect();
 
                                         egui::ScrollArea::vertical()
@@ -501,13 +515,14 @@ impl ZaloGuiApp {
                                             .show(ui, |ui| {
                                                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 5.0);
                                                 for m in filtered_members {
+                                                    let member_name = self.contact_display_name(&m.id, &m.name);
                                                     ui.horizontal(|ui| {
                                                         let (av_r, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
                                                         paint_user_avatar(
                                                             ui.painter(),
                                                             av_r.center(),
                                                             13.0,
-                                                            &m.name,
+                                                            &member_name,
                                                             false,
                                                             m.avatar.as_deref(),
                                                             &self.sticker_textures,
@@ -518,7 +533,7 @@ impl ZaloGuiApp {
                                                         ui.vertical(|ui| {
                                                             ui.horizontal(|ui| {
                                                                 ui.label(
-                                                                    RichText::new(truncate_chars(&m.name, 16))
+                                                                    RichText::new(truncate_chars(&member_name, 16))
                                                                         .size(12.0)
                                                                         .color(pal.text_primary)
                                                                         .strong(),
@@ -785,7 +800,10 @@ impl ZaloGuiApp {
                 self.selected_thread_index = 0;
                 self.persist_threads_async();
             }
-            self.show_toast(format!("Đã mở cuộc trò chuyện với {}", m.name));
+            self.show_toast(format!(
+                "Đã mở cuộc trò chuyện với {}",
+                self.contact_display_name(&m.id, &m.name)
+            ));
         }
 
         if let Some(uid) = view_profile_member.clone() {
@@ -928,12 +946,13 @@ impl ZaloGuiApp {
                                                 }
                                             };
                                             let tag_w = if tag.is_some() && left_info_w > 200.0 { 120.0 } else { 0.0 };
+                                            let nickname_button_w = if !is_group && !is_cloud_thread { 22.0 } else { 0.0 };
                                             let g = crate::gui::sidebar::single_line_galley(
                                                 ui,
                                                 &thread_name,
                                                 16.5,
                                                 pal.text_primary,
-                                                (left_info_w - tag_w).max(40.0),
+                                                (left_info_w - tag_w - nickname_button_w).max(40.0),
                                             );
                                             let (r, name_response) = ui.allocate_exact_size(
                                                 Vec2::new(g.size().x, 22.0),
@@ -947,6 +966,49 @@ impl ZaloGuiApp {
                                                     .clicked()
                                                 {
                                                     view_profile_member = Some(thread_id.clone());
+                                                }
+                                            }
+                                            if nickname_button_w > 0.0 {
+                                                let (edit_rect, edit_response) = ui.allocate_exact_size(
+                                                    Vec2::new(20.0, 22.0),
+                                                    Sense::click(),
+                                                );
+                                                if edit_response.hovered() {
+                                                    ui.painter().rect_filled(
+                                                        edit_rect,
+                                                        Rounding::same(5.0),
+                                                        pal.bg_hover,
+                                                    );
+                                                }
+                                                draw_lucide_icon(
+                                                    ui.painter(),
+                                                    edit_rect.center(),
+                                                    lucide::EDIT,
+                                                    12.0,
+                                                    if edit_response.hovered() {
+                                                        pal.primary_hover
+                                                    } else {
+                                                        pal.text_secondary
+                                                    },
+                                                );
+                                                if edit_response
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .on_hover_text("Đặt tên gợi nhớ")
+                                                    .clicked()
+                                                {
+                                                    self.nickname_edit_id = thread_id.clone();
+                                                    self.nickname_edit_value = self
+                                                        .settings
+                                                        .contact_nicknames
+                                                        .get(&Self::contact_nickname_key(&thread_id))
+                                                        .cloned()
+                                                        .or_else(|| {
+                                                            self.threads
+                                                                .get(self.selected_thread_index)
+                                                                .map(|thread| thread.name.clone())
+                                                        })
+                                                        .unwrap_or_default();
+                                                    self.nickname_dialog_open = true;
                                                 }
                                             }
                                             if let (Some((lbl, col)), true) = (tag, tag_w > 0.0) {
@@ -1930,25 +1992,26 @@ impl ZaloGuiApp {
 
                                 if let Some(members) = self.group_members_map.get(&thread_id) {
                                     for m in members {
-                                        if m.name.trim().is_empty() {
+                                        let display_name = self.contact_display_name(&m.id, &m.name);
+                                        if display_name.trim().is_empty() {
                                             continue;
                                         }
                                         if q_trim.is_empty() {
                                             mention_candidates.push(MentionCandidate {
                                                 id: m.id.clone(),
-                                                name: m.name.clone(),
+                                                name: display_name,
                                                 avatar: m.avatar.clone(),
                                                 role: m.role.clone(),
                                                 is_all: false,
                                             });
                                         } else {
-                                            let m_fold = crate::chat::strip_vn_for_sticker_kw(&m.name);
-                                            if m.name.to_lowercase().contains(&q_trim.to_lowercase())
+                                            let m_fold = crate::chat::strip_vn_for_sticker_kw(&display_name);
+                                            if display_name.to_lowercase().contains(&q_trim.to_lowercase())
                                                 || m_fold.contains(&q_fold)
                                             {
                                                 mention_candidates.push(MentionCandidate {
                                                     id: m.id.clone(),
-                                                    name: m.name.clone(),
+                                                    name: display_name,
                                                     avatar: m.avatar.clone(),
                                                     role: m.role.clone(),
                                                     is_all: false,
@@ -2034,19 +2097,22 @@ impl ZaloGuiApp {
                         let mut avas = HashMap::new();
                         let mut names = HashMap::new();
                         for th in self.threads.iter().filter(|th| !th.is_group) {
+                            let display_name = self.contact_display_name(&th.id, &th.name);
                             if let Some(ref ava) = th.avatar {
                                 if !ava.is_empty() {
                                     avas.insert(th.id.clone(), ava.clone());
                                     avas.insert(th.name.clone(), ava.clone());
                                 }
                             }
-                            names.insert(th.id.clone(), th.name.clone());
+                            names.insert(th.id.clone(), display_name.clone());
+                            names.insert(th.name.clone(), display_name);
                         }
                         let empty_vec = Vec::new();
                         let members = self.group_members_map.get(&thread_id).unwrap_or_else(|| {
                             self.threads.get(self.selected_thread_index).map(|t| &t.presentation.members).unwrap_or(&empty_vec)
                         });
                         for m in members {
+                            let display_name = self.contact_display_name(&m.id, &m.name);
                             if let Some(ref ava) = m.avatar {
                                 if !ava.is_empty() {
                                     avas.insert(m.id.clone(), ava.clone());
@@ -2054,7 +2120,8 @@ impl ZaloGuiApp {
                                 }
                             }
                             if !m.name.is_empty() {
-                                names.insert(m.id.clone(), m.name.clone());
+                                names.insert(m.id.clone(), display_name.clone());
+                                names.insert(m.name.clone(), display_name);
                             }
                         }
                         (avas, names)
@@ -2320,10 +2387,19 @@ impl ZaloGuiApp {
                                                     let display_sender_fallback = if is_group {
                                                         s_id.as_deref()
                                                             .and_then(|id| member_name_by_uid.get(id))
-                                                            .map(|s| s.as_str())
-                                                            .unwrap_or(&thread_name)
+                                                            .or_else(|| member_name_by_uid.get(&msg.sender))
+                                                            .cloned()
+                                                            .unwrap_or_else(|| {
+                                                                if msg.sender.is_empty()
+                                                                    || msg.sender.chars().all(|c| c.is_ascii_digit())
+                                                                {
+                                                                    thread_name.clone()
+                                                                } else {
+                                                                    msg.sender.clone()
+                                                                }
+                                                            })
                                                     } else {
-                                                        &thread_name
+                                                        thread_name.clone()
                                                     };
                                                     let message_action = if self
                                                         .message_selection_thread
@@ -2348,7 +2424,7 @@ impl ZaloGuiApp {
                                                                 next_same_sender,
                                                                 is_latest_outgoing,
                                                                 is_group,
-                                                                display_sender_fallback,
+                                                                &display_sender_fallback,
                                                                 sender_ava_opt,
                                                                 pal,
                                                                 &self.sticker_textures,
@@ -2367,7 +2443,7 @@ impl ZaloGuiApp {
                                                             next_same_sender,
                                                             is_latest_outgoing,
                                                             is_group,
-                                                            display_sender_fallback,
+                                                            &display_sender_fallback,
                                                             sender_ava_opt,
                                                             pal,
                                                             &self.sticker_textures,
@@ -2528,7 +2604,11 @@ impl ZaloGuiApp {
                                                 .get(&thread_id)
                                                 .and_then(|members| {
                                                     members.iter().find(|member| {
-                                                        member.name.eq_ignore_ascii_case(&name)
+                                                        self.contact_display_name(
+                                                            &member.id,
+                                                            &member.name,
+                                                        )
+                                                        .eq_ignore_ascii_case(&name)
                                                     })
                                                 })
                                                 .map(|member| member.id.clone())
@@ -3856,6 +3936,7 @@ impl ZaloGuiApp {
         self.render_phone_lookup_modal(ctx, pal);
         self.render_schedule_modal(ctx, pal);
         self.render_settings_modal(ctx, pal);
+        self.render_contact_nickname_dialog(ctx, pal);
     }
 }
 

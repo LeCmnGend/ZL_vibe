@@ -2484,11 +2484,7 @@ pub(super) fn render_chat_bubble(
         out_resp.inner
     } else {
         ui.horizontal_top(|ui| {
-            let display_sender = if sender_is_name {
-                &msg.sender
-            } else {
-                thread_name
-            };
+            let display_sender = thread_name;
             let sender_accent = avatar_color_for(display_sender, false);
 
             // Sender Avatar (only on first message of a consecutive group)

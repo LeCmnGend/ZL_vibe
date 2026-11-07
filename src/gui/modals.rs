@@ -743,6 +743,84 @@ impl ZaloGuiApp {
         }
     }
 
+    pub(super) fn render_contact_nickname_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        pal: &ThemePalette,
+    ) {
+        if !self.nickname_dialog_open {
+            return;
+        }
+        let default_name = self
+            .threads
+            .iter()
+            .find(|thread| thread.id == self.nickname_edit_id)
+            .map(|thread| thread.name.clone())
+            .unwrap_or_default();
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+        egui::Window::new("Đặt tên gợi nhớ")
+            .id(Id::new("contact_nickname_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(360.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(pal.bg_elevated)
+                    .rounding(Rounding::same(12.0))
+                    .inner_margin(Margin::symmetric(18.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!("Đặt tên gợi nhớ cho {default_name}. Tên này chỉ hiển thị với bạn."))
+                        .size(12.5)
+                        .color(pal.text_secondary),
+                );
+                ui.add_space(8.0);
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut self.nickname_edit_value)
+                        .hint_text(&default_name)
+                        .desired_width(ui.available_width()),
+                );
+                let enter = edit.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Để trống để dùng tên mặc định.")
+                            .size(11.5)
+                            .color(pal.text_muted),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Lưu").clicked() || enter {
+                            save = true;
+                        }
+                        if ui.button("Hủy").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            });
+        self.nickname_dialog_open = open && !save && !cancel;
+        if save {
+            let nickname = self.nickname_edit_value.trim().to_owned();
+            let nickname_key = Self::contact_nickname_key(&self.nickname_edit_id);
+            if nickname.is_empty() {
+                self.settings.contact_nicknames.remove(&nickname_key);
+                self.show_toast("Đã khôi phục tên mặc định");
+            } else {
+                self.settings
+                    .contact_nicknames
+                    .insert(nickname_key, nickname);
+                self.show_toast("Đã lưu tên gợi nhớ");
+            }
+            self.settings.save();
+            self.nickname_dialog_open = false;
+        }
+    }
+
     pub(super) fn render_phone_lookup_modal(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
         if !self.phone_modal_open {
             return;

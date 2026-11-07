@@ -1179,8 +1179,12 @@ impl ZaloGuiApp {
                         || !query.is_empty()
                         || self.thread_has_activity(t)
                         || selected_id.as_deref() == Some(t.id.as_str()));
+                let display_name = self.contact_display_name(&t.id, &t.name);
                 listed
-                    && (query.is_empty() || matches_vn_query(&t.name, &query, &query_folded) || t.id.contains(&query))
+                    && (query.is_empty()
+                        || matches_vn_query(&display_name, &query, &query_folded)
+                        || matches_vn_query(&t.name, &query, &query_folded)
+                        || t.id.contains(&query))
             })
             .map(|(i, _)| i)
             .collect();
@@ -1206,7 +1210,7 @@ impl ZaloGuiApp {
                 if !self.thread_in_section(t) { continue; }
                 for m in t.messages.iter().rev() {
                     if matches_vn_query(&m.text, &query, &query_folded) {
-                        hits.push((t_idx, t.name.clone(), m.text.clone(), m.time.clone(), t.is_group));
+                        hits.push((t_idx, self.contact_display_name(&t.id, &t.name), m.text.clone(), m.time.clone(), t.is_group));
                         if hits.len() >= 25 {
                             break 'outer;
                         }
@@ -1274,7 +1278,7 @@ impl ZaloGuiApp {
                     let is_hidden = self.settings.hidden_threads.contains(&t.id) || t.presentation.hidden;
                     let cur_label = self.settings.thread_labels.get(&t.id).cloned();
                     let tid_cl = t.id.clone();
-                    let tname_cl = t.name.clone();
+                    let tname_cl = self.contact_display_name(&t.id, &t.name);
                     let tgroup_cl = t.is_group;
                     let unread_now = self.unread_counts.get(&t.id).copied().unwrap_or(0) > 0;
                     let last_msg_id_cl = t.messages.last().map(|m| m.id.clone()).unwrap_or_default();
@@ -1883,7 +1887,7 @@ impl ZaloGuiApp {
         let (name, is_group, avatar, ts, fallback_time, is_cloud, is_pinned) = {
             let t = &self.threads[i];
             (
-                t.name.clone(),
+                self.contact_display_name(&t.id, &t.name),
                 t.is_group,
                 t.avatar.clone(),
                 t.messages.last().map(|m| normalize_ts_ms(m.ts)).unwrap_or(0),

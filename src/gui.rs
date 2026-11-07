@@ -499,6 +499,7 @@ struct AppSettings {
     mic_gain_percent: u32,
     // 8. Quản lý hội thoại (Context menu: Ghim, Phân loại, Tắt thông báo, Ẩn)
     pinned_threads: Vec<String>,
+    contact_nicknames: HashMap<String, String>,
     muted_threads: HashMap<String, i64>,
     hidden_threads: HashSet<String>,
     thread_labels: HashMap<String, String>,
@@ -599,6 +600,7 @@ impl Default for AppSettings {
             selected_camera_device: String::new(),
             mic_gain_percent: 100,
             pinned_threads: Vec::new(),
+            contact_nicknames: HashMap::new(),
             muted_threads: HashMap::new(),
             hidden_threads: HashSet::new(),
             thread_labels: HashMap::new(),
@@ -804,6 +806,9 @@ pub struct ZaloGuiApp {
     cskh: crate::cskh::giao_dien::Trang,
     settings_modal_open: bool,
     settings_tab: SettingsTab,
+    nickname_dialog_open: bool,
+    nickname_edit_id: String,
+    nickname_edit_value: String,
     notification_authorization: crate::native_notifications::AuthorizationState,
     settings: AppSettings,
     settings_blur_tex: Option<TextureHandle>,
@@ -908,6 +913,29 @@ fn thread_texts(threads: &[Thread]) -> impl Iterator<Item = &str> {
 }
 
 impl ZaloGuiApp {
+    fn contact_nickname_key(user_id: &str) -> String {
+        let user_id = user_id.trim();
+        let unprefixed = user_id
+            .strip_prefix('u')
+            .or_else(|| user_id.strip_prefix('U'));
+        match unprefixed {
+            Some(id) if !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()) => {
+                id.to_owned()
+            }
+            _ => user_id.to_owned(),
+        }
+    }
+
+    fn contact_display_name(&self, user_id: &str, default_name: &str) -> String {
+        self.settings
+            .contact_nicknames
+            .get(&Self::contact_nickname_key(user_id))
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(default_name)
+            .to_owned()
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         mut session: Session,
@@ -1253,6 +1281,9 @@ impl ZaloGuiApp {
             cskh: Default::default(),
             settings_modal_open: false,
             settings_tab: SettingsTab::General,
+            nickname_dialog_open: false,
+            nickname_edit_id: String::new(),
+            nickname_edit_value: String::new(),
             notification_authorization: Default::default(),
             settings,
             settings_blur_tex: None,
