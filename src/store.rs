@@ -118,6 +118,18 @@ impl MessageStore {
         Ok(Self { conn })
     }
 
+    /// Compact the database when its allocated page size exceeds `max_bytes`.
+    pub fn compact_if_needed(&self, max_bytes: u64) -> Result<bool> {
+        let pages: u64 = self.conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let page_size: u64 = self.conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        if pages.saturating_mul(page_size) <= max_bytes {
+            return Ok(false);
+        }
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        Ok(true)
+    }
+
     /// Store a gap detected while syncing history; repeated gaps with the same start are extended.
     pub fn add_missing_range(&self, conv_id: &str, from_ts: i64, to_ts: i64, reason: &str) -> Result<bool> {
         let extended = self.conn.execute(
