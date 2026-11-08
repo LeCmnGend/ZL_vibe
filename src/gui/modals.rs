@@ -8389,6 +8389,286 @@ impl ZaloGuiApp {
         }
     }
 
+    pub(super) fn render_group_add_members_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        pal: &ThemePalette,
+    ) {
+        let Some(group_id) = self.group_add_dialog_id.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = false;
+        egui::Window::new("Thêm thành viên")
+            .id(Id::new("group_add_members_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(420.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(pal.bg_elevated)
+                    .rounding(Rounding::same(12.0))
+                    .inner_margin(Margin::symmetric(18.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Chọn bạn bè để thêm vào nhóm ({})",
+                        self.group_add_selected_ids.len()
+                    ))
+                    .color(pal.text_secondary),
+                );
+                ui.add_enabled(
+                    !self.group_add_submitting,
+                    egui::TextEdit::singleline(&mut self.group_add_search)
+                        .hint_text("Tìm bạn bè")
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(6.0);
+
+                let current_members: HashSet<String> = self
+                    .group_members_map
+                    .get(&group_id)
+                    .into_iter()
+                    .flatten()
+                    .map(|member| member.id.clone())
+                    .chain(
+                        self.threads
+                            .iter()
+                            .find(|thread| thread.id == group_id)
+                            .into_iter()
+                            .flat_map(|thread| thread.presentation.members.iter())
+                            .map(|member| member.id.clone()),
+                    )
+                    .collect();
+                let query = self.group_add_search.trim().to_lowercase();
+                let folded_query = fold_vn_search(&query);
+                let mut friends: Vec<(String, String)> = self
+                    .threads
+                    .iter()
+                    .filter(|thread| {
+                        !thread.is_group
+                            && !thread.name.contains("Cloud của tôi")
+                            && !current_members.contains(&thread.id)
+                    })
+                    .map(|thread| {
+                        (
+                            thread.id.clone(),
+                            self.contact_display_name(&thread.id, &thread.name),
+                        )
+                    })
+                    .filter(|(_, name)| {
+                        query.is_empty() || matches_vn_query(name, &query, &folded_query)
+                    })
+                    .collect();
+                friends
+                    .sort_by(|left, right| fold_vn_search(&left.1).cmp(&fold_vn_search(&right.1)));
+
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (user_id, name) in friends {
+                            let mut selected = self.group_add_selected_ids.contains(&user_id);
+                            if ui
+                                .add_enabled(
+                                    !self.group_add_submitting,
+                                    egui::Checkbox::new(&mut selected, name),
+                                )
+                                .changed()
+                            {
+                                if selected {
+                                    self.group_add_selected_ids.insert(user_id);
+                                } else {
+                                    self.group_add_selected_ids.remove(&user_id);
+                                }
+                            }
+                        }
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add_enabled(
+                                !self.group_add_submitting
+                                    && !self.group_add_selected_ids.is_empty(),
+                                egui::Button::new("Thêm vào nhóm")
+                                    .fill(pal.primary)
+                                    .rounding(Rounding::same(7.0)),
+                            )
+                            .clicked()
+                        {
+                            submit = true;
+                        }
+                        if ui
+                            .add_enabled(!self.group_add_submitting, egui::Button::new("Huỷ"))
+                            .clicked()
+                        {
+                            self.group_add_dialog_id = None;
+                        }
+                    });
+                });
+                if self.group_add_submitting {
+                    ui.label(RichText::new("Đang thêm thành viên…").color(pal.text_muted));
+                }
+            });
+
+        if !open && !self.group_add_submitting {
+            self.group_add_dialog_id = None;
+        }
+        if submit {
+            let mut member_ids: Vec<String> = self.group_add_selected_ids.iter().cloned().collect();
+            member_ids.sort();
+            if let Some(tx) = WORKER_TX.get() {
+                if tx
+                    .send(WorkerCmd::AddGroupMembers {
+                        group_id,
+                        member_ids,
+                    })
+                    .is_ok()
+                {
+                    self.group_add_submitting = true;
+                } else {
+                    self.show_toast("Không gửi được yêu cầu thêm thành viên");
+                }
+            } else {
+                self.show_toast("Hãy đăng nhập để thêm thành viên");
+            }
+        }
+    }
+
+    pub(super) fn render_group_manage_dialog(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
+        let Some(group_id) = self.group_manage_dialog_id.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = None;
+        let mut retry_load = false;
+        egui::Window::new("Quản lý nhóm")
+            .id(Id::new("group_manage_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(440.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(pal.bg_elevated)
+                    .rounding(Rounding::same(12.0))
+                    .inner_margin(Margin::symmetric(18.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("Cài đặt quyền và hoạt động của nhóm").color(pal.text_secondary),
+                );
+                if self.group_manage_loading {
+                    ui.add_space(18.0);
+                    ui.vertical_centered(|ui| {
+                        ui.spinner();
+                        ui.label("Đang tải cài đặt nhóm…");
+                    });
+                } else {
+                    if let Some(error) = &self.group_manage_error {
+                        ui.label(RichText::new(error).color(pal.danger));
+                    }
+                    if let Some(mut settings) = self.group_manage_settings.clone() {
+                        ui.add_space(8.0);
+                        ui.checkbox(&mut settings.block_name, "Chỉ quản trị viên đổi tên nhóm");
+                        ui.checkbox(
+                            &mut settings.sign_admin_msg,
+                            "Gắn nhãn quản trị viên vào tin nhắn",
+                        );
+                        ui.checkbox(&mut settings.set_topic_only, "Chỉ quản trị viên đổi chủ đề");
+                        ui.checkbox(
+                            &mut settings.enable_msg_history,
+                            "Cho thành viên mới xem lịch sử",
+                        );
+                        ui.checkbox(&mut settings.join_approval, "Duyệt thành viên xin vào nhóm");
+                        ui.checkbox(&mut settings.lock_create_post, "Hạn chế tạo bài đăng");
+                        ui.checkbox(&mut settings.lock_create_poll, "Hạn chế tạo bình chọn");
+                        ui.checkbox(
+                            &mut settings.lock_send_msg,
+                            "Chỉ quản trị viên gửi tin nhắn",
+                        );
+                        ui.checkbox(&mut settings.lock_view_member, "Ẩn danh sách thành viên");
+                        self.group_manage_settings = Some(settings.clone());
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add_enabled(
+                                        !self.group_manage_saving,
+                                        egui::Button::new("Lưu cài đặt")
+                                            .fill(pal.primary)
+                                            .rounding(Rounding::same(7.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    submit = Some(settings.clone());
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !self.group_manage_saving,
+                                        egui::Button::new("Huỷ"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.group_manage_dialog_id = None;
+                                }
+                            });
+                        });
+                        if self.group_manage_saving {
+                            ui.label(RichText::new("Đang lưu cài đặt…").color(pal.text_muted));
+                        }
+                    } else if self.group_manage_error.is_some()
+                        && ui.button("Thử tải lại").clicked()
+                    {
+                        retry_load = true;
+                    }
+                }
+            });
+
+        if !open && !self.group_manage_saving {
+            self.group_manage_dialog_id = None;
+        }
+        if retry_load {
+            let request = WorkerCmd::FetchGroupSettings {
+                group_id: group_id.clone(),
+            };
+            match WORKER_TX.get().map(|tx| tx.send(request)) {
+                Some(Ok(())) => {
+                    self.group_manage_loading = true;
+                    self.group_manage_error = None;
+                }
+                Some(Err(_)) => {
+                    self.group_manage_error =
+                        Some("Không gửi được yêu cầu tải cài đặt nhóm".into());
+                }
+                None => {
+                    self.group_manage_error = Some("Hãy đăng nhập để quản lý nhóm".into());
+                }
+            }
+        }
+        if let Some(settings) = submit {
+            if let Some(tx) = WORKER_TX.get() {
+                if tx
+                    .send(WorkerCmd::UpdateGroupSettings { group_id, settings })
+                    .is_ok()
+                {
+                    self.group_manage_saving = true;
+                    self.group_manage_error = None;
+                } else {
+                    self.group_manage_error = Some("Không gửi được yêu cầu lưu cài đặt".into());
+                }
+            } else {
+                self.group_manage_error = Some("Hãy đăng nhập để quản lý nhóm".into());
+            }
+        }
+    }
+
     pub(super) fn trigger_feed_timeline_load(&mut self) {
         if self.feed_loading_timeline {
             return;

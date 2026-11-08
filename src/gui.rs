@@ -119,6 +119,18 @@ pub enum GuiEvent {
         group_id: String,
         members: Vec<crate::chat::SidebarMember>,
     },
+    GroupMembersAdded {
+        group_id: String,
+        result: Result<(), String>,
+    },
+    GroupSettingsLoaded {
+        group_id: String,
+        result: Result<crate::chat::GroupSettings, String>,
+    },
+    GroupSettingsUpdated {
+        group_id: String,
+        result: Result<(), String>,
+    },
     PhoneLookupSuccess(crate::chat::PhoneLookupResult),
     PhoneLookupFailed(String),
     GroupCreationFinished(Result<String, String>),
@@ -811,6 +823,15 @@ pub struct ZaloGuiApp {
     phone_lookup_result: Option<crate::chat::PhoneLookupResult>,
     phone_lookup_error: Option<String>,
     group_create_dialog_open: bool,
+    group_add_dialog_id: Option<String>,
+    group_add_selected_ids: HashSet<String>,
+    group_add_search: String,
+    group_add_submitting: bool,
+    group_manage_dialog_id: Option<String>,
+    group_manage_settings: Option<crate::chat::GroupSettings>,
+    group_manage_loading: bool,
+    group_manage_saving: bool,
+    group_manage_error: Option<String>,
     group_create_name: String,
     group_create_search: String,
     group_create_selected: HashSet<String>,
@@ -1295,6 +1316,15 @@ impl ZaloGuiApp {
             phone_lookup_result: None,
             phone_lookup_error: None,
             group_create_dialog_open: false,
+            group_add_dialog_id: None,
+            group_add_selected_ids: HashSet::new(),
+            group_add_search: String::new(),
+            group_add_submitting: false,
+            group_manage_dialog_id: None,
+            group_manage_settings: None,
+            group_manage_loading: false,
+            group_manage_saving: false,
+            group_manage_error: None,
             group_create_name: String::new(),
             group_create_search: String::new(),
             group_create_selected: HashSet::new(),
@@ -2335,6 +2365,51 @@ impl ZaloGuiApp {
                     }
                     self.group_members_map.insert(group_id, members);
                 }
+                GuiEvent::GroupMembersAdded { group_id, result } => {
+                    if self.group_add_dialog_id.as_deref() == Some(group_id.as_str()) {
+                        self.group_add_submitting = false;
+                        match result {
+                            Ok(()) => {
+                                self.group_add_dialog_id = None;
+                                self.group_add_selected_ids.clear();
+                                self.show_toast("Đã gửi lời mời thêm thành viên vào nhóm");
+                                if let Some(tx) = WORKER_TX.get() {
+                                    let _ = tx.send(WorkerCmd::FetchGroupMembers {
+                                        group_id: group_id.clone(),
+                                    });
+                                }
+                            }
+                            Err(error) => {
+                                self.show_toast(format!("Không thêm được thành viên: {error}"))
+                            }
+                        }
+                    }
+                }
+                GuiEvent::GroupSettingsLoaded { group_id, result } => {
+                    if self.group_manage_dialog_id.as_deref() == Some(group_id.as_str()) {
+                        self.group_manage_loading = false;
+                        match result {
+                            Ok(settings) => {
+                                self.group_manage_settings = Some(settings);
+                                self.group_manage_error = None;
+                            }
+                            Err(error) => self.group_manage_error = Some(error),
+                        }
+                    }
+                }
+                GuiEvent::GroupSettingsUpdated { group_id, result } => {
+                    if self.group_manage_dialog_id.as_deref() == Some(group_id.as_str()) {
+                        self.group_manage_saving = false;
+                        match result {
+                            Ok(()) => {
+                                self.group_manage_dialog_id = None;
+                                self.group_manage_settings = None;
+                                self.show_toast("Đã cập nhật cài đặt nhóm");
+                            }
+                            Err(error) => self.group_manage_error = Some(error),
+                        }
+                    }
+                }
                 GuiEvent::FriendStatusChecked {
                     user_id,
                     status,
@@ -3051,6 +3126,8 @@ impl eframe::App for ZaloGuiApp {
         // Auto-notification modal for new GitHub Releases (works on both Login & Chat screens)
         self.render_update_notification_modal(ctx, &pal);
         self.render_account_info_modal(ctx, &pal);
+        self.render_group_add_members_dialog(ctx, &pal);
+        self.render_group_manage_dialog(ctx, &pal);
 
         if !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
             let screen = ctx.screen_rect();

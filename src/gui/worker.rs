@@ -193,6 +193,17 @@ pub enum WorkerCmd {
     FetchGroupMembers {
         group_id: String,
     },
+    AddGroupMembers {
+        group_id: String,
+        member_ids: Vec<String>,
+    },
+    FetchGroupSettings {
+        group_id: String,
+    },
+    UpdateGroupSettings {
+        group_id: String,
+        settings: crate::chat::GroupSettings,
+    },
     FetchMySocialAvatars {
         page: u32,
         count: u32,
@@ -3350,6 +3361,54 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 let _ = gui_tx_clone.send(GuiEvent::GroupMembersLoaded {
                                     group_id,
                                     members: Vec::new(),
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::AddGroupMembers { group_id, member_ids } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::add_group_members(&s, &group_id, &member_ids)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupMembersAdded {
+                                    group_id,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::FetchGroupSettings { group_id } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::get_group_settings(&s, &group_id)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupSettingsLoaded {
+                                    group_id,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::UpdateGroupSettings { group_id, settings } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::update_group_settings(&s, &group_id, &settings)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupSettingsUpdated {
+                                    group_id,
+                                    result,
                                 });
                                 ctx_clone.request_repaint();
                             });

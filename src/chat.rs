@@ -1319,6 +1319,146 @@ pub async fn create_group(s: &Session, name: &str, member_ids: &[String]) -> Res
     Ok(group_id.to_owned())
 }
 
+/// Settings exposed by the Zalo group `setting` object and zca-js update API.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GroupSettings {
+    pub block_name: bool,
+    pub sign_admin_msg: bool,
+    pub set_topic_only: bool,
+    pub enable_msg_history: bool,
+    pub join_approval: bool,
+    pub lock_create_post: bool,
+    pub lock_create_poll: bool,
+    pub lock_send_msg: bool,
+    pub lock_view_member: bool,
+}
+
+impl GroupSettings {
+    fn from_info(info: &Value) -> Option<Self> {
+        let setting = info.get("setting")?;
+        let enabled = |key: &str| match setting.get(key)? {
+            Value::Bool(value) => Some(*value),
+            Value::Number(value) => value.as_i64().map(|value| value != 0),
+            Value::String(value) => value.parse::<i64>().ok().map(|value| value != 0),
+            _ => None,
+        };
+        Some(Self {
+            block_name: enabled("blockName").unwrap_or(false),
+            sign_admin_msg: enabled("signAdminMsg").unwrap_or(false),
+            set_topic_only: enabled("setTopicOnly").unwrap_or(false),
+            enable_msg_history: enabled("enableMsgHistory").unwrap_or(false),
+            join_approval: enabled("joinAppr").unwrap_or(false),
+            lock_create_post: enabled("lockCreatePost").unwrap_or(false),
+            lock_create_poll: enabled("lockCreatePoll").unwrap_or(false),
+            lock_send_msg: enabled("lockSendMsg").unwrap_or(false),
+            lock_view_member: enabled("lockViewMember").unwrap_or(false),
+        })
+    }
+}
+
+/// Read group settings from the existing `getmg-v2` group profile response.
+pub async fn get_group_settings(s: &Session, group_id: &str) -> Result<GroupSettings> {
+    let (groups, _) = fetch_group_profiles(s, &[group_id.to_owned()]).await?;
+    let clean_id = group_id
+        .trim_start_matches("group_")
+        .trim_start_matches('g')
+        .trim_start_matches('G');
+    let info = groups
+        .get(clean_id)
+        .ok_or_else(|| anyhow::anyhow!("Không lấy được thông tin nhóm"))?;
+    GroupSettings::from_info(info)
+        .ok_or_else(|| anyhow::anyhow!("Máy chủ chưa trả đủ cài đặt nhóm"))
+}
+
+/// Update supported group settings using zca-js's `/api/group/setting/update` payload.
+pub async fn update_group_settings(
+    s: &Session,
+    group_id: &str,
+    settings: &GroupSettings,
+) -> Result<()> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let clean_group_id = group_id
+        .trim_start_matches("group_")
+        .trim_start_matches('g')
+        .trim_start_matches('G');
+    let enabled = |value: bool| if value { 1 } else { 0 };
+    let params = s.encoded_params(&json!({
+        "blockName": enabled(settings.block_name),
+        "signAdminMsg": enabled(settings.sign_admin_msg),
+        "setTopicOnly": enabled(settings.set_topic_only),
+        "enableMsgHistory": enabled(settings.enable_msg_history),
+        "joinAppr": enabled(settings.join_approval),
+        "lockCreatePost": enabled(settings.lock_create_post),
+        "lockCreatePoll": enabled(settings.lock_create_poll),
+        "lockSendMsg": enabled(settings.lock_send_msg),
+        "lockViewMember": enabled(settings.lock_view_member),
+        "bannFeature": 0,
+        "dirtyMedia": 0,
+        "banDuration": 0,
+        "blocked_members": [],
+        "grid": clean_group_id,
+        "imei": s.imei,
+    }))?;
+    let path = format!(
+        "/api/group/setting/update?{}&params={params}",
+        s.common_params()
+    );
+    let response = s.get_endpoint("group", &path).await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    ensure_action_ok(
+        "Cập nhật cài đặt nhóm",
+        "chat::update_group_settings",
+        &response,
+    )
+}
+
+/// Invite friends using zca-js's `/api/group/invite/v2` payload.
+pub async fn add_group_members(s: &Session, group_id: &str, member_ids: &[String]) -> Result<()> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let mut seen = std::collections::HashSet::new();
+    let members: Vec<String> = member_ids
+        .iter()
+        .map(|id| {
+            id.trim()
+                .strip_prefix('u')
+                .or_else(|| id.trim().strip_prefix('U'))
+                .unwrap_or_else(|| id.trim())
+                .to_owned()
+        })
+        .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+        .collect();
+    if members.is_empty() {
+        anyhow::bail!("hãy chọn ít nhất một thành viên");
+    }
+    let clean_group_id = group_id
+        .trim_start_matches("group_")
+        .trim_start_matches('g')
+        .trim_start_matches('G');
+    let member_types = vec![-1; members.len()];
+    let params = s.encoded_params(&json!({
+        "grid": clean_group_id,
+        "members": members,
+        "memberTypes": member_types,
+        "imei": s.imei,
+        "clientLang": "vi",
+    }))?;
+    let path = format!("/api/group/invite/v2?{}", s.common_params());
+    let response = s
+        .post_endpoint_form("group", &path, format!("params={params}"))
+        .await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    ensure_action_ok(
+        "Thêm thành viên vào nhóm",
+        "chat::add_group_members",
+        &response,
+    )
+}
+
 /// `/api/social/friend/getfriends` — the friend list.
 ///
 /// Tries `s.domains.friend` (the canonical `tt-friend-wpa.chat.zalo.me` host) first and

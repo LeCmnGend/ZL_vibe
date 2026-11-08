@@ -334,37 +334,243 @@ impl ZaloGuiApp {
                                     ui.label(RichText::new(sub_txt).size(12.0).color(sub_col));
 
                                     ui.add_space(14.0);
-                                    // Quick Action Buttons (Sync & Pin/Star Filter)
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(34.0);
-                                        let sync_btn = egui::Button::new(
-                                            RichText::new("Làm mới")
-                                                .size(11.5)
-                                                .color(pal.text_secondary),
-                                        )
-                                        .fill(pal.bg_elevated)
-                                        .stroke(Stroke::new(1.0_f32, pal.border))
-                                        .rounding(Rounding::same(8.0))
-                                        .min_size(Vec2::new(92.0, 30.0));
-                                        if ui
-                                            .add(sync_btn)
-                                            .on_hover_cursor(CursorIcon::PointingHand)
-                                            .clicked()
-                                        {
+                                    if d_is_group {
+                                        let now = crate::login::unix_now() as i64;
+                                        let is_muted = self
+                                            .settings
+                                            .muted_threads
+                                            .get(d_id)
+                                            .is_some_and(|until| *until == -1 || *until > now)
+                                            || self
+                                                .threads
+                                                .get(self.selected_thread_index)
+                                                .is_some_and(|thread| {
+                                                    thread.presentation.muted
+                                                        || thread.unread.is_muted()
+                                                });
+                                        let is_pinned = self.settings.pinned_threads.contains(d_id)
+                                            || self
+                                                .threads
+                                                .get(self.selected_thread_index)
+                                                .is_some_and(|thread| thread.presentation.pinned)
+                                            || crate::chat::is_pinned_in_list(
+                                                d_id,
+                                                true,
+                                                &self.settings.pinned_threads,
+                                            );
+                                        let draw_action = |ui: &mut egui::Ui,
+                                                           icon: &str,
+                                                           label: &str,
+                                                           active: bool| {
+                                            ui.vertical_centered(|ui| {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    Vec2::splat(34.0),
+                                                    Sense::click(),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    rect.center(),
+                                                    17.0,
+                                                    if active {
+                                                        pal.primary.linear_multiply(0.14)
+                                                    } else {
+                                                        pal.bg_elevated
+                                                    },
+                                                );
+                                                draw_lucide_icon(
+                                                    ui.painter(),
+                                                    rect.center(),
+                                                    icon,
+                                                    17.0,
+                                                    if active {
+                                                        pal.primary_hover
+                                                    } else {
+                                                        pal.text_primary
+                                                    },
+                                                );
+                                                let label_response = ui.add_sized(
+                                                    [62.0, 30.0],
+                                                    egui::Label::new(
+                                                        RichText::new(label)
+                                                            .size(10.5)
+                                                            .color(pal.text_primary),
+                                                    )
+                                                    .wrap(),
+                                                );
+                                                response
+                                                    .union(label_response)
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .clicked()
+                                            })
+                                            .inner
+                                        };
+                                        let (mut mute_clicked, mut pin_clicked) = (false, false);
+                                        let (mut add_clicked, mut manage_clicked) = (false, false);
+                                        ui.horizontal(|ui| {
+                                            mute_clicked = draw_action(
+                                                ui,
+                                                lucide::BELL,
+                                                if is_muted {
+                                                    "Mở lại\nthông báo"
+                                                } else {
+                                                    "Tắt\nthông báo"
+                                                },
+                                                is_muted,
+                                            );
+                                            pin_clicked = draw_action(
+                                                ui,
+                                                lucide::PIN,
+                                                if is_pinned {
+                                                    "Bỏ ghim\nhội thoại"
+                                                } else {
+                                                    "Ghim\nhội thoại"
+                                                },
+                                                is_pinned,
+                                            );
+                                            add_clicked = draw_action(
+                                                ui,
+                                                lucide::USER_PLUS,
+                                                "Thêm\nthành viên",
+                                                false,
+                                            );
+                                            manage_clicked = draw_action(
+                                                ui,
+                                                lucide::SETTINGS,
+                                                "Quản lý\nnhóm",
+                                                false,
+                                            );
+                                        });
+                                        if mute_clicked {
+                                            let mute = !is_muted;
+                                            if mute {
+                                                self.settings
+                                                    .muted_threads
+                                                    .insert(d_id.clone(), -1);
+                                            } else {
+                                                self.settings.muted_threads.remove(d_id);
+                                            }
+                                            if let Some(thread) = self
+                                                .threads
+                                                .iter_mut()
+                                                .find(|thread| thread.id == d_id.as_str())
+                                            {
+                                                thread.presentation.muted = mute;
+                                                thread.unread.muted = mute;
+                                                thread.unread.muted_until = None;
+                                                thread.unread.settings_fresh = true;
+                                                thread.unread.fresh = true;
+                                            }
+                                            self.settings.save();
+                                            self.persist_threads_async();
                                             if let Some(tx) = WORKER_TX.get() {
-                                                let _ = tx.send(WorkerCmd::RefreshThreads);
-                                                let _ = tx.send(WorkerCmd::LoadGroupHistory {
-                                                    group_id: d_id.clone(),
-                                                    is_group: d_is_group,
-                                                    have: d_msg_count,
+                                                let _ = tx.send(WorkerCmd::MuteThread {
+                                                    thread_id: d_id.clone(),
+                                                    is_group: true,
+                                                    duration_sec: -1,
+                                                    mute,
                                                 });
                                             }
-                                            self.show_toast("Đang làm mới hội thoại…");
+                                            self.show_toast(if mute {
+                                                "Đã tắt thông báo nhóm"
+                                            } else {
+                                                "Đã bật lại thông báo nhóm"
+                                            });
                                         }
+                                        if pin_clicked {
+                                            let pin = !is_pinned;
+                                            if pin {
+                                                if !self.settings.pinned_threads.contains(d_id) {
+                                                    self.settings.pinned_threads.push(d_id.clone());
+                                                }
+                                            } else {
+                                                self.settings
+                                                    .pinned_threads
+                                                    .retain(|id| id != d_id);
+                                            }
+                                            if let Some(thread) = self
+                                                .threads
+                                                .iter_mut()
+                                                .find(|thread| thread.id == d_id.as_str())
+                                            {
+                                                thread.presentation.pinned = pin;
+                                            }
+                                            self.settings.save();
+                                            self.persist_threads_async();
+                                            if let Some(tx) = WORKER_TX.get() {
+                                                let _ = tx.send(WorkerCmd::PinThread {
+                                                    thread_id: d_id.clone(),
+                                                    is_group: true,
+                                                    pin,
+                                                });
+                                            }
+                                            self.show_toast(if pin {
+                                                "Đã ghim hội thoại"
+                                            } else {
+                                                "Đã bỏ ghim hội thoại"
+                                            });
+                                        }
+                                        if add_clicked {
+                                            self.group_add_dialog_id = Some(d_id.clone());
+                                            self.group_add_selected_ids.clear();
+                                            self.group_add_search.clear();
+                                            self.group_add_submitting = false;
+                                        }
+                                        if manage_clicked {
+                                            self.group_manage_dialog_id = Some(d_id.clone());
+                                            self.group_manage_settings = None;
+                                            self.group_manage_loading = true;
+                                            self.group_manage_saving = false;
+                                            self.group_manage_error = None;
+                                            let request = WorkerCmd::FetchGroupSettings {
+                                                group_id: d_id.clone(),
+                                            };
+                                            match WORKER_TX.get().map(|tx| tx.send(request)) {
+                                                Some(Ok(())) => {}
+                                                Some(Err(_)) => {
+                                                    self.group_manage_loading = false;
+                                                    self.group_manage_error = Some(
+                                                        "Không gửi được yêu cầu tải cài đặt nhóm"
+                                                            .into(),
+                                                    );
+                                                }
+                                                None => {
+                                                    self.group_manage_loading = false;
+                                                    self.group_manage_error = Some(
+                                                        "Hãy đăng nhập để quản lý nhóm".into(),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // Quick actions for personal conversations.
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(34.0);
+                                            let sync_btn = egui::Button::new(
+                                                RichText::new("Làm mới")
+                                                    .size(11.5)
+                                                    .color(pal.text_secondary),
+                                            )
+                                            .fill(pal.bg_elevated)
+                                            .stroke(Stroke::new(1.0_f32, pal.border))
+                                            .rounding(Rounding::same(8.0))
+                                            .min_size(Vec2::new(92.0, 30.0));
+                                            if ui
+                                                .add(sync_btn)
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .clicked()
+                                            {
+                                                if let Some(tx) = WORKER_TX.get() {
+                                                    let _ = tx.send(WorkerCmd::RefreshThreads);
+                                                    let _ = tx.send(WorkerCmd::LoadGroupHistory {
+                                                        group_id: d_id.clone(),
+                                                        is_group: d_is_group,
+                                                        have: d_msg_count,
+                                                    });
+                                                }
+                                                self.show_toast("Đang làm mới hội thoại…");
+                                            }
 
-                                        let star_active = self.filter_starred_only;
-                                        let star_btn =
-                                            egui::Button::new(
+                                            let star_active = self.filter_starred_only;
+                                            let star_btn = egui::Button::new(
                                                 RichText::new(if star_active {
                                                     "Hiện tất cả"
                                                 } else {
@@ -385,14 +591,16 @@ impl ZaloGuiApp {
                                             .stroke(Stroke::new(1.0_f32, pal.border))
                                             .rounding(Rounding::same(8.0))
                                             .min_size(Vec2::new(92.0, 30.0));
-                                        if ui
-                                            .add(star_btn)
-                                            .on_hover_cursor(CursorIcon::PointingHand)
-                                            .clicked()
-                                        {
-                                            self.filter_starred_only = !self.filter_starred_only;
-                                        }
-                                    });
+                                            if ui
+                                                .add(star_btn)
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .clicked()
+                                            {
+                                                self.filter_starred_only =
+                                                    !self.filter_starred_only;
+                                            }
+                                        });
+                                    }
                                     if !d_is_group && !d_is_cloud {
                                         ui.add_space(6.0);
                                         let prof_btn = egui::Button::new(
