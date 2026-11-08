@@ -98,9 +98,11 @@ pub enum WorkerCmd {
         preset_path: Option<std::path::PathBuf>,
         original_hd: bool,
     },
-    TriggerScreenshot,
+    TriggerScreenshot {
+        include_zalo_window: bool,
+    },
     SendTyping {
-        thread_id: String,
+        to_id: String,
         is_group: bool,
     },
     FetchStickerImage {
@@ -123,6 +125,36 @@ pub enum WorkerCmd {
     },
     LookupPhone {
         phone: String,
+    },
+    DownloadAttachment {
+        url: String,
+        suggested_name: String,
+        thread_id: String,
+        dest_dir: String,
+    },
+    PrepareVideo {
+        url: String,
+    },
+    CancelDownload {
+        url: String,
+    },
+    DismissMissingRanges,
+    ComputeCacheSize,
+    ClearImageCache,
+    RunMaintenance,
+    CreateGroup {
+        name: String,
+        member_ids: Vec<String>,
+    },
+    UnlockHiddenChats {
+        owner: String,
+        generation: u64,
+        pin: String,
+    },
+    SyncContactAliases,
+    SetContactAlias {
+        user_id: String,
+        alias: String,
     },
     StartCall {
         partner_id: String,
@@ -162,7 +194,10 @@ pub enum WorkerCmd {
         user_id: String,
         user_name: String,
     },
-    PersistThreads(Vec<Thread>),
+    PersistThreads {
+        uin: String,
+        threads: Vec<Thread>,
+    },
     CheckForUpdates {
         silent: bool,
     },
@@ -382,6 +417,9 @@ async fn prefetch_missing_sticker_thumbnails(
 
 pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: egui::Context) {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerCmd>();
+    let cancels = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::<String, crate::download::CancelFlag>::new(),
+    ));
     let _ = WORKER_TX.set(cmd_tx);
 
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
@@ -547,9 +585,8 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                     let gui_tx_ws = gui_tx.clone();
                     let ctx_ws = egui_ctx.clone();
                     tokio::spawn(async move {
-                        let mut ws_rx: Option<
-                            tokio::sync::mpsc::UnboundedReceiver<crate::socket::WsEvent>,
-                        > = None;
+                        let mut ws_rx: Option<tokio::sync::mpsc::Receiver<crate::socket::WsEvent>> =
+                            None;
                         let mut ws_sek = String::new();
                         loop {
                             let s_snap = s_ws.lock().await.clone();
@@ -899,15 +936,17 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 });
                             });
                         }
-                        WorkerCmd::PersistThreads(threads_snapshot) => {
+                        WorkerCmd::PersistThreads { uin, threads } => {
                             tokio::task::spawn_blocking(move || {
-                                if let Ok(mut store) =
-                                    crate::store::MessageStore::open("zalo_history.db")
-                                {
-                                    let _ =
-                                        crate::store::persist_threads(&mut store, &threads_snapshot);
+                                let db_path = if uin.is_empty() {
+                                    crate::paths::history_db()
+                                } else {
+                                    crate::store::db_path_for_account(&uin).into()
+                                };
+                                if let Ok(mut store) = crate::store::MessageStore::open(db_path) {
+                                    let _ = crate::store::persist_threads(&mut store, &threads);
                                 }
-                                crate::chat::save_threads_cache(&threads_snapshot);
+                                crate::chat::save_threads_cache(&threads);
                             });
                         }
                         WorkerCmd::Logout => {
@@ -2864,11 +2903,15 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ctx_clone.request_repaint();
                             });
                         }
-                        WorkerCmd::TriggerScreenshot => {
+                        WorkerCmd::TriggerScreenshot { include_zalo_window } => {
                             let gui_tx_clone = gui_tx.clone();
                             let ctx_clone = egui_ctx.clone();
                             tokio::task::spawn_blocking(move || {
-                                capture_screen_interactive(gui_tx_clone, ctx_clone);
+                                capture_screen_interactive(
+                                    gui_tx_clone,
+                                    ctx_clone,
+                                    include_zalo_window,
+                                );
                             });
                         }
                         WorkerCmd::StartCall {
@@ -3684,6 +3727,10 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             let ctx_clone = egui_ctx.clone();
                             tokio::spawn(async move {
                                 let s = session_clone.lock().await.clone();
+                                let uin = s.login.as_ref().map(|login| login.uin.clone()).unwrap_or_default();
+                                let phone_status_capture =
+                                    std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+                                let progress_status = phone_status_capture.clone();
                                 let gui_tx_prog = gui_tx_clone.clone();
                                 let ctx_prog = ctx_clone.clone();
                                 let res = crate::history_sync::sync_phone_messages_opts(
@@ -3692,6 +3739,9 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     &mut threads,
                                     send_phone_prompt,
                                     move |progress, status| {
+                                        if let Ok(mut latest) = progress_status.lock() {
+                                            *latest = Some(status.clone());
+                                        }
                                         let _ = gui_tx_prog.send(GuiEvent::PhoneSyncProgress {
                                             progress,
                                             status,
@@ -3702,23 +3752,33 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 .await;
                                 let cancelled = crate::history_sync::PHONE_SYNC_CANCEL
                                     .load(Ordering::Relaxed);
+                                let phone_status = phone_status_capture
+                                    .lock()
+                                    .ok()
+                                    .and_then(|status| status.clone());
                                 match res {
                                     Ok((added, active_threads)) => {
                                         let _ = gui_tx_clone.send(GuiEvent::PhoneSyncFinished {
+                                            uin,
                                             threads,
                                             added,
                                             active_threads,
                                             cancelled,
                                             error: None,
+                                            phone_prompt_sent: send_phone_prompt,
+                                            phone_status,
                                         });
                                     }
                                     Err(e) => {
                                         let _ = gui_tx_clone.send(GuiEvent::PhoneSyncFinished {
+                                            uin,
                                             threads,
                                             added: 0,
                                             active_threads: 0,
                                             cancelled,
                                             error: Some(e.to_string()),
+                                            phone_prompt_sent: send_phone_prompt,
+                                            phone_status,
                                         });
                                     }
                                 }
@@ -3746,6 +3806,268 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ctx_clone.request_repaint();
                             });
                         }
+                        WorkerCmd::DownloadAttachment {
+                            url,
+                            suggested_name,
+                            thread_id: _,
+                            dest_dir,
+                        } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            let cancels_task = cancels.clone();
+                            tokio::spawn(async move {
+                                let flag = crate::download::CancelFlag::new();
+                                if let Ok(mut map) = cancels_task.lock() {
+                                    map.insert(url.clone(), flag.clone());
+                                }
+                                let result = match crate::download::validate_target_dir(&dest_dir) {
+                                    Err(error) => Err(error),
+                                    Ok(dir) => {
+                                        let client = session_clone.lock().await.streaming_http();
+                                        let tx = gui_tx_clone.clone();
+                                        let ctx = ctx_clone.clone();
+                                        let key = url.clone();
+                                        crate::download::download_to_dir_with_cancel(
+                                            &client,
+                                            &url,
+                                            &suggested_name,
+                                            &dir,
+                                            &flag,
+                                            move |progress| {
+                                                let _ = tx.send(GuiEvent::DownloadProgress {
+                                                    url: key.clone(),
+                                                    received: progress.received,
+                                                    total: progress.total,
+                                                });
+                                                ctx.request_repaint();
+                                            },
+                                        )
+                                        .await
+                                    }
+                                };
+                                if let Ok(mut map) = cancels_task.lock() {
+                                    map.remove(&url);
+                                }
+                                match result {
+                                    Ok(path) => {
+                                        let _ = gui_tx_clone
+                                            .send(GuiEvent::DownloadFinished { url, path });
+                                    }
+                                    Err(error) if error == crate::download::CANCELLED_ERROR => {
+                                        let _ = gui_tx_clone.send(GuiEvent::DownloadCancelled { url });
+                                    }
+                                    Err(error) => {
+                                        crate::logger::log_error("gui::download", &error);
+                                        let _ = gui_tx_clone
+                                            .send(GuiEvent::DownloadFailed { url, error });
+                                    }
+                                }
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::PrepareVideo { url } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            let cancels_task = cancels.clone();
+                            tokio::spawn(async move {
+                                let dir = crate::paths::video_cache_dir();
+                                let name = format!("{}.mp4", crate::crypto::md5_hex(url.trim()));
+                                let cached = dir.join(&name);
+                                let result = if cached.is_file() {
+                                    Ok(cached)
+                                } else {
+                                    let flag = crate::download::CancelFlag::new();
+                                    if let Ok(mut map) = cancels_task.lock() {
+                                        map.insert(url.clone(), flag.clone());
+                                    }
+                                    let client = session_clone.lock().await.streaming_http();
+                                    let tx = gui_tx_clone.clone();
+                                    let ctx = ctx_clone.clone();
+                                    let key = url.clone();
+                                    let downloaded = crate::download::download_to_dir_with_cancel(
+                                        &client,
+                                        &url,
+                                        &name,
+                                        &dir,
+                                        &flag,
+                                        move |progress| {
+                                            let _ = tx.send(GuiEvent::VideoProgress {
+                                                url: key.clone(),
+                                                received: progress.received,
+                                                total: progress.total,
+                                            });
+                                            ctx.request_repaint();
+                                        },
+                                    )
+                                    .await;
+                                    if let Ok(mut map) = cancels_task.lock() {
+                                        map.remove(&url);
+                                    }
+                                    downloaded
+                                };
+                                match result {
+                                    Ok(path) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::VideoReady { url, path });
+                                    }
+                                    Err(error) if error == crate::download::CANCELLED_ERROR => {
+                                        let _ = gui_tx_clone.send(GuiEvent::VideoCancelled { url });
+                                    }
+                                    Err(error) => {
+                                        crate::logger::log_error("gui::video", &error);
+                                        let _ = gui_tx_clone
+                                            .send(GuiEvent::VideoFailed { url, error });
+                                    }
+                                }
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::CancelDownload { url } => {
+                            if let Ok(map) = cancels.lock() {
+                                if let Some(flag) = map.get(&url) {
+                                    flag.cancel();
+                                }
+                            }
+                        }
+                        WorkerCmd::DismissMissingRanges => {
+                            let uin = session
+                                .lock()
+                                .await
+                                .login
+                                .as_ref()
+                                .map(|login| login.uin.clone())
+                                .unwrap_or_default();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Some(uin) = crate::sync_state::sanitize_uin(&uin) {
+                                    if let Ok(store) = crate::store::MessageStore::open(
+                                        crate::store::db_path_for_account(uin),
+                                    ) {
+                                        let _ = store.dismiss_missing_ranges();
+                                    }
+                                    let _ = gui_tx_clone.send(GuiEvent::MissingRanges {
+                                        uin: uin.to_owned(),
+                                        ranges: Vec::new(),
+                                    });
+                                    ctx_clone.request_repaint();
+                                }
+                            });
+                        }
+                        WorkerCmd::ComputeCacheSize => {
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let bytes = crate::download::dir_size(&crate::paths::cache_dir());
+                                let _ = gui_tx_clone.send(GuiEvent::CacheSizeComputed(bytes));
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::ClearImageCache => {
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let (freed, failed) =
+                                    crate::download::clear_dir_contents(&crate::paths::cache_dir());
+                                let _ = gui_tx_clone
+                                    .send(GuiEvent::ImageCacheCleared { freed, failed });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::RunMaintenance => {
+                            let uin = session
+                                .lock()
+                                .await
+                                .login
+                                .as_ref()
+                                .map(|login| login.uin.clone())
+                                .unwrap_or_default();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let (freed_bytes, removed_files) = crate::paths::trim_cache_dir();
+                                let db_compacted = crate::sync_state::sanitize_uin(&uin)
+                                    .and_then(|uin| {
+                                        crate::store::MessageStore::open(
+                                            crate::store::db_path_for_account(uin),
+                                        )
+                                        .ok()
+                                    })
+                                    .and_then(|store| store.compact_if_needed(0).ok())
+                                    .unwrap_or(false);
+                                let _ = gui_tx_clone.send(GuiEvent::MaintenanceDone {
+                                    freed_bytes,
+                                    removed_files,
+                                    db_compacted,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::SyncContactAliases => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::get_friend_aliases(&s)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::ContactAliasesSynced(result));
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::SetContactAlias { user_id, alias } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::set_friend_alias(&s, &user_id, &alias)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::ContactAliasSaved {
+                                    user_id,
+                                    alias,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::CreateGroup { name, member_ids } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::create_group(&s, &name, &member_ids)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupCreationFinished(result));
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::UnlockHiddenChats {
+                            owner,
+                            generation,
+                            mut pin,
+                        } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::hidden_chat::unlock(&s, &mut pin)
+                                    .await
+                                    .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::HiddenChatsUnlocked {
+                                    owner,
+                                    generation,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
                         WorkerCmd::DownloadFile {
                             url,
                             file_name,
@@ -3768,13 +4090,13 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             });
                         }
                         WorkerCmd::SendTyping {
-                            thread_id,
+                            to_id,
                             is_group,
                         } => {
                             let session_clone = session.clone();
                             tokio::spawn(async move {
                                 let s = session_clone.lock().await.clone();
-                                let _ = crate::chat::send_typing_indicator(&s, &thread_id, is_group).await;
+                                let _ = crate::chat::send_typing_indicator(&s, &to_id, is_group).await;
                             });
                         }
                         WorkerCmd::SendSeen {
@@ -4104,7 +4426,11 @@ async fn download_attachment_with_original_name(
     .map_err(|e| format!("Lỗi tác vụ lưu file: {e}"))?
 }
 
-pub(crate) fn capture_screen_interactive(gui_tx: crate::gui::GuiTx, ctx: egui::Context) {
+pub(crate) fn capture_screen_interactive(
+    gui_tx: crate::gui::GuiTx,
+    ctx: egui::Context,
+    _include_zalo_window: bool,
+) {
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("powershell")
