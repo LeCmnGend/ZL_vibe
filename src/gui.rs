@@ -213,7 +213,10 @@ pub enum GuiEvent {
         total: u64,
     },
     UpdateAppliedAndRestarting(String),
-    SocialProfileLoaded(Result<crate::feed::SocialUserProfile, String>),
+    SocialProfileLoaded {
+        target_uid: String,
+        result: Result<crate::feed::SocialUserProfile, String>,
+    },
     SocialAvatarsLoaded(Result<Vec<crate::feed::FeedMedia>, String>),
     SocialTimelineLoaded(
         Result<
@@ -783,6 +786,11 @@ pub struct ZaloGuiApp {
 
     info_drawer_open: bool,
     profile_menu_open: bool,
+    account_info_modal_open: bool,
+    account_info_uid: String,
+    account_info_profile: Option<crate::feed::SocialUserProfile>,
+    account_info_loading: bool,
+    account_info_error: Option<String>,
     /// "Xoá dữ liệu tin nhắn cục bộ" is pending confirmation (#21).
     wipe_confirm_open: bool,
     toast_notice: Option<(String, std::time::Instant)>,
@@ -1268,6 +1276,11 @@ impl ZaloGuiApp {
             status_msg: "Trực tuyến · Sẵn sàng".into(),
             info_drawer_open: settings.info_drawer_open,
             profile_menu_open: false,
+            account_info_modal_open: false,
+            account_info_uid: String::new(),
+            account_info_profile: None,
+            account_info_loading: false,
+            account_info_error: None,
             wipe_confirm_open: false,
             toast_notice: None,
             downloads: HashMap::new(),
@@ -2590,15 +2603,25 @@ impl ZaloGuiApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     std::process::exit(0);
                 }
-                GuiEvent::SocialProfileLoaded(res) => {
-                    self.feed_loading_profile = false;
-                    match res {
-                        Ok(prof) => {
-                            self.feed_profile = Some(prof);
-                            self.feed_profile_error = None;
+                GuiEvent::SocialProfileLoaded { target_uid, result } => {
+                    if self.feed_target_uid == target_uid {
+                        self.feed_loading_profile = false;
+                        match &result {
+                            Ok(profile) => {
+                                self.feed_profile = Some(profile.clone());
+                                self.feed_profile_error = None;
+                            }
+                            Err(error) => self.feed_profile_error = Some(error.clone()),
                         }
-                        Err(e) => {
-                            self.feed_profile_error = Some(e);
+                    }
+                    if self.account_info_uid == target_uid {
+                        self.account_info_loading = false;
+                        match result {
+                            Ok(profile) => {
+                                self.account_info_profile = Some(profile);
+                                self.account_info_error = None;
+                            }
+                            Err(error) => self.account_info_error = Some(error),
                         }
                     }
                 }
@@ -3027,6 +3050,7 @@ impl eframe::App for ZaloGuiApp {
 
         // Auto-notification modal for new GitHub Releases (works on both Login & Chat screens)
         self.render_update_notification_modal(ctx, &pal);
+        self.render_account_info_modal(ctx, &pal);
 
         if !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
             let screen = ctx.screen_rect();

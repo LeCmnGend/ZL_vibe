@@ -1,6 +1,17 @@
 use super::*;
 
 impl ZaloGuiApp {
+    fn open_account_info(&mut self, target_uid: String) {
+        self.account_info_modal_open = true;
+        self.account_info_uid = target_uid.clone();
+        self.account_info_profile = None;
+        self.account_info_loading = true;
+        self.account_info_error = None;
+        if let Some(tx) = WORKER_TX.get() {
+            let _ = tx.send(WorkerCmd::FetchSocialProfile { target_uid });
+        }
+    }
+
     fn chat_image_gallery(&self, thread_id: &str) -> Vec<ImageViewerPhoto> {
         let Some(thread) = self.threads.iter().find(|thread| thread.id == thread_id) else {
             return Vec::new();
@@ -847,15 +858,7 @@ impl ZaloGuiApp {
         }
 
         if let Some(uid) = view_profile_member.clone() {
-            self.feed_modal_open = true;
-            self.feed_modal_tab = FeedModalTab::Profile;
-            self.feed_target_uid = uid.clone();
-            self.feed_loading_profile = true;
-            self.feed_profile_error = None;
-            self.trigger_feed_timeline_load();
-            if let Some(tx) = WORKER_TX.get() {
-                let _ = tx.send(WorkerCmd::FetchSocialProfile { target_uid: uid });
-            }
+            self.open_account_info(uid);
         }
 
         // -------------------------------------------------------------------
@@ -2727,17 +2730,7 @@ impl ZaloGuiApp {
                                                 .map(|member| member.id.clone())
                                         });
                                     if let Some(uid) = uid {
-                                        self.feed_modal_open = true;
-                                        self.feed_modal_tab = FeedModalTab::Profile;
-                                        self.feed_target_uid = uid.clone();
-                                        self.feed_loading_profile = true;
-                                        self.feed_profile_error = None;
-                                        self.trigger_feed_timeline_load();
-                                        if let Some(tx) = WORKER_TX.get() {
-                                            let _ = tx.send(WorkerCmd::FetchSocialProfile {
-                                                target_uid: uid,
-                                            });
-                                        }
+                                        self.open_account_info(uid);
                                     } else {
                                         self.show_toast(format!(
                                             "Không tìm thấy hồ sơ thành viên @{name} trong nhóm đã tải"
@@ -2745,17 +2738,7 @@ impl ZaloGuiApp {
                                     }
                                 }
                                 BubbleAction::OpenSenderProfile(Some(uid)) => {
-                                    self.feed_modal_open = true;
-                                    self.feed_modal_tab = FeedModalTab::Profile;
-                                    self.feed_target_uid = uid.clone();
-                                    self.feed_loading_profile = true;
-                                    self.feed_profile_error = None;
-                                    self.trigger_feed_timeline_load();
-                                    if let Some(tx) = WORKER_TX.get() {
-                                        let _ = tx.send(WorkerCmd::FetchSocialProfile {
-                                            target_uid: uid,
-                                        });
-                                    }
+                                    self.open_account_info(uid);
                                 }
                                 BubbleAction::OpenSenderProfile(None) => {
                                     self.show_toast("Không xác định được tài khoản người gửi");

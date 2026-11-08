@@ -3257,7 +3257,10 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     .get_friend_social_profile(&target_uid)
                                     .await
                                     .map_err(|e| e.to_string());
-                                let _ = gui_tx_clone.send(GuiEvent::SocialProfileLoaded(res));
+                                let _ = gui_tx_clone.send(GuiEvent::SocialProfileLoaded {
+                                    target_uid,
+                                    result: res,
+                                });
                                 ctx_clone.request_repaint();
                             });
                         }

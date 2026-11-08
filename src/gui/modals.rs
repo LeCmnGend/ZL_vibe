@@ -189,6 +189,212 @@ pub(crate) fn compute_call_per_page(stage_w: f32) -> usize {
 }
 
 impl ZaloGuiApp {
+    pub(super) fn render_account_info_modal(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
+        if !self.account_info_modal_open {
+            return;
+        }
+        if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            self.account_info_modal_open = false;
+            return;
+        }
+
+        let screen = ctx.screen_rect();
+        let mut open = true;
+        egui::Area::new(Id::new("account_info_modal_backdrop"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
+                ui.painter().rect_filled(
+                    rect,
+                    Rounding::ZERO,
+                    Color32::from_black_alpha(if pal.is_dark { 170 } else { 110 }),
+                );
+                if response.clicked() {
+                    open = false;
+                }
+            });
+
+        let card_w = (screen.width() - 32.0).min(440.0).max(240.0);
+        egui::Area::new(Id::new("account_info_modal_card"))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(pal.bg_elevated)
+                    .stroke(Stroke::new(1.0, pal.border))
+                    .rounding(Rounding::same(10.0))
+                    .shadow(egui::epaint::Shadow {
+                        offset: Vec2::new(0.0, 10.0),
+                        blur: 28.0,
+                        spread: 0.0,
+                        color: Color32::from_black_alpha(100),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(card_w);
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+                            ui.label(
+                                RichText::new("Thông tin tài khoản")
+                                    .size(15.0)
+                                    .color(pal.text_primary)
+                                    .strong(),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add_sized(
+                                        Vec2::splat(32.0),
+                                        egui::Button::new(
+                                            RichText::new(lucide::X)
+                                                .size(16.0)
+                                                .color(pal.text_secondary),
+                                        )
+                                        .fill(Color32::TRANSPARENT),
+                                    )
+                                    .clicked()
+                                {
+                                    open = false;
+                                }
+                            });
+                        });
+                        ui.separator();
+
+                        egui::ScrollArea::vertical()
+                            .max_height((screen.height() - 100.0).max(180.0))
+                            .show(ui, |ui| {
+                                if let Some(profile) = self.account_info_profile.clone() {
+                                    let cover_size = Vec2::new(card_w, 150.0);
+                                    let (cover_rect, _) =
+                                        ui.allocate_exact_size(cover_size, Sense::hover());
+                                    ui.painter().rect_filled(
+                                        cover_rect,
+                                        Rounding::ZERO,
+                                        pal.bg_input,
+                                    );
+                                    if !profile.cover_url.is_empty()
+                                        && !profile.cover_url.ends_with("/default")
+                                    {
+                                        let key = format!(
+                                            "account_cover_{}",
+                                            crate::crypto::md5_hex(&profile.cover_url)
+                                        );
+                                        if !self.sticker_textures.contains_key(&key)
+                                            && self.loading_stickers.insert(key.clone())
+                                        {
+                                            if let Some(tx) = WORKER_TX.get() {
+                                                let _ = tx.send(WorkerCmd::FetchStickerImage {
+                                                    key: key.clone(),
+                                                    url: profile.cover_url.clone(),
+                                                });
+                                            }
+                                        }
+                                        if let Some(texture) = self.sticker_textures.get(&key) {
+                                            ui.painter().image(
+                                                texture.id(),
+                                                cover_rect,
+                                                Rect::from_min_max(
+                                                    Pos2::new(0.0, 0.0),
+                                                    Pos2::new(1.0, 1.0),
+                                                ),
+                                                Color32::WHITE,
+                                            );
+                                        }
+                                    }
+
+                                    ui.add_space(10.0);
+                                    ui.horizontal(|ui| {
+                                        let (avatar_rect, _) = ui.allocate_exact_size(
+                                            Vec2::splat(68.0),
+                                            Sense::hover(),
+                                        );
+                                        paint_user_avatar(
+                                            ui.painter(),
+                                            avatar_rect.center(),
+                                            34.0,
+                                            &profile.display_name,
+                                            false,
+                                            Some(&profile.avatar_url),
+                                            &self.sticker_textures,
+                                            &mut self.loading_stickers,
+                                        );
+                                        ui.add_space(6.0);
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                RichText::new(&profile.display_name)
+                                                    .size(16.0)
+                                                    .color(pal.text_primary)
+                                                    .strong(),
+                                            );
+                                            if !profile.zalo_name.is_empty()
+                                                && profile.zalo_name != profile.display_name
+                                            {
+                                                ui.label(
+                                                    RichText::new(&profile.zalo_name)
+                                                        .size(12.0)
+                                                        .color(pal.text_secondary),
+                                                );
+                                            }
+                                        });
+                                    });
+
+                                    ui.separator();
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new("Thông tin cá nhân")
+                                            .size(14.0)
+                                            .color(pal.text_primary)
+                                            .strong(),
+                                    );
+                                    ui.add_space(6.0);
+                                    let info_row = |ui: &mut egui::Ui, label: &str, value: &str| {
+                                        ui.horizontal_top(|ui| {
+                                            ui.add_sized(
+                                                [90.0, 20.0],
+                                                egui::Label::new(
+                                                    RichText::new(label)
+                                                        .size(12.0)
+                                                        .color(pal.text_muted),
+                                                ),
+                                            );
+                                            ui.label(
+                                                RichText::new(value)
+                                                    .size(12.0)
+                                                    .color(pal.text_primary),
+                                            );
+                                        });
+                                    };
+                                    if !profile.status.is_empty() {
+                                        info_row(ui, "Bio", &profile.status);
+                                    }
+                                    if !profile.sdob.is_empty() {
+                                        info_row(ui, "Ngày sinh", &profile.sdob);
+                                    }
+                                    info_row(ui, "UID", &profile.uid);
+                                    ui.add_space(12.0);
+                                } else if self.account_info_loading {
+                                    ui.add_space(32.0);
+                                    ui.vertical_centered(|ui| {
+                                        ui.spinner();
+                                        ui.label("Đang tải thông tin tài khoản…");
+                                    });
+                                    ui.add_space(32.0);
+                                } else if let Some(error) = &self.account_info_error {
+                                    ui.add_space(20.0);
+                                    ui.label(
+                                        RichText::new(format!("Không tải được thông tin: {error}"))
+                                            .color(pal.danger),
+                                    );
+                                    ui.add_space(20.0);
+                                }
+                            });
+                    });
+            });
+
+        if !open {
+            self.account_info_modal_open = false;
+        }
+    }
+
     pub(super) fn render_profile_popover(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
         if !self.profile_menu_open {
             return;
