@@ -197,6 +197,11 @@ pub enum WorkerCmd {
         group_id: String,
         member_ids: Vec<String>,
     },
+    ManageGroupMember {
+        group_id: String,
+        member_id: String,
+        action: crate::chat::GroupMemberAdminAction,
+    },
     FetchGroupSettings {
         group_id: String,
     },
@@ -3376,6 +3381,61 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     .map_err(|error| error.to_string());
                                 let _ = gui_tx_clone.send(GuiEvent::GroupMembersAdded {
                                     group_id,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::ManageGroupMember {
+                            group_id,
+                            member_id,
+                            action,
+                        } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = match action {
+                                    crate::chat::GroupMemberAdminAction::AddDeputy => {
+                                        crate::chat::set_group_deputy(
+                                            &s,
+                                            &group_id,
+                                            &member_id,
+                                            true,
+                                        )
+                                        .await
+                                    }
+                                    crate::chat::GroupMemberAdminAction::RemoveDeputy => {
+                                        crate::chat::set_group_deputy(
+                                            &s,
+                                            &group_id,
+                                            &member_id,
+                                            false,
+                                        )
+                                        .await
+                                    }
+                                    crate::chat::GroupMemberAdminAction::RemoveMember => {
+                                        crate::chat::remove_group_member(
+                                            &s,
+                                            &group_id,
+                                            &member_id,
+                                        )
+                                        .await
+                                    }
+                                    crate::chat::GroupMemberAdminAction::TransferOwnership => {
+                                        crate::chat::transfer_group_ownership(
+                                            &s,
+                                            &group_id,
+                                            &member_id,
+                                        )
+                                        .await
+                                    }
+                                }
+                                .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupMemberAdminFinished {
+                                    group_id,
+                                    action,
                                     result,
                                 });
                                 ctx_clone.request_repaint();

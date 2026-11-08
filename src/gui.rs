@@ -123,6 +123,11 @@ pub enum GuiEvent {
         group_id: String,
         result: Result<(), String>,
     },
+    GroupMemberAdminFinished {
+        group_id: String,
+        action: crate::chat::GroupMemberAdminAction,
+        result: Result<(), String>,
+    },
     GroupSettingsLoaded {
         group_id: String,
         result: Result<crate::chat::GroupSettings, String>,
@@ -731,6 +736,14 @@ pub(crate) struct IncomingPopupState {
     pub(crate) reply_draft: String,
 }
 
+#[derive(Clone)]
+struct GroupMemberActionConfirmation {
+    group_id: String,
+    member_id: String,
+    member_name: String,
+    action: crate::chat::GroupMemberAdminAction,
+}
+
 pub struct ZaloGuiApp {
     // Theme state
     dark_mode: bool,
@@ -832,6 +845,8 @@ pub struct ZaloGuiApp {
     group_manage_loading: bool,
     group_manage_saving: bool,
     group_manage_error: Option<String>,
+    group_member_action_confirmation: Option<GroupMemberActionConfirmation>,
+    group_member_action_pending: HashSet<String>,
     group_create_name: String,
     group_create_search: String,
     group_create_selected: HashSet<String>,
@@ -1325,6 +1340,8 @@ impl ZaloGuiApp {
             group_manage_loading: false,
             group_manage_saving: false,
             group_manage_error: None,
+            group_member_action_confirmation: None,
+            group_member_action_pending: HashSet::new(),
             group_create_name: String::new(),
             group_create_search: String::new(),
             group_create_selected: HashSet::new(),
@@ -2385,6 +2402,40 @@ impl ZaloGuiApp {
                         }
                     }
                 }
+                GuiEvent::GroupMemberAdminFinished {
+                    group_id,
+                    action,
+                    result,
+                } => {
+                    self.group_member_action_pending.remove(&group_id);
+                    match result {
+                        Ok(()) => {
+                            let text = match action {
+                                crate::chat::GroupMemberAdminAction::AddDeputy => {
+                                    "Đã bổ nhiệm phó nhóm"
+                                }
+                                crate::chat::GroupMemberAdminAction::RemoveDeputy => {
+                                    "Đã gỡ quyền phó nhóm"
+                                }
+                                crate::chat::GroupMemberAdminAction::RemoveMember => {
+                                    "Đã mời thành viên khỏi nhóm"
+                                }
+                                crate::chat::GroupMemberAdminAction::TransferOwnership => {
+                                    "Đã chuyển quyền trưởng nhóm"
+                                }
+                            };
+                            self.show_toast(text);
+                            if let Some(tx) = WORKER_TX.get() {
+                                let _ = tx.send(WorkerCmd::FetchGroupMembers {
+                                    group_id: group_id.clone(),
+                                });
+                            }
+                        }
+                        Err(error) => self.show_toast(format!(
+                            "Thao tác quản trị nhóm thất bại: {error}"
+                        )),
+                    }
+                }
                 GuiEvent::GroupSettingsLoaded { group_id, result } => {
                     if self.group_manage_dialog_id.as_deref() == Some(group_id.as_str()) {
                         self.group_manage_loading = false;
@@ -3128,6 +3179,7 @@ impl eframe::App for ZaloGuiApp {
         self.render_account_info_modal(ctx, &pal);
         self.render_group_add_members_dialog(ctx, &pal);
         self.render_group_manage_dialog(ctx, &pal);
+        self.render_group_member_action_confirm(ctx, &pal);
 
         if !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
             let screen = ctx.screen_rect();

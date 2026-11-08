@@ -8669,6 +8669,97 @@ impl ZaloGuiApp {
         }
     }
 
+    pub(super) fn render_group_member_action_confirm(
+        &mut self,
+        ctx: &egui::Context,
+        pal: &ThemePalette,
+    ) {
+        let Some(confirm) = self.group_member_action_confirmation.clone() else {
+            return;
+        };
+        let (title, message, confirm_label) = match confirm.action {
+            crate::chat::GroupMemberAdminAction::AddDeputy => (
+                "Bổ nhiệm phó nhóm",
+                format!("Bổ nhiệm {} làm phó nhóm?", confirm.member_name),
+                "Bổ nhiệm",
+            ),
+            crate::chat::GroupMemberAdminAction::RemoveDeputy => (
+                "Gỡ quyền phó nhóm",
+                format!("Gỡ quyền phó nhóm của {}?", confirm.member_name),
+                "Gỡ quyền",
+            ),
+            crate::chat::GroupMemberAdminAction::RemoveMember => (
+                "Mời thành viên khỏi nhóm",
+                format!("Mời {} khỏi nhóm?", confirm.member_name),
+                "Mời khỏi nhóm",
+            ),
+            crate::chat::GroupMemberAdminAction::TransferOwnership => (
+                "Chuyển quyền trưởng nhóm",
+                format!("Chuyển quyền trưởng nhóm cho {}?", confirm.member_name),
+                "Chuyển quyền",
+            ),
+        };
+        let mut open = true;
+        let mut cancel = false;
+        let mut submit = false;
+        egui::Window::new(title)
+            .id(Id::new("group_member_admin_confirm"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(360.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(pal.bg_elevated)
+                    .rounding(Rounding::same(12.0))
+                    .inner_margin(Margin::symmetric(18.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(RichText::new(message).color(pal.text_primary));
+                if confirm.action == crate::chat::GroupMemberAdminAction::TransferOwnership {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("Sau khi chuyển, bạn sẽ mất quyền trưởng nhóm.")
+                            .color(pal.danger),
+                    );
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button(confirm_label).clicked() {
+                            submit = true;
+                        }
+                        if ui.button("Huỷ").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            });
+
+        if !open || cancel {
+            self.group_member_action_confirmation = None;
+        }
+        if submit {
+            let request = WorkerCmd::ManageGroupMember {
+                group_id: confirm.group_id.clone(),
+                member_id: confirm.member_id,
+                action: confirm.action,
+            };
+            match WORKER_TX.get().map(|tx| tx.send(request)) {
+                Some(Ok(())) => {
+                    self.group_member_action_pending
+                        .insert(confirm.group_id.clone());
+                    self.group_member_action_confirmation = None;
+                }
+                Some(Err(_)) => {
+                    self.show_toast("Không gửi được yêu cầu quản trị nhóm");
+                }
+                None => self.show_toast("Hãy đăng nhập để quản trị nhóm"),
+            }
+        }
+    }
+
     pub(super) fn trigger_feed_timeline_load(&mut self) {
         if self.feed_loading_timeline {
             return;

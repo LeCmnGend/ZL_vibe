@@ -16,3 +16,23 @@ Manual verification when the user authorizes a build and live session:
 3. Confirm an account without permission receives a visible server error and can retry loading settings.
 
 No build, test, or live API request was run for this change.
+
+## Member administration extension
+
+Status: source-matched; live-session verification pending.
+
+Reference: captured `RFS-ADRENO/zca-js/src/apis` source in Feeding `zalo-100` snapshot:
+
+- Deputy promotion/demotion: `GET /api/group/admins/add` and `/api/group/admins/remove`; AES parameters `grid`, `members`, `imei`.
+- Remove member: `POST /api/group/kickout`; form body carries AES `params` with `grid`, `members`, `imei`.
+- Transfer owner: `GET /api/group/change-owner`; AES parameters `grid`, `newAdminId`, `imei`, and `language`.
+- UI actions are limited to owner/deputy roles reported by group metadata. Removing a member and transferring ownership require confirmation.
+
+Manual verification when the user authorizes a build and live session:
+
+1. As owner, promote and demote a test member; refresh and confirm the role changes.
+2. Remove a test member; refresh and confirm the member disappears.
+3. Transfer ownership in a disposable test group; confirm the new owner and the former owner's reduced permissions.
+4. As a deputy, attempt an owner-only action; confirm Zalo returns a visible permission error.
+
+No build, test, or live API request was run. Revert the group-administration commit to roll back these endpoints and UI actions.

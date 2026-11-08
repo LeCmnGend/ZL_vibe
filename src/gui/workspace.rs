@@ -734,13 +734,25 @@ impl ZaloGuiApp {
                                         }
 
                                         let q = self.group_member_search.trim().to_lowercase();
-                                        let filtered_members: Vec<&crate::chat::SidebarMember> = group_members
+                                        let filtered_members: Vec<crate::chat::SidebarMember> =
+                                            group_members
                                             .iter()
                                             .filter(|m| {
                                                 let name = self.contact_display_name(&m.id, &m.name);
                                                 q.is_empty() || name.to_lowercase().contains(&q) || m.id.contains(&q)
                                             })
+                                            .cloned()
                                             .collect();
+                                        let viewer_role = group_members
+                                            .iter()
+                                            .find(|member| member.id == self.user_uin)
+                                            .map(|member| member.role.as_str())
+                                            .unwrap_or_default();
+                                        let can_manage_group_members =
+                                            matches!(viewer_role, "creator" | "admin");
+                                        let can_manage_group_roles = viewer_role == "creator";
+                                        let group_admin_pending =
+                                            self.group_member_action_pending.contains(d_id);
 
                                         egui::ScrollArea::vertical()
                                             .id_salt("info_drawer_members_scroll")
@@ -843,6 +855,61 @@ impl ZaloGuiApp {
                                                                 if prof_btn.clicked() {
                                                                     view_profile_member =
                                                                         Some(m.id.clone());
+                                                                }
+
+                                                                if can_manage_group_members
+                                                                    && m.id != self.user_uin
+                                                                {
+                                                                    let mut requested_action = None;
+                                                                    ui.add_enabled_ui(
+                                                                        !group_admin_pending,
+                                                                        |ui| {
+                                                                            ui.menu_button("⋯", |ui| {
+                                                                                if can_manage_group_roles {
+                                                                                    let (action, label) = if m.role == "admin" {
+                                                                                        (
+                                                                                            crate::chat::GroupMemberAdminAction::RemoveDeputy,
+                                                                                            "Gỡ phó nhóm",
+                                                                                        )
+                                                                                    } else {
+                                                                                        (
+                                                                                            crate::chat::GroupMemberAdminAction::AddDeputy,
+                                                                                            "Bổ nhiệm phó nhóm",
+                                                                                        )
+                                                                                    };
+                                                                                    if ui.button(label).clicked() {
+                                                                                        requested_action = Some(action);
+                                                                                        ui.close_menu();
+                                                                                    }
+                                                                                    ui.separator();
+                                                                                }
+                                                                                if can_manage_group_roles
+                                                                                    && m.role != "creator"
+                                                                                {
+                                                                                    if ui.button("Chuyển trưởng nhóm").clicked() {
+                                                                                        requested_action = Some(
+                                                                                            crate::chat::GroupMemberAdminAction::TransferOwnership,
+                                                                                        );
+                                                                                        ui.close_menu();
+                                                                                    }
+                                                                                }
+                                                                                if m.role != "creator" && ui.button("Mời khỏi nhóm").clicked() {
+                                                                                    requested_action = Some(crate::chat::GroupMemberAdminAction::RemoveMember);
+                                                                                    ui.close_menu();
+                                                                                }
+                                                                            });
+                                                                        },
+                                                                    );
+                                                                    if let Some(action) = requested_action {
+                                                                        self.group_member_action_confirmation = Some(
+                                                                            GroupMemberActionConfirmation {
+                                                                                group_id: d_id.clone(),
+                                                                                member_id: m.id.clone(),
+                                                                                member_name: member_name.clone(),
+                                                                                action,
+                                                                            },
+                                                                        );
+                                                                    }
                                                                 }
                                                             },
                                                         );

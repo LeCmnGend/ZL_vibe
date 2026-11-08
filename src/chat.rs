@@ -1334,6 +1334,15 @@ pub struct GroupSettings {
     pub lock_view_member: bool,
 }
 
+/// Group-member actions supported by the captured Zalo API reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMemberAdminAction {
+    AddDeputy,
+    RemoveDeputy,
+    RemoveMember,
+    TransferOwnership,
+}
+
 impl GroupSettings {
     fn from_info(info: &Value) -> Option<Self> {
         let setting = info.get("setting")?;
@@ -1455,6 +1464,124 @@ pub async fn add_group_members(s: &Session, group_id: &str, member_ids: &[String
     ensure_action_ok(
         "Thêm thành viên vào nhóm",
         "chat::add_group_members",
+        &response,
+    )
+}
+
+fn normalize_group_member_action_ids(group_id: &str, member_id: &str) -> Result<(String, String)> {
+    let group_id = group_id
+        .trim()
+        .strip_prefix("group_")
+        .unwrap_or(group_id.trim())
+        .trim_start_matches(|ch| ch == 'g' || ch == 'G')
+        .to_string();
+    let member_id = member_id
+        .trim()
+        .strip_prefix('u')
+        .or_else(|| member_id.trim().strip_prefix('U'))
+        .unwrap_or(member_id.trim())
+        .to_string();
+    if group_id.is_empty() || member_id.is_empty() {
+        anyhow::bail!("thiếu mã nhóm hoặc thành viên");
+    }
+    Ok((group_id, member_id))
+}
+
+/// Promote or demote one group member using the group-admin endpoint.
+///
+/// # Errors
+/// Returns an error when logged out, the request fails, or Zalo rejects the action.
+pub async fn set_group_deputy(
+    s: &Session,
+    group_id: &str,
+    member_id: &str,
+    is_deputy: bool,
+) -> Result<()> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let (grid, member) = normalize_group_member_action_ids(group_id, member_id)?;
+    let action = if is_deputy { "add" } else { "remove" };
+    let params = s.encoded_params(&json!({
+        "grid": grid,
+        "members": [member],
+        "imei": s.imei,
+    }))?;
+    let path = format!(
+        "/api/group/admins/{action}?{}&params={params}",
+        s.common_params()
+    );
+    let response = s.get_endpoint("group", &path).await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    let action_name = if is_deputy {
+        "Bổ nhiệm phó nhóm"
+    } else {
+        "Gỡ phó nhóm"
+    };
+    ensure_action_ok(action_name, "chat::set_group_deputy", &response)
+}
+
+/// Remove one member from a group.
+///
+/// # Errors
+/// Returns an error when logged out, the request fails, or Zalo rejects the action.
+pub async fn remove_group_member(s: &Session, group_id: &str, member_id: &str) -> Result<()> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let (grid, member) = normalize_group_member_action_ids(group_id, member_id)?;
+    let params = s.encoded_params(&json!({
+        "grid": grid,
+        "members": [member],
+        "imei": s.imei,
+    }))?;
+    let response = s
+        .post_endpoint_form(
+            "group",
+            &format!("/api/group/kickout?{}", s.common_params()),
+            format!("params={params}"),
+        )
+        .await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    ensure_action_ok(
+        "Mời thành viên khỏi nhóm",
+        "chat::remove_group_member",
+        &response,
+    )?;
+    let failed_members = response
+        .pointer("/data/errorMembers")
+        .and_then(Value::as_array)
+        .is_some_and(|members| !members.is_empty());
+    if failed_members {
+        anyhow::bail!("Zalo không thể mời thành viên này khỏi nhóm");
+    }
+    Ok(())
+}
+
+/// Transfer group ownership to another member.
+///
+/// # Errors
+/// Returns an error when logged out, the request fails, or Zalo rejects the transfer.
+pub async fn transfer_group_ownership(s: &Session, group_id: &str, member_id: &str) -> Result<()> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let (grid, member) = normalize_group_member_action_ids(group_id, member_id)?;
+    let params = s.encoded_params(&json!({
+        "grid": grid,
+        "newAdminId": member,
+        "imei": s.imei,
+        "language": "vi",
+    }))?;
+    let path = format!(
+        "/api/group/change-owner?{}&params={params}",
+        s.common_params()
+    );
+    let response = s.get_endpoint("group", &path).await?;
+    let response = s.maybe_decrypt(response, s.session_key_bytes()).await;
+    ensure_action_ok(
+        "Chuyển trưởng nhóm",
+        "chat::transfer_group_ownership",
         &response,
     )
 }
