@@ -931,17 +931,91 @@ fn render_inline_job(ui: &mut egui::Ui, job: egui::text::LayoutJob, link: Option
     }
 }
 
+fn message_mention_tokens(msg: &ChatMessage) -> Vec<String> {
+    let raw_mentions = msg
+        .wire_ref
+        .fields
+        .get("mentions")
+        .and_then(serde_json::Value::as_array)
+        .filter(|mentions| !mentions.is_empty())
+        .or_else(|| {
+            msg.history_source
+                .as_ref()
+                .and_then(|source| source.pointer("/meta/mentionsList"))
+                .and_then(serde_json::Value::as_array)
+        });
+    let byte_at_utf16 = |offset: usize| {
+        let mut units = 0;
+        for (byte, ch) in msg.text.char_indices() {
+            if units == offset {
+                return Some(byte);
+            }
+            units += ch.len_utf16();
+            if units > offset {
+                return None;
+            }
+        }
+        (units == offset).then_some(msg.text.len())
+    };
+    let mut tokens = Vec::new();
+    if let Some(mentions) = raw_mentions {
+        for mention in mentions {
+            let Some(pos) = mention.get("pos").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let Some(len) = mention.get("len").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let (Ok(pos), Ok(len)) = (usize::try_from(pos), usize::try_from(len)) else {
+                continue;
+            };
+            let Some(end_unit) = pos.checked_add(len) else {
+                continue;
+            };
+            let Some(start) = byte_at_utf16(pos) else {
+                continue;
+            };
+            let Some(end) = byte_at_utf16(end_unit) else {
+                continue;
+            };
+            let start = if msg.text[start..end].starts_with('@') {
+                start
+            } else if start > 0 && msg.text[..start].ends_with('@') {
+                start - 1
+            } else {
+                continue;
+            };
+            if let Some(token) = msg.text.get(start..end) {
+                tokens.push(token.to_owned());
+            }
+        }
+    }
+    tokens.extend(msg.resolved_mention_uids.keys().map(|name| {
+        let name = name.trim();
+        if name.starts_with('@') {
+            name.to_owned()
+        } else {
+            format!("@{name}")
+        }
+    }));
+    tokens.sort_by_key(|token| std::cmp::Reverse(token.len()));
+    tokens.dedup();
+    tokens
+}
+
 fn render_markdown_inline_rich(
     ui: &mut egui::Ui,
     text: &str,
     base_size: f32,
     base_color: Color32,
     pal: &ThemePalette,
+    mention_tokens: &[String],
 ) -> Option<String> {
     let mut clicked_mention = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        clicked_mention = render_markdown_inline_wrapped(ui, text, base_size, base_color, pal);
+        clicked_mention =
+            render_markdown_inline_wrapped(ui, text, base_size, base_color, pal, mention_tokens);
     });
     clicked_mention
 }
@@ -952,6 +1026,7 @@ fn render_markdown_inline_wrapped(
     base_size: f32,
     base_color: Color32,
     pal: &ThemePalette,
+    mention_tokens: &[String],
 ) -> Option<String> {
     let mut job = egui::text::LayoutJob::default();
     let mut first_link: Option<String> = None;
@@ -1072,19 +1147,6 @@ fn render_markdown_inline_wrapped(
                             } else {
                                 Color32::from_rgb(0, 104, 255)
                             },
-                            background: if pal.is_dark {
-                                Color32::from_rgba_unmultiplied(97, 175, 239, 45)
-                            } else {
-                                Color32::from_rgba_unmultiplied(0, 104, 255, 30)
-                            },
-                            underline: Stroke::new(
-                                1.0_f32,
-                                if pal.is_dark {
-                                    Color32::from_rgba_unmultiplied(97, 175, 239, 120)
-                                } else {
-                                    Color32::from_rgba_unmultiplied(0, 104, 255, 100)
-                                },
-                            ),
                             ..Default::default()
                         },
                     );
@@ -1093,49 +1155,14 @@ fn render_markdown_inline_wrapped(
                 }
             }
 
-            let mut end_idx = 0;
-            let mut word_count = 0;
-            let mut prev_is_space = false;
-            for (idx, ch) in after.char_indices() {
-                if ch == '\n'
-                    || ch == '\r'
-                    || ch == '@'
-                    || matches!(
-                        ch,
-                        ',' | '.'
-                            | '!'
-                            | '?'
-                            | ':'
-                            | ';'
-                            | '('
-                            | ')'
-                            | '['
-                            | ']'
-                            | '"'
-                            | '\''
-                            | '`'
-                            | '<'
-                            | '>'
-                    )
-                {
-                    break;
-                }
-                if ch.is_whitespace() {
-                    word_count += 1;
-                    if word_count >= 5 || prev_is_space {
-                        break;
-                    }
-                    prev_is_space = true;
-                } else {
-                    prev_is_space = false;
-                }
-                end_idx = idx + ch.len_utf8();
-            }
-            let candidate_name = after[..end_idx].trim_end();
-            if !candidate_name.is_empty()
-                && candidate_name.chars().next().unwrap().is_alphanumeric()
-            {
-                let mention_len = 1 + candidate_name.len();
+            if let Some(mention_token) = mention_tokens.iter().find(|token| {
+                rest.starts_with(token.as_str())
+                    && rest[token.len()..].chars().next().map_or(true, |ch| {
+                        ch.is_whitespace() || matches!(ch, ',' | '.' | '!' | '?' | ':' | ';')
+                    })
+            }) {
+                let candidate_name = mention_token.trim_start_matches('@');
+                let mention_len = mention_token.len();
                 let mention_str = &rest[..mention_len];
                 render_inline_job(ui, std::mem::take(&mut job), first_link.take());
                 let mention_color = if pal.is_dark {
@@ -1147,13 +1174,7 @@ fn render_markdown_inline_wrapped(
                     egui::Label::new(
                         RichText::new(mention_str)
                             .size(base_size)
-                            .color(mention_color)
-                            .background_color(if pal.is_dark {
-                                Color32::from_rgba_unmultiplied(97, 175, 239, 40)
-                            } else {
-                                Color32::from_rgba_unmultiplied(0, 104, 255, 25)
-                            })
-                            .underline(),
+                            .color(mention_color),
                     )
                     .sense(Sense::click()),
                 );
@@ -1290,6 +1311,7 @@ pub(super) fn render_chat_markdown_block(
     raw: &str,
     text_col: Color32,
     pal: &ThemePalette,
+    mention_tokens: &[String],
 ) -> Option<String> {
     let mut in_code_block = false;
     let mut code_lines: Vec<&str> = Vec::new();
@@ -1327,15 +1349,21 @@ pub(super) fn render_chat_markdown_block(
         }
         let t_start = trimmed.trim_start();
         if let Some(h3) = t_start.strip_prefix("### ") {
-            if let Some(name) = render_markdown_inline_rich(ui, h3, 15.0, text_col, pal) {
+            if let Some(name) =
+                render_markdown_inline_rich(ui, h3, 15.0, text_col, pal, mention_tokens)
+            {
                 return Some(name);
             }
         } else if let Some(h2) = t_start.strip_prefix("## ") {
-            if let Some(name) = render_markdown_inline_rich(ui, h2, 16.0, text_col, pal) {
+            if let Some(name) =
+                render_markdown_inline_rich(ui, h2, 16.0, text_col, pal, mention_tokens)
+            {
                 return Some(name);
             }
         } else if let Some(h1) = t_start.strip_prefix("# ") {
-            if let Some(name) = render_markdown_inline_rich(ui, h1, 17.0, text_col, pal) {
+            if let Some(name) =
+                render_markdown_inline_rich(ui, h1, 17.0, text_col, pal, mention_tokens)
+            {
                 return Some(name);
             }
         } else if let Some(quote) = t_start.strip_prefix("> ") {
@@ -1350,6 +1378,7 @@ pub(super) fn render_chat_markdown_block(
                     13.8,
                     text_col.linear_multiply(0.88),
                     pal,
+                    mention_tokens,
                 );
             });
             if clicked_mention.is_some() {
@@ -1360,11 +1389,20 @@ pub(super) fn render_chat_markdown_block(
             .or_else(|| t_start.strip_prefix("* "))
         {
             let bullet_line = format!("• {bullet}");
-            if let Some(name) = render_markdown_inline_rich(ui, &bullet_line, 14.0, text_col, pal) {
+            if let Some(name) = render_markdown_inline_rich(
+                ui,
+                &bullet_line,
+                14.0,
+                text_col,
+                pal,
+                mention_tokens,
+            ) {
                 return Some(name);
             }
         } else {
-            if let Some(name) = render_markdown_inline_rich(ui, trimmed, 14.0, text_col, pal) {
+            if let Some(name) =
+                render_markdown_inline_rich(ui, trimmed, 14.0, text_col, pal, mention_tokens)
+            {
                 return Some(name);
             }
         }
@@ -1430,6 +1468,7 @@ pub(super) fn render_message_body(
     };
 
     let trimmed_text = msg.text.trim();
+    let mention_tokens = message_mention_tokens(msg);
     if trimmed_text == "[Tin nhắn đã thu hồi]" {
         ui.label(
             RichText::new(format!("{} Tin nhắn đã được thu hồi", lucide::BAN))
@@ -1692,7 +1731,9 @@ pub(super) fn render_message_body(
             }
             if let Some(cap) = extract_photo_user_caption(msg) {
                 ui.add_space(5.0);
-                if let Some(name) = render_chat_markdown_block(ui, cap, text_col, pal) {
+                if let Some(name) =
+                    render_chat_markdown_block(ui, cap, text_col, pal, &mention_tokens)
+                {
                     body_action = Some(BubbleAction::OpenMentionProfile(name));
                 }
             }
@@ -1836,7 +1877,7 @@ pub(super) fn render_message_body(
         } else {
             &msg.text
         };
-        return render_chat_markdown_block(ui, display_text, text_col, pal)
+        return render_chat_markdown_block(ui, display_text, text_col, pal, &mention_tokens)
             .map(BubbleAction::OpenMentionProfile);
     };
 
@@ -1872,7 +1913,7 @@ pub(super) fn render_message_body(
 
     // 1. Optional user comment above the link
     if !caption.is_empty() && caption != url {
-        body_action = render_chat_markdown_block(ui, &caption, text_col, pal)
+        body_action = render_chat_markdown_block(ui, &caption, text_col, pal, &mention_tokens)
             .map(BubbleAction::OpenMentionProfile);
         ui.add_space(4.0);
     }
