@@ -858,9 +858,20 @@ impl ZaloGuiApp {
         // -------------------------------------------------------------------
         // 4. CENTRAL CHAT AREA (Clean Header, Messages Stream, Icon Toolbar)
         // -------------------------------------------------------------------
+        let mut close_info_drawer_after_chat_click = false;
+        let mut keep_info_drawer_open = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(pal.bg_chat_canvas))
             .show(ctx, |ui| {
+                let chat_rect = ui.max_rect();
+                close_info_drawer_after_chat_click = show_info_drawer
+                    && ctx.input(|input| {
+                        input.pointer.any_click()
+                            && input
+                                .pointer
+                                .interact_pos()
+                                .is_some_and(|pos| chat_rect.contains(pos))
+                    });
                 // Soft diagonal gradient behind the whole chat column (header, stream, composer).
                 paint_diagonal_gradient(ui.painter(), ui.max_rect(), pal.canvas_top, pal.canvas_bottom);
                 // Breakpoints follow the real chat-column width (columns may be collapsed or not).
@@ -931,6 +942,7 @@ impl ZaloGuiApp {
                                     });
                                 if avatar_resp.clicked() {
                                     if is_group {
+                                        keep_info_drawer_open = true;
                                         self.info_drawer_open = true;
                                         self.settings.info_drawer_open = true;
                                         self.settings.save();
@@ -1165,6 +1177,7 @@ impl ZaloGuiApp {
                                                 .on_hover_cursor(CursorIcon::PointingHand)
                                                 .on_hover_text("Xem thông tin và thành viên nhóm");
                                             if sub_resp.clicked() {
+                                                keep_info_drawer_open = true;
                                                 self.info_drawer_open = true;
                                                 self.settings.info_drawer_open = true;
                                                 self.settings.save();
@@ -4055,6 +4068,15 @@ impl ZaloGuiApp {
                     });
                 }
             });
+
+        if close_info_drawer_after_chat_click
+            && !keep_info_drawer_open
+            && self.info_drawer_open
+        {
+            self.info_drawer_open = false;
+            self.settings.info_drawer_open = false;
+            self.settings.save();
+        }
 
         self.render_profile_popover(ctx, pal);
         self.render_wipe_confirm(ctx, pal);
