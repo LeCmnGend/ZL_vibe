@@ -269,7 +269,6 @@ pub enum GuiEvent {
         phone_status: Option<String>,
     },
     ProxyUpdated(Result<Option<String>, String>),
-    FileDownloaded(Result<(String, String), String>),
     LoggedOut,
     GroupBoardSynced {
         group_id: String,
@@ -3023,18 +3022,6 @@ impl ZaloGuiApp {
                     }
                     Err(e) => {
                         let msg = format!("⚠️ Lỗi cấu hình Proxy: {e}");
-                        self.status_msg = msg.clone();
-                        self.show_toast(msg);
-                    }
-                },
-                GuiEvent::FileDownloaded(res) => match res {
-                    Ok((fname, path)) => {
-                        let msg = format!("✅ Đã lưu tập tin \"{fname}\" tại {path}");
-                        self.status_msg = msg.clone();
-                        self.show_toast(msg);
-                    }
-                    Err(e) => {
-                        let msg = format!("⚠️ Lỗi lưu tập tin: {e}");
                         self.status_msg = msg.clone();
                         self.show_toast(msg);
                     }

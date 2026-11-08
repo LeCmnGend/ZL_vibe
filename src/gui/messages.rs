@@ -2827,10 +2827,6 @@ pub(super) enum BubbleAction {
         sender: String,
         time: String,
     },
-    DownloadFile {
-        url: String,
-        file_name: String,
-    },
     Download { url: String, suggested_name: String },
     /// Click on a file / voice card: download it, then open it with its default app.
     DownloadAndOpen { url: String, suggested_name: String },

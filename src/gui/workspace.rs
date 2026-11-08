@@ -3284,18 +3284,6 @@ impl ZaloGuiApp {
                                         pan: Vec2::ZERO,
                                     });
                                 }
-                                BubbleAction::DownloadFile { url, file_name } => {
-                                    self.show_toast(format!(
-                                        "⏳ Đang tải tập tin \"{file_name}\"…"
-                                    ));
-                                    if let Some(tx) = WORKER_TX.get() {
-                                        let _ = tx.send(WorkerCmd::DownloadFile {
-                                            url,
-                                            file_name,
-                                            download_dir: self.settings.download_dir.clone(),
-                                        });
-                                    }
-                                }
                             }
                         }
                     }

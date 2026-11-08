@@ -293,11 +293,6 @@ pub enum WorkerCmd {
     SetProxy {
         proxy_url: String,
     },
-    DownloadFile {
-        url: String,
-        file_name: String,
-        download_dir: String,
-    },
     SendSeen {
         thread_id: String,
         is_group: bool,
@@ -4068,27 +4063,6 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 ctx_clone.request_repaint();
                             });
                         }
-                        WorkerCmd::DownloadFile {
-                            url,
-                            file_name,
-                            download_dir,
-                        } => {
-                            let session_clone = session.clone();
-                            let gui_tx_clone = gui_tx.clone();
-                            let ctx_clone = egui_ctx.clone();
-                            tokio::spawn(async move {
-                                let client = { session_clone.lock().await.clone().http };
-                                let res = download_attachment_with_original_name(
-                                    &client,
-                                    &url,
-                                    &file_name,
-                                    &download_dir,
-                                )
-                                .await;
-                                let _ = gui_tx_clone.send(GuiEvent::FileDownloaded(res));
-                                ctx_clone.request_repaint();
-                            });
-                        }
                         WorkerCmd::SendTyping {
                             to_id,
                             is_group,
@@ -4352,78 +4326,6 @@ async fn apply_github_release_update(
         },
     )?;
     Ok(false)
-}
-
-/// Download a Zalo file attachment (`share.file` / `chat.file` / `/renewMedia`) and save it
-/// inside `download_dir` using the sender's original filename instead of `renewMedia.doc` (#74).
-async fn download_attachment_with_original_name(
-    client: &reqwest::Client,
-    url: &str,
-    file_name: &str,
-    download_dir: &str,
-) -> Result<(String, String), String> {
-    let clean_name = crate::chat::resolve_attachment_file_name(Some(file_name), file_name, url);
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Không thể tải tập tin: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("Máy chủ trả về mã HTTP {}", resp.status()));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Lỗi đọc dữ liệu tập tin: {e}"))?;
-
-    let target_dir = if !download_dir.trim().is_empty() {
-        std::path::PathBuf::from(download_dir.trim())
-    } else {
-        std::env::var("USERPROFILE")
-            .ok()
-            .map(|p| {
-                std::path::PathBuf::from(p)
-                    .join("Downloads")
-                    .join("Zalo Received Files")
-            })
-            .or_else(|| {
-                std::env::var("HOME").ok().map(|h| {
-                    std::path::PathBuf::from(h)
-                        .join("Downloads")
-                        .join("Zalo Received Files")
-                })
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("Downloads"))
-    };
-
-    tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&target_dir)
-            .map_err(|e| format!("Không thể tạo thư mục lưu file: {e}"))?;
-
-        let (stem, ext) = match clean_name.rfind('.') {
-            Some(dot_idx) if dot_idx > 0 && dot_idx + 1 < clean_name.len() => {
-                (&clean_name[..dot_idx], Some(&clean_name[dot_idx + 1..]))
-            }
-            _ => (clean_name.as_str(), None),
-        };
-
-        let mut dest_path = target_dir.join(&clean_name);
-        let mut final_name = clean_name.clone();
-        let mut suffix_idx = 1_u32;
-        while dest_path.exists() {
-            final_name = match ext {
-                Some(e) => format!("{stem} ({suffix_idx}).{e}"),
-                None => format!("{stem} ({suffix_idx})"),
-            };
-            dest_path = target_dir.join(&final_name);
-            suffix_idx += 1;
-        }
-
-        std::fs::write(&dest_path, &bytes).map_err(|e| format!("Không thể ghi tập tin: {e}"))?;
-        Ok((final_name, dest_path.display().to_string()))
-    })
-    .await
-    .map_err(|e| format!("Lỗi tác vụ lưu file: {e}"))?
 }
 
 pub(crate) fn capture_screen_interactive(
