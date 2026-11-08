@@ -1982,7 +1982,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                 let s = session_clone.lock().await.clone();
                                 let client_id = crate::chat::next_client_message_id();
                                 if let Some(found_url) = crate::chat::extract_first_url(&text) {
-                                    let meta = crate::chat::parse_link_metadata(&s, &found_url)
+                                    let meta = crate::chat::parse_link_metadata(&s, &found_url, true)
                                         .await
                                         .unwrap_or_else(|_| crate::chat::LinkMetadata {
                                             url: found_url.clone(),
@@ -2797,7 +2797,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                             let ctx_clone = egui_ctx.clone();
                             tokio::spawn(async move {
                                 let s = session_clone.lock().await.clone();
-                                if let Ok(meta) = crate::chat::parse_link_metadata(&s, &url).await {
+                                if let Ok(meta) = crate::chat::parse_link_metadata(&s, &url, false).await {
                                     let _ = gui_tx_clone.send(GuiEvent::LinkPreviewReady(meta));
                                     ctx_clone.request_repaint();
                                 }

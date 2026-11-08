@@ -18,7 +18,7 @@ async fn send_link(session: &Arc<Mutex<Session>>, s: &Session, p: &Value) -> (u1
     let to = text(p, "to_id");
     let mut meta = chat::LinkMetadata { url: url.into(), title: text(p, "title").into(), desc: text(p, "desc").into(), thumb: text(p, "thumb").into(), src: text(p, "src").into() };
     if meta.title.is_empty() {
-        match chat::parse_link_metadata(s, url).await {
+        match chat::parse_link_metadata(s, url, true).await {
             Ok(m) => { if meta.title.is_empty() { meta.title = m.title; } if meta.desc.is_empty() { meta.desc = m.desc; } if meta.thumb.is_empty() { meta.thumb = m.thumb; } if meta.src.is_empty() { meta.src = m.src; } },
             Err(e) => return response(Err(e)),
         }
@@ -83,7 +83,7 @@ pub async fn route(session: &Arc<Mutex<Session>>, method: &str, path: &str, q: &
     if !is_live(&s) { return Some((401, json!({"ok": false, "error": "chưa đăng nhập"}))); }
     let p: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
     Some(match (method, path) {
-        ("POST", "/api/v1/links/parse") => match chat::parse_link_metadata(&s, text(&p, "url")).await {
+        ("POST", "/api/v1/links/parse") => match chat::parse_link_metadata(&s, text(&p, "url"), false).await {
             Ok(m) => (200, json!({"ok": true, "data": {"url": m.url, "title": m.title, "desc": m.desc, "thumb": m.thumb, "src": m.src}})),
             Err(e) => response(Err(e)),
         },
