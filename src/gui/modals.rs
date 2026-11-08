@@ -8653,6 +8653,7 @@ impl ZaloGuiApp {
                             if row_resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                                 self.feed_target_uid = prof.uid.clone();
                                 self.feed_profile = Some(prof.clone());
+                                self.open_account_info(prof.uid.clone());
                             }
                         }
                     });
@@ -9246,6 +9247,7 @@ impl ZaloGuiApp {
             {
                 self.feed_profile = Some(p);
             }
+            self.open_account_info(uid);
         }
         if let Some((tkey, full_u, title, sender)) = clicked_image {
             let hd = self.request_hd_texture(&full_u);

@@ -1,7 +1,7 @@
 use super::*;
 
 impl ZaloGuiApp {
-    fn open_account_info(&mut self, target_uid: String) {
+    pub(super) fn open_account_info(&mut self, target_uid: String) {
         self.account_info_modal_open = true;
         self.account_info_uid = target_uid.clone();
         self.account_info_profile = None;
@@ -388,8 +388,8 @@ impl ZaloGuiApp {
                                         ui.add_space(6.0);
                                         let prof_btn = egui::Button::new(
                                             RichText::new(format!(
-                                                "{} Xem Hồ sơ & Nhật ký",
-                                                lucide::NEWSPAPER
+                                                "{} Xem thông tin tài khoản",
+                                                lucide::USER
                                             ))
                                             .size(11.5)
                                             .color(pal.primary_hover),
@@ -406,14 +406,8 @@ impl ZaloGuiApp {
                                             self.feed_modal_open = true;
                                             self.feed_modal_tab = FeedModalTab::Profile;
                                             self.feed_target_uid = d_id.clone();
-                                            self.feed_loading_profile = true;
-                                            self.feed_profile_error = None;
                                             self.trigger_feed_timeline_load();
-                                            if let Some(tx) = WORKER_TX.get() {
-                                                let _ = tx.send(WorkerCmd::FetchSocialProfile {
-                                                    target_uid: d_id.clone(),
-                                                });
-                                            }
+                                            self.open_account_info(d_id.clone());
                                         }
                                     }
                                 });
