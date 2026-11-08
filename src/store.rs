@@ -59,7 +59,7 @@ impl MessageStore {
     pub const PRELOAD_MSGS: usize = 20;
 
     /// Open SQLite database at `path` and initialize table schemas and indices if absent.
-    pub fn open(path: &str) -> Result<Self> {
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let conn = crate::vault::open_database(path)?;
         Self::initialize(conn)
     }
@@ -96,6 +96,12 @@ impl MessageStore {
                 reason TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 dismissed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS thread_activity (
+                thread_id TEXT PRIMARY KEY,
+                is_group INTEGER NOT NULL,
+                last_msg_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             );",
         )?;
         // Migration 1: one-time cleanup of placeholder rows. This DELETE used to run (a full
@@ -152,6 +158,57 @@ impl MessageStore {
         self.conn
             .execute("UPDATE missing_ranges SET dismissed = 1 WHERE dismissed = 0", [])?;
         Ok(())
+    }
+
+    /// Timestamp of the newest stored message, if any.
+    pub fn newest_message_ts(&self) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT MAX(ts) FROM messages WHERE ts > 0",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Remember each conversation's last message id from `get-last-msgs`.
+    pub fn upsert_thread_activity(&mut self, rows: &[(String, bool, String)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let now = crate::timefmt::now_ms();
+        for (thread_id, is_group, last_msg_id) in rows {
+            tx.execute(
+                "INSERT INTO thread_activity (thread_id, is_group, last_msg_id, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(thread_id) DO UPDATE SET
+                     is_group = excluded.is_group,
+                     last_msg_id = excluded.last_msg_id,
+                     updated_at = excluded.updated_at",
+                params![thread_id, if *is_group { 1 } else { 0 }, last_msg_id, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return each conversation's latest message id observed in `get-last-msgs`.
+    pub fn thread_activity(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT thread_id, last_msg_id FROM thread_activity")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    /// Return recent numeric message-id/timestamp pairs for history-gap detection.
+    pub fn msg_id_ts_pairs(&self, limit: usize) -> Result<Vec<(u64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT msg_id, ts FROM messages WHERE ts > 0 ORDER BY ts DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter_map(|(id, ts)| id.parse::<u64>().ok().map(|id| (id, ts)))
+            .collect())
     }
 
     /// Insert a message. Returns `true` if a new row was inserted, `false` if already existed.
