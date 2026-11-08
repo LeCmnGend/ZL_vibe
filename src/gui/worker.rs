@@ -378,7 +378,7 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                         if port > 0 {
                             let s_api = session.clone();
                             tokio::spawn(async move {
-                                let _ = crate::api_mcp::run_local_http_server(
+                                let _ = crate::local_api::run_local_http_server(
                                     s_api,
                                     port,
                                     "zalo_history.db".into(),
@@ -1668,12 +1668,12 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                                         .send(GuiEvent::ThreadsUpdated(temp_threads.clone()));
                                                     ctx_clone.request_repaint();
                                                 }
-                                                let rules = crate::api_mcp::load_autoreply_rules();
+                                                let rules = crate::local_api::load_autoreply_rules();
                                                 if rules.iter().any(|r| r.enabled) {
                                                     for t in &temp_threads {
                                                         for m in &t.messages {
                                                             if !m.is_outgoing {
-                                                                if let Some(matched) = crate::api_mcp::match_autoreply_rule(&rules, &m.text, t.is_group) {
+                                                                if let Some(matched) = crate::local_api::match_autoreply_rule(&rules, &m.text, t.is_group) {
                                                                     let reply_text = matched.reply_text;
                                                                     let client_id = crate::chat::next_client_message_id();
                                                                     let res = if t.is_group {

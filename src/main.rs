@@ -12,8 +12,8 @@ mod sync_v1;
 use anyhow::Result;
 use session::Session;
 pub use zalo_rust::{
-    api_hub_actions, api_mcp, audio, call, chat, clock, crypto, data_dir, endpoints, feed, gui, history_sync,
-    logger, login, media, media_resources, message_model, param_cipher, qr, reactions, scheduler,
+    api_hub_actions, audio, call, chat, clock, crypto, data_dir, endpoints, feed, gui, history_sync,
+    local_api, logger, login, media, media_resources, message_model, param_cipher, qr, reactions, scheduler,
     session, socket, store, tui, ui, unread, updater, voip_log,
 };
 
@@ -114,7 +114,6 @@ async fn main() -> Result<()> {
     let force_gui = args.iter().any(|a| a == "--gui");
     let force_qr = args.iter().any(|a| a == "--qr");
     let force_logout = args.iter().any(|a| a == "--logout");
-    let force_mcp = args.iter().any(|a| a == "--mcp");
     let api_port: Option<u16> = args
         .iter()
         .position(|a| a == "--api-port")
@@ -190,22 +189,16 @@ async fn main() -> Result<()> {
         false
     };
 
-    // If `--mcp` is requested, run the Model Context Protocol JSON-RPC 2.0 server over stdio (#35).
-    if force_mcp && !demo_mode {
-        let shared = std::sync::Arc::new(tokio::sync::Mutex::new(s));
-        return api_mcp::run_mcp_stdio_server(shared, "zalo_history.db").await;
-    }
-
-    // If `--api-port <PORT>` is set without `--gui`/`--tui`, run headless REST + MCP server if `--api-only` is passed;
+    // If `--api-port <PORT>` is set without `--gui`/`--tui`, run headless REST server if `--api-only` is passed;
     // otherwise spawn the REST server in the background alongside GUI/TUI (#35).
     if let Some(port) = api_port.filter(|_| !demo_mode) {
         let shared = std::sync::Arc::new(tokio::sync::Mutex::new(s.clone()));
-        println!("🌐 REST API & MCP HTTP server đang lắng nghe tại http://127.0.0.1:{port}/api/v1/status");
+        println!("🌐 REST API cục bộ đang lắng nghe tại http://127.0.0.1:{port}/api/v1/status");
         if args.iter().any(|a| a == "--api-only") {
-            return api_mcp::run_local_http_server(shared, port, "zalo_history.db".into()).await;
+            return local_api::run_local_http_server(shared, port, "zalo_history.db".into()).await;
         }
         tokio::spawn(async move {
-            let _ = api_mcp::run_local_http_server(shared, port, "zalo_history.db".into()).await;
+            let _ = local_api::run_local_http_server(shared, port, "zalo_history.db".into()).await;
         });
     }
 

@@ -49,8 +49,8 @@ pub mod scheduler;
 /// Hub-facing REST extensions (QR login, sync, poll, actions).
 pub mod api_hub_ext;
 pub mod api_hub_actions;
-/// Local HTTP REST API, MCP JSON-RPC 2.0 server, and auto-reply rules (#35).
-pub mod api_mcp;
+/// Local HTTP REST API and auto-reply rules (#35).
+pub mod local_api;
 
 /// Native notification authorization without delivery.
 pub mod native_notifications;

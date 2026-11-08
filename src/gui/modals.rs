@@ -3422,7 +3422,7 @@ impl ZaloGuiApp {
                                                     });
                                                 });
                                             ui.add_space(16.0);
-                                            ui.label(RichText::new("Tự động trả lời (Auto-Reply) & REST API / MCP").color(pal.text_primary).size(13.5).strong());
+                                            ui.label(RichText::new("Tự động trả lời (Auto-Reply) & REST API").color(pal.text_primary).size(13.5).strong());
                                             ui.add_space(6.0);
                                             egui::Frame::none()
                                                 .fill(pal.bg_elevated)
@@ -3430,11 +3430,11 @@ impl ZaloGuiApp {
                                                 .rounding(Rounding::same(8.0))
                                                 .inner_margin(Margin::symmetric(14.0, 12.0))
                                                 .show(ui, |ui| {
-                                                    let rules = crate::api_mcp::load_autoreply_rules();
+                                                    let rules = crate::local_api::load_autoreply_rules();
                                                     let active_cnt = rules.iter().filter(|r| r.enabled).count();
                                                     ui.label(RichText::new(format!("Quy tắc Auto-Reply đang bật: {active_cnt}/{} (cấu hình trong autoreply_rules.json)", rules.len())).color(pal.text_primary).size(12.6).strong());
                                                     ui.add_space(4.0);
-                                                    ui.label(RichText::new("Khởi chạy REST API cục bộ với `--api-port 3789` hoặc chế độ MCP Server chuẩn JSON-RPC 2.0 với `--mcp` để kết nối Claude Desktop / Cursor / AI Agent.").color(pal.text_secondary).size(11.8));
+                                                    ui.label(RichText::new("Khởi chạy REST API cục bộ với `--api-port 3789` để kết nối ứng dụng tích hợp.").color(pal.text_secondary).size(11.8));
                                                     ui.add_space(8.0);
                                                     if ui.button("Tạo / Xuất mẫu autoreply_rules.json").clicked() {
                                                         export_autoreply_tpl = true;
@@ -4072,9 +4072,9 @@ impl ZaloGuiApp {
             ));
         }
         if export_autoreply_tpl {
-            let mut rules = crate::api_mcp::load_autoreply_rules();
+            let mut rules = crate::local_api::load_autoreply_rules();
             if rules.is_empty() {
-                rules.push(crate::api_mcp::AutoReplyRule {
+                rules.push(crate::local_api::AutoReplyRule {
                     id: "default_busy".into(),
                     keyword: "/busy".into(),
                     match_mode: "contains".into(),
@@ -4083,7 +4083,7 @@ impl ZaloGuiApp {
                     scope: "direct".into(),
                 });
             }
-            let _ = crate::api_mcp::save_autoreply_rules(&rules);
+            let _ = crate::local_api::save_autoreply_rules(&rules);
             self.show_toast("Đã lưu cấu hình mẫu autoreply_rules.json");
         }
 
