@@ -149,7 +149,7 @@ pub enum WorkerCmd {
     UnlockHiddenChats {
         owner: String,
         generation: u64,
-        pin: String,
+        pin: zeroize::Zeroizing<String>,
     },
     SyncContactAliases,
     SetContactAlias {
