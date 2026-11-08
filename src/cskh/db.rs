@@ -57,7 +57,9 @@ pub fn mo(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).context("Không tạo được thư mục accounts")?;
     }
-    khoi_tao(Connection::open(path).context("Không mở được dữ liệu chăm sóc khách hàng")?)
+    khoi_tao(
+        crate::vault::open_database(path).context("Không mở được dữ liệu chăm sóc khách hàng")?,
+    )
 }
 
 pub fn mo_bo_nho() -> Result<Connection> {

@@ -1153,7 +1153,7 @@ pub fn deduplicate_threads(
 }
 
 fn active_uin_from_session() -> Option<String> {
-    if let Ok(text) = std::fs::read_to_string("session.json") {
+    if let Ok(text) = crate::vault::read_sensitive_text(std::path::Path::new("session.json")) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(uin) = val.pointer("/login/uin").and_then(|v| v.as_str()) {
                 if !uin.is_empty() {
@@ -1169,7 +1169,7 @@ fn active_uin_from_session() -> Option<String> {
 pub fn load_threads_cache() -> Vec<Thread> {
     if let Some(uin) = active_uin_from_session() {
         let acc_path = format!("accounts/{uin}_threads.json");
-        if let Ok(text) = std::fs::read_to_string(&acc_path) {
+        if let Ok(text) = crate::vault::read_sensitive_text(std::path::Path::new(&acc_path)) {
             if let Ok(mut threads) = serde_json::from_str::<Vec<Thread>>(&text) {
                 deduplicate_threads(&mut threads, None);
                 return threads;
@@ -1177,7 +1177,7 @@ pub fn load_threads_cache() -> Vec<Thread> {
         }
     }
     if std::path::Path::new("session.json").exists() {
-        if let Ok(text) = std::fs::read_to_string("threads_cache.json") {
+        if let Ok(text) = crate::vault::read_sensitive_text(std::path::Path::new("threads_cache.json")) {
             if let Ok(mut threads) = serde_json::from_str::<Vec<Thread>>(&text) {
                 deduplicate_threads(&mut threads, None);
                 return threads;
@@ -1206,7 +1206,7 @@ fn cache_write_needed(new_hash: u64, last_hash: Option<u64>, file_exists: bool) 
 pub fn load_threads_cache_for_account(uin: &str) -> Vec<Thread> {
     let Some(uin) = crate::sync_state::sanitize_uin(uin) else { return Vec::new(); };
     let path = format!("accounts/{uin}_threads.json");
-    std::fs::read_to_string(path).ok()
+    crate::vault::read_sensitive_text(std::path::Path::new(&path)).ok()
         .and_then(|text| serde_json::from_str::<Vec<Thread>>(&text).ok())
         .map(|mut threads| { deduplicate_threads(&mut threads, None); threads })
         .unwrap_or_default()
@@ -1238,16 +1238,16 @@ pub fn save_threads_cache_for_account(threads: &[Thread], uin: &str) {
     let Some(uin) = crate::sync_state::sanitize_uin(uin) else { return; };
     if let Ok(text) = serialize_threads_cache(threads) {
         let path = format!("accounts/{uin}_threads.json");
-        let _ = crate::paths::write_private(std::path::Path::new(&path), text);
+        let _ = crate::vault::write_sensitive(std::path::Path::new(&path), text.as_bytes());
     }
 }
 
 pub fn save_threads_cache(threads: &[Thread]) {
     if let Ok(text) = serialize_threads_cache(threads) {
-        let _ = crate::paths::write_private(std::path::Path::new("threads_cache.json"), &text);
+        let _ = crate::vault::write_sensitive(std::path::Path::new("threads_cache.json"), text.as_bytes());
         if let Some(uin) = active_uin_from_session().and_then(|value| crate::sync_state::sanitize_uin(&value).map(str::to_owned)) {
             let path = format!("accounts/{uin}_threads.json");
-            let _ = crate::paths::write_private(std::path::Path::new(&path), text);
+            let _ = crate::vault::write_sensitive(std::path::Path::new(&path), text.as_bytes());
         }
     }
 }

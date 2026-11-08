@@ -33,7 +33,7 @@ pub fn list_saved_accounts(current_uin: &str) -> Vec<AccountProfile> {
             if file_stem.ends_with("_threads") {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(text) = crate::vault::read_sensitive_text(&path) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                     if let Some(login) = val.get("login") {
                         let uin = login

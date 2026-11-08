@@ -33,6 +33,7 @@ pub mod ui;
 pub mod unread;
 pub mod video;
 pub mod voip_log;
+pub mod vault;
 
 #[cfg(windows)]
 mod windows_video;

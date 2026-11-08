@@ -51,11 +51,7 @@ pub struct ScheduledMessage {
 }
 
 fn open_scheduler_db(db_path: &str) -> Result<Connection> {
-    let conn = if db_path == ":memory:" {
-        Connection::open_in_memory()?
-    } else {
-        Connection::open(db_path)?
-    };
+    let conn = crate::vault::open_database(db_path)?;
     init_scheduler_schema(&conn)?;
     Ok(conn)
 }

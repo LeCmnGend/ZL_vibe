@@ -51,12 +51,15 @@ impl MessageStore {
 
     /// Open SQLite database at `path` and initialize table schemas and indices if absent.
     pub fn open(path: &str) -> Result<Self> {
-        let conn = if path == ":memory:" {
-            Connection::open_in_memory()?
-        } else {
-            Connection::open(path)?
-        };
+        let conn = crate::vault::open_database(path)?;
+        Self::initialize(conn)
+    }
 
+    fn open_external(path: &str) -> Result<Self> {
+        Self::initialize(Connection::open(path)?)
+    }
+
+    fn initialize(conn: Connection) -> Result<Self> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
                 msg_id TEXT PRIMARY KEY,
@@ -753,7 +756,7 @@ pub fn import_history_from_path(src: &std::path::Path, dst_db_path: &str) -> Res
         }
         let bytes = std::fs::read(&file_path)?;
         if bytes.starts_with(b"SQLite format 3") {
-            let src_store = MessageStore::open(file_path.to_string_lossy().as_ref())?;
+            let src_store = MessageStore::open_external(file_path.to_string_lossy().as_ref())?;
             let src_threads = src_store.all_threads().unwrap_or_default();
             dst.conn.execute_batch("BEGIN")?;
             let step = (|| -> Result<(usize, usize)> {

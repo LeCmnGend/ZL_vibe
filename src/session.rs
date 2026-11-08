@@ -1107,7 +1107,7 @@ impl Session {
             cookies,
         };
         let text = serde_json::to_string_pretty(&saved)?;
-        crate::data_dir::write_private_atomic(path.as_ref(), text.as_bytes())?;
+        crate::vault::write_sensitive(path.as_ref(), text.as_bytes())?;
         Ok(())
     }
 
@@ -1115,7 +1115,9 @@ impl Session {
     pub fn load_from_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
         use base64::Engine;
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path)?;
+        let bytes = std::fs::read(path)?;
+        let was_encrypted = bytes.starts_with(b"ZLVENC1\0");
+        let text = String::from_utf8(crate::vault::decrypt_bytes(&bytes)?)?;
         // Files written by older builds were world-readable on Unix.
         crate::paths::restrict_file(path);
         let saved: SavedSession = serde_json::from_str(&text)?;
@@ -1195,6 +1197,10 @@ impl Session {
         } else {
             self.login = None;
             anyhow::bail!("session.json thiếu mã xác thực zpw_sek");
+        }
+
+        if !was_encrypted && crate::vault::enabled() {
+            crate::vault::write_sensitive(path, text.as_bytes())?;
         }
 
         Ok(())
@@ -1761,6 +1767,7 @@ mod tests {
 
     #[test]
     fn session_atomic_save_preserves_saved_format_and_restores_fixture() {
+        crate::vault::initialize_test_key();
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1778,7 +1785,8 @@ mod tests {
         source.zpw_sek = Some("fixture-auth-token".into());
         source.save_to_file(path.to_str().unwrap()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let saved: SavedSession = serde_json::from_slice(&bytes).unwrap();
+        let saved: SavedSession =
+            serde_json::from_slice(&crate::vault::decrypt_bytes(&bytes).unwrap()).unwrap();
         assert_eq!(saved.computer_name, "fixture-device");
         assert_eq!(saved.session_key.as_deref(), Some("fixture-session-key"));
         let mut restored = Session::new(false, false, false).unwrap();
@@ -2194,6 +2202,7 @@ mod tests {
 
     #[test]
     fn ingest_set_cookie_headers_rotates_live_zpw_sek_and_ignores_1970_deletions() {
+        crate::vault::initialize_test_key();
         let mut s = Session::new(false, false, false).unwrap();
         s.set_zpw_sek("OLD_QR_TICKET_SEK".into());
         assert_eq!(s.current_zpw_sek().as_deref(), Some("OLD_QR_TICKET_SEK"));

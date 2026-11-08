@@ -499,7 +499,7 @@ async fn qr_finish(
     }
     if std::path::Path::new("session.json").exists() {
         let mut should_backup = false;
-        if let Ok(raw) = std::fs::read_to_string("session.json") {
+        if let Ok(raw) = crate::vault::read_sensitive_text(std::path::Path::new("session.json")) {
             if let Ok(v) = serde_json::from_str::<Value>(&raw) {
                 let has_sek = v
                     .get("zpw_sek")

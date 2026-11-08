@@ -88,6 +88,7 @@ async fn main() -> Result<()> {
         println!("{}", data_path.display());
         return Ok(());
     }
+    zalo_rust::vault::initialize(&data_path)?;
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
         let ts = std::time::SystemTime::now()

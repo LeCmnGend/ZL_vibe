@@ -210,7 +210,7 @@ pub fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         file.write_all(contents).context("Cannot write session")?;
         file.sync_all().context("Cannot flush session")?;
         drop(file);
-        std::fs::rename(&temporary, path)
+        replace_file(&temporary, path)
             .with_context(|| format!("Cannot replace session {}", path.display()))?;
         Ok(())
     })();
@@ -219,6 +219,31 @@ pub fn write_private_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+pub(crate) fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            MoveFileExW(
+                PCWSTR(source.as_ptr()),
+                PCWSTR(target.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        }
+        .map_err(std::io::Error::other)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(source, target)
+    }
 }
 
 #[cfg(test)]
