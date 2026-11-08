@@ -29,6 +29,15 @@ pub struct StoredThread {
     pub last_ts: i64,
 }
 
+/// A span in which messages may be missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingRange {
+    pub conv_id: String,
+    pub from_ts: i64,
+    pub to_ts: i64,
+    pub reason: String,
+}
+
 pub struct MessageStore {
     pub conn: Connection,
 }
@@ -78,6 +87,15 @@ impl MessageStore {
                 name TEXT,
                 is_group INTEGER,
                 last_ts INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS missing_ranges (
+                id INTEGER PRIMARY KEY,
+                conv_id TEXT NOT NULL,
+                from_ts INTEGER NOT NULL,
+                to_ts INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                dismissed INTEGER NOT NULL DEFAULT 0
             );",
         )?;
         // Migration 1: one-time cleanup of placeholder rows. This DELETE used to run (a full
@@ -92,6 +110,48 @@ impl MessageStore {
         }
 
         Ok(Self { conn })
+    }
+
+    /// Store a gap detected while syncing history; repeated gaps with the same start are extended.
+    pub fn add_missing_range(&self, conv_id: &str, from_ts: i64, to_ts: i64, reason: &str) -> Result<bool> {
+        let extended = self.conn.execute(
+            "UPDATE missing_ranges SET to_ts = MAX(to_ts, ?3)
+             WHERE conv_id = ?1 AND from_ts = ?2 AND dismissed = 0",
+            params![conv_id, from_ts, to_ts],
+        )?;
+        if extended > 0 {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO missing_ranges (conv_id, from_ts, to_ts, reason, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![conv_id, from_ts, to_ts, reason, crate::timefmt::now_ms()],
+        )?;
+        Ok(true)
+    }
+
+    /// Read undismissed gaps in chronological order for the sync warning banner.
+    pub fn open_missing_ranges(&self) -> Result<Vec<MissingRange>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT conv_id, from_ts, to_ts, reason FROM missing_ranges
+             WHERE dismissed = 0 ORDER BY from_ts ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(MissingRange {
+                conv_id: r.get(0)?,
+                from_ts: r.get(1)?,
+                to_ts: r.get(2)?,
+                reason: r.get(3)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Mark visible gaps as dismissed when the user closes the sync warning.
+    pub fn dismiss_missing_ranges(&self) -> Result<()> {
+        self.conn
+            .execute("UPDATE missing_ranges SET dismissed = 1 WHERE dismissed = 0", [])?;
+        Ok(())
     }
 
     /// Insert a message. Returns `true` if a new row was inserted, `false` if already existed.
