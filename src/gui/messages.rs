@@ -1467,7 +1467,7 @@ fn render_group_poll_widget(
     let mut submit = false;
     egui::Frame::none()
         .fill(pal.bg_elevated.linear_multiply(0.9))
-        .stroke(Stroke::new(1.0, pal.border))
+        .stroke(Stroke::new(1.0_f32, pal.border))
         .rounding(Rounding::same(10.0))
         .inner_margin(Margin::symmetric(12.0, 10.0))
         .show(ui, |ui| {

@@ -222,7 +222,7 @@ impl ZaloGuiApp {
             .show(ctx, |ui| {
                 egui::Frame::none()
                     .fill(pal.bg_elevated)
-                    .stroke(Stroke::new(1.0, pal.border))
+                    .stroke(Stroke::new(1.0_f32, pal.border))
                     .rounding(Rounding::same(10.0))
                     .shadow(egui::epaint::Shadow {
                         offset: Vec2::new(0.0, 10.0),
