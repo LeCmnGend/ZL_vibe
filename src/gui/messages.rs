@@ -3804,6 +3804,8 @@ pub(super) fn render_hover_reaction_bar(
     }
     let bar_w = 100.0_f32;
     let bar_h = 34.0_f32;
+    let reaction_w = 198.0_f32;
+    let reaction_h = 36.0_f32;
     let like_size = 26.0_f32;
     let clip = ctx.screen_rect();
     let min_x = clip.left() + 8.0;
@@ -3818,6 +3820,16 @@ pub(super) fn render_hover_reaction_bar(
     let max_bar_y = (clip.bottom() - bar_h - 8.0).max(min_y);
     let bar_y = (bubble_rect.bottom() - bar_h).clamp(min_y, max_bar_y);
     let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, bar_h));
+    let reaction_x = (bubble_rect.left() + 8.0).clamp(
+        min_x,
+        (clip.right() - reaction_w - 8.0).max(min_x),
+    );
+    let reaction_y = (bubble_rect.top() - reaction_h - 6.0)
+        .clamp(min_y, (clip.bottom() - reaction_h - 8.0).max(min_y));
+    let reaction_rect = Rect::from_min_size(
+        Pos2::new(reaction_x, reaction_y),
+        Vec2::new(reaction_w, reaction_h),
+    );
     let like_x = (bubble_rect.left() + 8.0).clamp(
         min_x,
         (clip.right() - like_size - 8.0).max(min_x),
@@ -3832,6 +3844,7 @@ pub(super) fn render_hover_reaction_bar(
     );
     let hover_zone = bubble_rect
         .union(bar_rect)
+        .union(reaction_rect)
         .union(like_rect)
         .expand2(Vec2::splat(10.0));
     let hover_id = Id::new("active_hover_reaction_bubble");
@@ -3937,6 +3950,37 @@ pub(super) fn render_hover_reaction_bar(
                     ctx.request_repaint();
                 }
             });
+        });
+
+    egui::Area::new(Id::new(("quick_reaction_picker", idx, msg.ts, &msg.id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(reaction_rect.min)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(pal.bg_list)
+                .stroke(Stroke::new(1.0_f32, pal.border))
+                .rounding(Rounding::same(18.0))
+                .inner_margin(Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        for &(emoji, _, label) in &crate::gui::REACTION_LIST {
+                            let response = ui
+                                .add(
+                                    egui::Button::new(RichText::new(emoji).size(17.0))
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(Stroke::NONE)
+                                        .min_size(Vec2::splat(28.0))
+                                        .rounding(Rounding::same(14.0)),
+                                )
+                                .on_hover_text(label);
+                            if response.clicked() {
+                                ctx.data_mut(|d| d.remove::<String>(hover_id));
+                                action = Some(BubbleAction::React(emoji));
+                            }
+                        }
+                    });
+                });
         });
 
     egui::Area::new(Id::new(("hover_reaction_like", idx, msg.ts, &msg.id)))
