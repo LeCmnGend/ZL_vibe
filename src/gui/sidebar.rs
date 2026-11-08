@@ -2036,6 +2036,23 @@ impl ZaloGuiApp {
                                 action = Some(code);
                             }
                         }
+                        if is_group {
+                            let (r, resp) = ui.allocate_exact_size(Vec2::new(230.0, 34.0), Sense::click());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(r, Rounding::same(8.0), pal.bg_hover);
+                            }
+                            draw_lucide_icon(ui.painter(), Pos2::new(r.left() + 18.0, r.center().y), lucide::MESSAGE_SQUARE, 16.0, pal.primary);
+                            ui.painter().text(
+                                Pos2::new(r.left() + 38.0, r.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                "Tạo bình chọn",
+                                FontId::proportional(13.5),
+                                pal.text_primary,
+                            );
+                            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                action = Some(3);
+                            }
+                        }
                     });
                 });
             if area.response.clicked_elsewhere() && !pointer_in(plus_rect) {
@@ -2061,7 +2078,13 @@ impl ZaloGuiApp {
                         }
                     }
                     _ => {
-                        if let Some((path, w, h, col_img)) = read_clipboard_image_to_png() {
+                        if code == 3 {
+                            self.group_poll_create_id = Some(thread_id.to_owned());
+                            self.group_poll_question.clear();
+                            self.group_poll_options = vec![String::new(), String::new()];
+                            self.group_poll_allow_multi = false;
+                            self.group_poll_submitting = false;
+                        } else if let Some((path, w, h, col_img)) = read_clipboard_image_to_png() {
                             let tex = ctx.load_texture(
                                 format!("clip_preview_{}", crate::timefmt::now_ms()),
                                 col_img,

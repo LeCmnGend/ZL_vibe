@@ -391,6 +391,11 @@ impl MessageStore {
                 let mut reaction_summaries = Vec::new();
                 let mut is_pinned = false;
                 let mut is_starred = false;
+                let mut poll = None;
+                let mut server_pin_id = None;
+                let mut server_pin_time = None;
+                let mut client_message_id = String::new();
+                let mut wire_ref = crate::message_model::WireMessageRef::default();
                 let mut link_url = None;
                 let mut link_title = None;
                 let mut link_desc = None;
@@ -451,6 +456,25 @@ impl MessageStore {
                             .get("is_starred")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
+                        poll = val
+                            .get("poll")
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok());
+                        server_pin_id = val
+                            .get("server_pin_id")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        server_pin_time = val.get("server_pin_time").and_then(|v| v.as_i64());
+                        client_message_id = val
+                            .get("client_message_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_owned();
+                        wire_ref = val
+                            .get("wire_ref")
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok())
+                            .unwrap_or_default();
                         link_url = val
                             .get("link_url")
                             .and_then(|v| v.as_str())
@@ -475,6 +499,8 @@ impl MessageStore {
                 }
                 let cm = ChatMessage {
                     id: sm.msg_id,
+                    client_message_id,
+                    wire_ref,
                     sender: if !sm.sender_name.is_empty() {
                         sm.sender_name
                     } else {
@@ -494,6 +520,9 @@ impl MessageStore {
                     reaction_summaries,
                     is_pinned,
                     is_starred,
+                    poll,
+                    server_pin_id,
+                    server_pin_time,
                     link_url,
                     link_title,
                     link_desc,
@@ -570,7 +599,9 @@ impl MessageStore {
 impl From<&ChatMessage> for StoredMessage {
     fn from(m: &ChatMessage) -> Self {
         let mut meta = serde_json::Map::new();
-        let msg_type = if let Some(sid) = m.sticker_id {
+        let msg_type = if m.poll.is_some() {
+            "group.poll".to_string()
+        } else if let Some(sid) = m.sticker_id {
             let cid = m.sticker_cate_id.unwrap_or(0);
             let st = m.sticker_type.unwrap_or(7);
             meta.insert("stickerId".into(), serde_json::json!(sid));
@@ -603,6 +634,30 @@ impl From<&ChatMessage> for StoredMessage {
         }
         if m.is_starred {
             meta.insert("is_starred".into(), serde_json::json!(true));
+        }
+        if let Some(poll) = &m.poll {
+            meta.insert("poll".into(), serde_json::json!(poll));
+        }
+        if let Some(pin_id) = &m.server_pin_id {
+            meta.insert("server_pin_id".into(), serde_json::json!(pin_id));
+        }
+        if let Some(pin_time) = m.server_pin_time {
+            meta.insert("server_pin_time".into(), serde_json::json!(pin_time));
+        }
+        if !m.client_message_id.is_empty() {
+            meta.insert(
+                "client_message_id".into(),
+                serde_json::json!(m.client_message_id),
+            );
+        }
+        if m.wire_ref.server_id.is_some()
+            || m.wire_ref.client_id.is_some()
+            || m.wire_ref.sender.is_some()
+            || m.wire_ref.original_type.is_some()
+        {
+            let mut wire_ref = m.wire_ref.clone();
+            wire_ref.fields.clear();
+            meta.insert("wire_ref".into(), serde_json::json!(wire_ref));
         }
         if let Some(lurl) = &m.link_url {
             meta.insert("link_url".into(), serde_json::json!(lurl));

@@ -36,3 +36,24 @@ Manual verification when the user authorizes a build and live session:
 4. As a deputy, attempt an owner-only action; confirm Zalo returns a visible permission error.
 
 No build, test, or live API request was run. Revert the group-administration commit to roll back these endpoints and UI actions.
+
+## Group board pins and polls
+
+Status: source-matched; live-session verification pending.
+
+References: local `zca-js` snapshot in Feeding `zalo-100` for `/api/board/list`, poll create/vote, and `BoardType`; archived `Its-VrxxDev/zlapi` implementation for group message pin and unpin payload fields.
+
+- Fetch board items from the runtime `group_board` service-map host, with the source-derived `https://groupboard-wpa.chat.zalo.me` fallback.
+- Create and vote polls through the `group` service map. Board list items supply poll questions, options, counts, and voter state.
+- Pin through `/api/board/topic/createv2`; unpin through `/api/board/unpinv2`. Pin state and board identifiers are refreshed from the server list.
+- Pin payload support currently covers text, photo, voice, sticker, and video message kinds. Other kinds return an explicit error.
+- These endpoints are reverse-engineered and unofficial. The pin payload source uses an older ZPW version; live compatibility is not confirmed.
+
+Manual verification when the user authorizes a build and live session:
+
+1. Open a group with existing pins and polls; confirm the server board appears in chat history.
+2. Pin and unpin a text and photo message; confirm the top pinned strip updates after each server refresh.
+3. Create a poll with single and multiple choices; vote and confirm counts update from the board response.
+4. Confirm a failed or unauthorized request shows an error and does not leave local pin state changed.
+
+No build, test, or live API request was run for this change.

@@ -1446,6 +1446,103 @@ pub(super) fn same_message_cluster(a: &ChatMessage, b: &ChatMessage) -> bool {
     true
 }
 
+fn render_group_poll_widget(
+    ui: &mut egui::Ui,
+    poll: &crate::chat::GroupPoll,
+    pal: &ThemePalette,
+    max_width: f32,
+) -> Option<BubbleAction> {
+    let selection_id = Id::new(("group_poll_selection", poll.poll_id));
+    let mut selected = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<std::collections::HashSet<u64>>(selection_id))
+        .unwrap_or_else(|| {
+            poll.options
+                .iter()
+                .filter(|option| option.voted)
+                .map(|option| option.option_id)
+                .collect()
+        });
+    let mut selection_changed = false;
+    let mut submit = false;
+    egui::Frame::none()
+        .fill(pal.bg_elevated.linear_multiply(0.9))
+        .stroke(Stroke::new(1.0, pal.border))
+        .rounding(Rounding::same(10.0))
+        .inner_margin(Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.set_min_width(max_width.clamp(220.0, 360.0));
+            ui.label(RichText::new("Bình chọn").size(11.0).color(pal.primary).strong());
+            ui.label(RichText::new(&poll.question).size(14.0).strong().color(pal.text_primary));
+            ui.add_space(4.0);
+            let show_results = !poll.is_hide_vote_preview || poll.joined;
+            let has_voted = poll.joined || poll.options.iter().any(|option| option.voted);
+            let total_votes = poll.num_vote.max(poll.options.iter().map(|option| option.votes).sum());
+            ui.add_enabled_ui(!poll.closed, |ui| {
+                for option in &poll.options {
+                    let is_selected = selected.contains(&option.option_id);
+                    if ui.selectable_label(is_selected, &option.content).clicked() {
+                        if is_selected {
+                            selected.remove(&option.option_id);
+                        } else {
+                            if !poll.allow_multi_choices {
+                                selected.clear();
+                            }
+                            selected.insert(option.option_id);
+                        }
+                        selection_changed = true;
+                    }
+                    if show_results {
+                        let fraction = if total_votes == 0 {
+                            0.0
+                        } else {
+                            option.votes as f32 / total_votes as f32
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
+                                .text(format!(
+                                    "{} · {}%",
+                                    option.votes,
+                                    (fraction * 100.0).round() as u32
+                                )),
+                        );
+                    }
+                }
+            });
+            if poll.closed {
+                ui.label(RichText::new("Bình chọn đã kết thúc").size(11.0).color(pal.text_muted));
+            } else {
+                ui.horizontal(|ui| {
+                    let label = if selected.is_empty() && has_voted {
+                        "Bỏ bình chọn"
+                    } else {
+                        "Gửi bình chọn"
+                    };
+                    if ui
+                        .add_enabled(!selected.is_empty() || has_voted, egui::Button::new(label))
+                        .clicked()
+                    {
+                        submit = true;
+                    }
+                    let count_label = if show_results {
+                        format!("{total_votes} lượt bình chọn")
+                    } else {
+                        "Kết quả sẽ hiện sau khi bình chọn".into()
+                    };
+                    ui.label(RichText::new(count_label).size(10.5).color(pal.text_muted));
+                });
+            }
+        });
+    if selection_changed {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(selection_id, selected.clone()));
+    }
+    submit.then(|| BubbleAction::VoteGroupPoll {
+        poll_id: poll.poll_id,
+        option_ids: selected.into_iter().collect(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_message_body(
     ui: &mut egui::Ui,
@@ -1499,6 +1596,10 @@ pub(super) fn render_message_body(
     } else {
         thread_name.to_string()
     };
+
+    if let Some(poll) = msg.poll.as_ref() {
+        return render_group_poll_widget(ui, poll, pal, max_text_width);
+    }
 
     // Dedicated inline Photo Card when the message is an uploaded/received Zalo photo (#72)
     let is_zalo_photo = is_zalo_photo_message(msg);
@@ -2174,8 +2275,12 @@ pub(super) fn render_chat_bubble(
     let is_video_thumb_card = !has_sticker && !is_photo_card && video_thumb_url(msg).is_some();
     let is_file_card = !has_sticker && !is_photo_card && !is_video_thumb_card && is_file_or_video_message(msg);
     let has_link_card = !has_sticker && !is_photo_card && !is_video_thumb_card && !is_file_card && extract_message_link_view(msg).is_some();
-    let has_interactive_card =
-        is_call_card || has_link_card || is_photo_card || is_video_thumb_card || is_file_card;
+    let has_interactive_card = msg.poll.is_some()
+        || is_call_card
+        || has_link_card
+        || is_photo_card
+        || is_video_thumb_card
+        || is_file_card;
 
     let show_timestamp = !msg.time.is_empty()
         && (!next_same_sender
@@ -2202,7 +2307,9 @@ pub(super) fn render_chat_bubble(
 
     // Pre-measure exact content width for both outgoing and incoming bubbles so every bubble,
     // photo, and call card hugs its content tightly without horizontal overflow or inner/outer frame mismatch.
-    let content_width = if has_sticker {
+    let content_width = if msg.poll.is_some() {
+        max_text_width.clamp(220.0, 360.0)
+    } else if has_sticker {
         116.0_f32
     } else if is_call_card {
         max_text_width.min(256.0)
@@ -2702,6 +2809,10 @@ pub(super) enum BubbleAction {
     ViewDetails,
     TogglePin,
     ToggleStar,
+    VoteGroupPoll {
+        poll_id: u64,
+        option_ids: Vec<u64>,
+    },
     ScheduleReminder,
     DeleteForMe,
     RecallForEveryone,

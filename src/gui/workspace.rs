@@ -192,6 +192,21 @@ impl ZaloGuiApp {
                 t.messages.len(),
             )
         });
+        let selected_group = thread_meta
+            .as_ref()
+            .filter(|(_, _, _, is_group, _)| *is_group)
+            .map(|(group_id, _, _, _, _)| group_id.clone());
+        if selected_group != self.group_board_requested {
+            self.group_board_requested = selected_group.clone();
+            if let Some(group_id) = selected_group {
+                let sent = WORKER_TX
+                    .get()
+                    .is_some_and(|tx| tx.send(WorkerCmd::FetchGroupBoard { group_id }).is_ok());
+                if !sent {
+                    self.group_board_requested = None;
+                }
+            }
+        }
 
         // -------------------------------------------------------------------
         // 3. COLLAPSIBLE RIGHT CONVERSATION INFO DRAWER (responsive width)
@@ -3087,27 +3102,68 @@ impl ZaloGuiApp {
                                         });
                                     }
                                 }
-                                BubbleAction::TogglePin | BubbleAction::ToggleStar => {
+                                BubbleAction::VoteGroupPoll { poll_id, option_ids } => {
+                                    ctx.data_mut(|data| {
+                                        data.remove::<std::collections::HashSet<u64>>(Id::new((
+                                            "group_poll_selection",
+                                            poll_id,
+                                        )))
+                                    });
+                                    if let Some(tx) = WORKER_TX.get() {
+                                        let _ = tx.send(WorkerCmd::VoteGroupPoll {
+                                            group_id: thread_id.clone(),
+                                            poll_id,
+                                            option_ids,
+                                        });
+                                    }
+                                }
+                                BubbleAction::TogglePin => {
+                                    if is_group {
+                                        if let Some(tx) = WORKER_TX.get() {
+                                            let pin = !m.is_pinned;
+                                            if tx
+                                                .send(WorkerCmd::SetGroupMessagePinned {
+                                                    group_id: thread_id.clone(),
+                                                    message: m,
+                                                    pin,
+                                                })
+                                                .is_ok()
+                                            {
+                                                self.status_msg = if pin {
+                                                    "Đang ghim tin nhắn lên nhóm…".into()
+                                                } else {
+                                                    "Đang bỏ ghim tin nhắn…".into()
+                                                };
+                                            }
+                                        }
+                                    } else {
+                                        if let Some(real) = self
+                                            .threads
+                                            .get_mut(self.selected_thread_index)
+                                            .and_then(|thread| thread.messages.get_mut(idx))
+                                        {
+                                            real.is_pinned = !real.is_pinned;
+                                            self.status_msg = if real.is_pinned {
+                                                "Đã ghim tin nhắn trong ứng dụng".into()
+                                            } else {
+                                                "Đã bỏ ghim tin nhắn trong ứng dụng".into()
+                                            };
+                                        }
+                                        self.persist_threads_async();
+                                    }
+                                }
+                                BubbleAction::ToggleStar => {
                                     if let Some(real) = self
                                         .threads
                                         .get_mut(self.selected_thread_index)
                                         .and_then(|t| t.messages.get_mut(idx))
                                     {
-                                        if action == BubbleAction::TogglePin {
-                                            real.is_pinned = !real.is_pinned;
-                                            self.status_msg = if real.is_pinned {
-                                                "Đã ghim tin nhắn lên đầu hội thoại".into()
-                                            } else {
-                                                "Đã bỏ ghim tin nhắn".into()
-                                            };
+                                        real.is_starred = !real.is_starred;
+                                        self.status_msg = if real.is_starred {
+                                            "Đã đánh dấu sao tin nhắn".into()
                                         } else {
-                                            real.is_starred = !real.is_starred;
-                                            self.status_msg = if real.is_starred {
-                                                "Đã đánh dấu sao tin nhắn".into()
-                                            } else {
-                                                "Đã bỏ đánh dấu sao".into()
-                                            };
-                                        }
+                                            "Đã bỏ đánh dấu sao tin nhắn".into()
+                                        };
                                     }
                                     self.persist_threads_async();
                                 }

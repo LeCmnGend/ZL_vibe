@@ -56,6 +56,12 @@ pub struct ChatMessage {
     #[serde(default)]
     pub is_starred: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<GroupPoll>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_pin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_pin_time: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_title: Option<String>,
@@ -69,6 +75,31 @@ pub struct ChatMessage {
     pub history_source: Option<Value>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub resolved_mention_uids: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GroupPoll {
+    pub poll_id: u64,
+    pub creator: String,
+    pub question: String,
+    pub options: Vec<GroupPollOption>,
+    pub joined: bool,
+    pub closed: bool,
+    pub allow_multi_choices: bool,
+    pub allow_add_new_option: bool,
+    pub is_anonymous: bool,
+    pub is_hide_vote_preview: bool,
+    pub num_vote: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GroupPollOption {
+    pub option_id: u64,
+    pub content: String,
+    pub votes: u64,
+    pub voted: bool,
 }
 
 impl ChatMessage {
@@ -4827,6 +4858,331 @@ pub fn apply_pinned_threads(threads: &mut [Thread], pinned_ids: &[String]) {
     for t in threads.iter_mut() {
         t.presentation.pinned = is_pinned_in_list(&t.id, t.is_group, pinned_ids);
     }
+}
+
+fn board_value_string(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(value) if !value.trim().is_empty() => Some(value.trim().to_owned()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn board_value_i64(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(value) => value.as_i64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn board_params(data: &Value) -> Value {
+    match data.get("params") {
+        Some(Value::String(value)) => serde_json::from_str(value).unwrap_or(Value::Null),
+        Some(value) => value.clone(),
+        None => Value::Null,
+    }
+}
+
+/// Fetch the server-owned group board (pinned messages and polls).
+pub async fn get_group_board(s: &Session, group_id: &str) -> Result<Vec<ChatMessage>> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let grid = group_id
+        .trim_start_matches("group_")
+        .trim_start_matches('g')
+        .trim_start_matches('G');
+    let body = obj(&[
+        ("group_id", json!(grid)),
+        ("board_type", json!(0)),
+        ("page", json!(1)),
+        ("count", json!(50)),
+        ("last_id", json!(0)),
+        ("last_type", json!(0)),
+        ("imei", json!(s.imei)),
+    ]);
+    let encrypted = s.encoded_params(&body)?;
+    let path = format!(
+        "/api/board/list?{}&params={encrypted}",
+        s.common_params()
+    );
+    let response = s.get_endpoint("group_board", &path).await?;
+    let response = s
+        .maybe_decrypt(response, s.session_key_bytes())
+        .await;
+    Ok(parse_group_board_items(&response, s.login.as_ref().map(|login| login.uin.as_str()).unwrap_or_default()))
+}
+
+fn parse_group_board_items(response: &Value, self_id: &str) -> Vec<ChatMessage> {
+    let data = response.get("data").unwrap_or(response);
+    let data = data.get("data").filter(|value| value.is_object()).unwrap_or(data);
+    let Some(items) = data.get("items").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    for item in items {
+        let board_type = item
+            .get("boardType")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let Some(data) = item.get("data") else {
+            continue;
+        };
+        if board_type == 3 {
+            let poll_id = board_value_i64(data.get("poll_id")).unwrap_or_default();
+            if poll_id <= 0 {
+                continue;
+            }
+            let options = data
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|option| {
+                    let option_id = board_value_i64(option.get("option_id"))?;
+                    Some(GroupPollOption {
+                        option_id: option_id.max(0) as u64,
+                        content: option.get("content")?.as_str()?.to_owned(),
+                        votes: board_value_i64(option.get("votes")).unwrap_or_default().max(0) as u64,
+                        voted: option.get("voted").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let ts = board_value_i64(data.get("created_time")).unwrap_or_default();
+            let question = data
+                .get("question")
+                .and_then(Value::as_str)
+                .unwrap_or("Bình chọn")
+                .to_owned();
+            messages.push(ChatMessage {
+                id: format!("poll_{poll_id}"),
+                sender: board_value_string(data.get("creator")).unwrap_or_default(),
+                text: question.clone(),
+                time: if ts > 0 { crate::clock::message_time(ts) } else { String::new() },
+                ts,
+                poll: Some(GroupPoll {
+                    poll_id: poll_id as u64,
+                    creator: board_value_string(data.get("creator")).unwrap_or_default(),
+                    question,
+                    options,
+                    joined: data.get("joined").and_then(Value::as_bool).unwrap_or(false),
+                    closed: data.get("closed").and_then(Value::as_bool).unwrap_or(false),
+                    allow_multi_choices: data.get("allow_multi_choices").and_then(Value::as_bool).unwrap_or(false),
+                    allow_add_new_option: data.get("allow_add_new_option").and_then(Value::as_bool).unwrap_or(false),
+                    is_anonymous: data.get("is_anonymous").and_then(Value::as_bool).unwrap_or(false),
+                    is_hide_vote_preview: data.get("is_hide_vote_preview").and_then(Value::as_bool).unwrap_or(false),
+                    num_vote: board_value_i64(data.get("num_vote")).unwrap_or_default().max(0) as u64,
+                }),
+                ..Default::default()
+            });
+        } else if board_type == 2 {
+            let params = board_params(data);
+            let Some(message_id) = board_value_string(params.get("global_msg_id")) else {
+                continue;
+            };
+            let sender = board_value_string(params.get("senderName")).unwrap_or_default();
+            let sender_id = board_value_string(params.get("senderUid")).unwrap_or_default();
+            let ts = ["sendTime", "ts", "timestamp"]
+                .iter()
+                .find_map(|key| board_value_i64(params.get(*key)))
+                .unwrap_or_default();
+            let pin_id = board_value_string(data.get("id"));
+            let pin_time = ["boardVersion", "pinTime", "editTime", "createTime", "startTime"]
+                .iter()
+                .find_map(|key| board_value_i64(data.get(*key)));
+            let title = board_value_string(params.get("title")).unwrap_or_else(|| "[Tin đã ghim]".into());
+            let kind = board_value_i64(params.get("msg_type"))
+                .map(crate::message_model::MessageKind::from_archive_code)
+                .unwrap_or(crate::message_model::MessageKind::Text);
+            messages.push(ChatMessage {
+                kind,
+                id: message_id,
+                client_message_id: board_value_string(params.get("client_msg_id")).unwrap_or_default(),
+                sender: if sender_id == self_id { "Bạn".into() } else { sender },
+                text: title,
+                time: if ts > 0 { crate::clock::message_time(ts) } else { String::new() },
+                ts,
+                is_outgoing: sender_id == self_id,
+                is_pinned: true,
+                server_pin_id: pin_id,
+                server_pin_time: pin_time,
+                link_thumb: board_value_string(params.get("thumb")),
+                ..Default::default()
+            });
+        }
+    }
+    messages
+}
+
+/// Create a group poll through the group service.
+pub async fn create_group_poll(
+    s: &Session,
+    group_id: &str,
+    question: &str,
+    options: &[String],
+    allow_multi_choices: bool,
+) -> Result<Value> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let options: Vec<_> = options.iter().map(|option| option.trim()).filter(|option| !option.is_empty()).collect();
+    if question.trim().is_empty() || options.len() < 2 {
+        anyhow::bail!("cần câu hỏi và ít nhất hai lựa chọn");
+    }
+    let grid = group_id
+        .trim_start_matches("group_")
+        .trim_start_matches('g')
+        .trim_start_matches('G');
+    let body = obj(&[
+        ("group_id", json!(grid)),
+        ("question", json!(question.trim())),
+        ("options", json!(options)),
+        ("expired_time", json!(0)),
+        ("pinAct", json!(false)),
+        ("allow_multi_choices", json!(allow_multi_choices)),
+        ("allow_add_new_option", json!(false)),
+        ("is_hide_vote_preview", json!(false)),
+        ("is_anonymous", json!(false)),
+        ("poll_type", json!(0)),
+        ("src", json!(1)),
+        ("imei", json!(s.imei)),
+    ]);
+    let encrypted = s.encoded_params(&body)?;
+    let response = s
+        .post_endpoint_form(
+            "group",
+            &format!("/api/poll/create?{}", s.common_params()),
+            format!("params={encrypted}"),
+        )
+        .await?;
+    Ok(s.maybe_decrypt(response, s.session_key_bytes()).await)
+}
+
+/// Cast or replace a poll vote.
+pub async fn vote_group_poll(s: &Session, poll_id: u64, option_ids: &[u64]) -> Result<Value> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let body = obj(&[
+        ("poll_id", json!(poll_id)),
+        ("option_ids", json!(option_ids)),
+        ("imei", json!(s.imei)),
+    ]);
+    let encrypted = s.encoded_params(&body)?;
+    let path = format!("/api/poll/vote?{}&params={encrypted}", s.common_params());
+    let response = s.get_endpoint("group", &path).await?;
+    Ok(s.maybe_decrypt(response, s.session_key_bytes()).await)
+}
+
+/// Pin a group message using the server board API.
+pub async fn pin_group_message(s: &Session, group_id: &str, message: &ChatMessage) -> Result<Value> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let message_id = board_value_string(message.wire_ref.server_id.as_ref())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| message.id.clone());
+    let client_id = board_value_string(message.wire_ref.client_id.as_ref())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| message.client_message_id.clone());
+    let login_id = s.login.as_ref().map(|login| login.uin.as_str()).unwrap_or_default();
+    let login_name = s
+        .login
+        .as_ref()
+        .map(|login| login.display_name.as_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(message.sender.as_str());
+    let sender_id = board_value_string(message.wire_ref.sender.as_ref())
+        .filter(|id| id != "0")
+        .unwrap_or_else(|| if message.is_outgoing { login_id.to_owned() } else { message.sender.clone() });
+    let raw_message = if message.wire_ref.fields.is_empty() {
+        json!({ "msgType": message.wire_ref.original_type.as_ref() })
+    } else {
+        Value::Object(message.wire_ref.fields.clone().into_iter().collect())
+    };
+    let message_kind = if message.kind == crate::message_model::MessageKind::Unknown {
+        let wire_type = normalize_msg_type(&raw_message);
+        wire_type
+            .parse::<i64>()
+            .map(crate::message_model::MessageKind::from_archive_code)
+            .unwrap_or_else(|_| crate::message_model::MessageKind::from_wire_name(&wire_type))
+    } else {
+        message.kind
+    };
+    let msg_type = match message_kind {
+        crate::message_model::MessageKind::Text => 0,
+        crate::message_model::MessageKind::Photo => 3,
+        crate::message_model::MessageKind::Voice => 6,
+        crate::message_model::MessageKind::Sticker => 10,
+        crate::message_model::MessageKind::Video => 19,
+        _ => anyhow::bail!("loại tin nhắn này chưa hỗ trợ ghim từ ứng dụng"),
+    };
+    if message_id.is_empty() || client_id.is_empty() || sender_id.is_empty() {
+        anyhow::bail!("tin nhắn thiếu mã máy chủ, mã ứng dụng hoặc người gửi");
+    }
+    let mut pin = json!({
+        "client_msg_id": client_id,
+        "global_msg_id": message_id,
+        "senderUid": sender_id,
+        "senderName": if message.is_outgoing { login_name } else { message.sender.as_str() },
+        "title": message.link_desc.as_deref().filter(|text| !text.is_empty()).unwrap_or(&message.text),
+        "msg_type": msg_type,
+    });
+    if let Some(thumb) = message.link_thumb.as_deref().filter(|thumb| !thumb.is_empty()) {
+        pin["thumb"] = json!(thumb);
+    }
+    if let Some(sticker_id) = message.sticker_id {
+        pin["extra"] = json!(json!({
+            "id": sticker_id,
+            "catId": message.sticker_cate_id.unwrap_or_default(),
+            "type": message.sticker_type.unwrap_or(7),
+        }).to_string());
+    }
+    let body = obj(&[
+        ("grid", json!(group_id.trim_start_matches("group_").trim_start_matches('g'))),
+        ("type", json!(2)),
+        ("color", json!(-14540254)),
+        ("emoji", json!("📌")),
+        ("startTime", json!(-1)),
+        ("duration", json!(-1)),
+        ("params", json!(pin.to_string())),
+        ("repeat", json!(0)),
+        ("src", json!(-1)),
+        ("imei", json!(s.imei)),
+        ("pinAct", json!(1)),
+    ]);
+    let encrypted = s.encoded_params(&body)?;
+    let response = s
+        .post_endpoint_form(
+            "group_board",
+            &format!("/api/board/topic/createv2?{}", s.common_params()),
+            format!("params={encrypted}"),
+        )
+        .await?;
+    Ok(s.maybe_decrypt(response, s.session_key_bytes()).await)
+}
+
+/// Remove a group message from the server board.
+pub async fn unpin_group_message(
+    s: &Session,
+    group_id: &str,
+    pin_id: &str,
+    board_version: i64,
+) -> Result<Value> {
+    if s.login.is_none() {
+        anyhow::bail!("chưa đăng nhập");
+    }
+    let body = obj(&[
+        ("grid", json!(group_id.trim_start_matches("group_").trim_start_matches('g'))),
+        ("imei", json!(s.imei)),
+        ("topic", json!({ "topicId": pin_id, "topicType": 2 })),
+        ("boardVersion", json!(board_version)),
+    ]);
+    let encrypted = s.encoded_params(&body)?;
+    let path = format!("/api/board/unpinv2?{}&params={encrypted}", s.common_params());
+    let response = s.get_endpoint("group_board", &path).await?;
+    Ok(s.maybe_decrypt(response, s.session_key_bytes()).await)
 }
 
 /// `GET /api/group/history` (cmd 11240) — group message history.

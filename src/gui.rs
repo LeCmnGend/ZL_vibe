@@ -272,6 +272,18 @@ pub enum GuiEvent {
     FileDownloaded(Result<(String, String), String>),
     LoggedOut,
     HistoryReachedStart(String),
+    GroupBoardSynced {
+        group_id: String,
+        messages: Vec<ChatMessage>,
+    },
+    GroupBoardSyncFailed {
+        group_id: String,
+        error: String,
+    },
+    GroupPollCreated {
+        group_id: String,
+        result: Result<(), String>,
+    },
     AccountSwitched {
         uin: String,
         name: String,
@@ -971,6 +983,12 @@ pub struct ZaloGuiApp {
     typing_indicators: HashMap<String, String>,
     /// Known member counts for group threads (header subtitle "N thành viên").
     group_member_counts: HashMap<String, usize>,
+    group_board_requested: Option<String>,
+    group_poll_create_id: Option<String>,
+    group_poll_question: String,
+    group_poll_options: Vec<String>,
+    group_poll_allow_multi: bool,
+    group_poll_submitting: bool,
     attach_menu_open: bool,
     screenshot_menu_open: bool,
     screenshot_include_zalo_window: bool,
@@ -1464,6 +1482,12 @@ impl ZaloGuiApp {
             nav_section: NavSection::Messages,
             typing_indicators: HashMap::new(),
             group_member_counts: HashMap::new(),
+            group_board_requested: None,
+            group_poll_create_id: None,
+            group_poll_question: String::new(),
+            group_poll_options: vec![String::new(), String::new()],
+            group_poll_allow_multi: false,
+            group_poll_submitting: false,
             attach_menu_open: false,
             screenshot_menu_open: false,
             screenshot_include_zalo_window: true,
@@ -1563,6 +1587,7 @@ impl ZaloGuiApp {
                     self.hidden_chat_status.clear();
                     self.unread_counts.clear();
                     self.history_reached_start.clear();
+                    self.group_board_requested = None;
                     self.selected_thread_index = 0;
                     self.login_in_progress = false;
                     self.composer_sticker_cache.retain(|_, v| !v.is_empty());
@@ -1603,6 +1628,61 @@ impl ZaloGuiApp {
                     }
                 }
                 GuiEvent::AccountThreadsUpdated { .. } => unreachable!("account event normalized above"),
+                GuiEvent::GroupBoardSynced { group_id, messages } => {
+                    let mut changed = false;
+                    if let Some(thread) = self.threads.iter_mut().find(|thread| thread.id == group_id) {
+                        for message in &mut thread.messages {
+                            message.is_pinned = false;
+                            message.server_pin_id = None;
+                            message.server_pin_time = None;
+                        }
+                        for incoming in messages {
+                            let existing = thread.messages.iter_mut().find(|message| {
+                                message.id == incoming.id
+                                    || (!incoming.client_message_id.is_empty()
+                                        && message.client_message_id == incoming.client_message_id)
+                            });
+                            if let Some(existing) = existing {
+                                if incoming.poll.is_some() {
+                                    existing.text = incoming.text;
+                                    existing.sender = incoming.sender;
+                                    existing.ts = incoming.ts;
+                                    existing.time = incoming.time;
+                                    existing.poll = incoming.poll;
+                                }
+                                if incoming.is_pinned {
+                                    existing.is_pinned = true;
+                                    existing.server_pin_id = incoming.server_pin_id;
+                                    existing.server_pin_time = incoming.server_pin_time;
+                                }
+                            } else {
+                                thread.messages.push(incoming);
+                            }
+                        }
+                        thread.messages.sort_by_key(|message| crate::clock::normalize_ts_ms(message.ts));
+                        thread.refresh_sidebar_presentation();
+                        changed = true;
+                    }
+                    if changed {
+                        self.persist_threads_async();
+                    }
+                }
+                GuiEvent::GroupBoardSyncFailed { error, .. } => {
+                    self.status_msg = format!("Không tải được bảng nhóm: {error}");
+                }
+                GuiEvent::GroupPollCreated { group_id, result } => {
+                    self.group_poll_submitting = false;
+                    match result {
+                        Ok(()) => {
+                            self.group_poll_create_id = None;
+                            self.show_toast("Đã tạo bình chọn");
+                            if let Some(tx) = WORKER_TX.get() {
+                                let _ = tx.send(WorkerCmd::FetchGroupBoard { group_id });
+                            }
+                        }
+                        Err(error) => self.show_toast(format!("Không tạo được bình chọn: {error}")),
+                    }
+                }
                 GuiEvent::ThreadsUpdated(updates) => {
                     ensure_cjk_font(ctx, thread_texts(&updates));
                     if self.is_logged_in && !updates.is_empty() {
@@ -1830,6 +1910,7 @@ impl ZaloGuiApp {
                 GuiEvent::LocalDataWiped => {
                     self.threads.clear();
                     self.selected_thread_index = 0;
+                    self.group_board_requested = None;
                     self.status_msg = "Đã xoá dữ liệu tin nhắn cục bộ (session giữ nguyên)".into();
                 }
                 GuiEvent::DownloadProgress {
@@ -1927,6 +2008,7 @@ impl ZaloGuiApp {
                     self.hidden_chat_generation = self.hidden_chat_generation.wrapping_add(1);
                     self.hidden_chat_pin.zeroize();
                     self.hidden_chat_status.clear();
+                    self.group_board_requested = None;
                     self.selected_thread_index = 0;
                     self.qr_texture = None;
                     self.qr_status = "Đang xin mã QR mới…".into();
@@ -1955,6 +2037,7 @@ impl ZaloGuiApp {
                     self.status_msg = format!("Đã chuyển sang tài khoản {name}");
                     self.show_toast(format!("Đã chuyển sang tài khoản {name}"));
                     self.history_reached_start.clear();
+                    self.group_board_requested = None;
                     if let Some(tx) = WORKER_TX.get() {
                         let _ = tx.send(WorkerCmd::SyncContactAliases);
                     }
@@ -3178,6 +3261,7 @@ impl eframe::App for ZaloGuiApp {
         self.render_update_notification_modal(ctx, &pal);
         self.render_account_info_modal(ctx, &pal);
         self.render_group_add_members_dialog(ctx, &pal);
+        self.render_group_poll_dialog(ctx, &pal);
         self.render_group_manage_dialog(ctx, &pal);
         self.render_group_member_action_confirm(ctx, &pal);
 

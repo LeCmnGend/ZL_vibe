@@ -202,6 +202,25 @@ pub enum WorkerCmd {
         member_id: String,
         action: crate::chat::GroupMemberAdminAction,
     },
+    FetchGroupBoard {
+        group_id: String,
+    },
+    CreateGroupPoll {
+        group_id: String,
+        question: String,
+        options: Vec<String>,
+        allow_multi_choices: bool,
+    },
+    VoteGroupPoll {
+        group_id: String,
+        poll_id: u64,
+        option_ids: Vec<u64>,
+    },
+    SetGroupMessagePinned {
+        group_id: String,
+        message: ChatMessage,
+        pin: bool,
+    },
     FetchGroupSettings {
         group_id: String,
     },
@@ -3438,6 +3457,145 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     action,
                                     result,
                                 });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::FetchGroupBoard { group_id } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                match crate::chat::get_group_board(&s, &group_id).await {
+                                    Ok(messages) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::GroupBoardSynced {
+                                            group_id,
+                                            messages,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::GroupBoardSyncFailed {
+                                            group_id,
+                                            error: error.to_string(),
+                                        });
+                                    }
+                                }
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::CreateGroupPoll {
+                            group_id,
+                            question,
+                            options,
+                            allow_multi_choices,
+                        } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = crate::chat::create_group_poll(
+                                    &s,
+                                    &group_id,
+                                    &question,
+                                    &options,
+                                    allow_multi_choices,
+                                )
+                                .await
+                                .map(|_| ())
+                                .map_err(|error| error.to_string());
+                                let _ = gui_tx_clone.send(GuiEvent::GroupPollCreated {
+                                    group_id,
+                                    result,
+                                });
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::VoteGroupPoll {
+                            group_id,
+                            poll_id,
+                            option_ids,
+                        } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                match crate::chat::vote_group_poll(&s, poll_id, &option_ids).await {
+                                    Ok(_) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(
+                                            "Đã gửi bình chọn".into(),
+                                        ));
+                                        if let Ok(messages) = crate::chat::get_group_board(&s, &group_id).await {
+                                            let _ = gui_tx_clone.send(GuiEvent::GroupBoardSynced {
+                                                group_id,
+                                                messages,
+                                            });
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(
+                                            format!("Không gửi được bình chọn: {error}"),
+                                        ));
+                                    }
+                                }
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                        WorkerCmd::SetGroupMessagePinned {
+                            group_id,
+                            message,
+                            pin,
+                        } => {
+                            let session_clone = session.clone();
+                            let gui_tx_clone = gui_tx.clone();
+                            let ctx_clone = egui_ctx.clone();
+                            tokio::spawn(async move {
+                                let s = session_clone.lock().await.clone();
+                                let result = if pin {
+                                    crate::chat::pin_group_message(&s, &group_id, &message).await
+                                } else if let (Some(pin_id), Some(pin_time)) = (
+                                    message.server_pin_id.as_deref(),
+                                    message.server_pin_time,
+                                ) {
+                                    crate::chat::unpin_group_message(
+                                        &s,
+                                        &group_id,
+                                        pin_id,
+                                        pin_time,
+                                    )
+                                    .await
+                                } else {
+                                    Err(anyhow::anyhow!("thiếu mã ghim máy chủ để bỏ ghim"))
+                                };
+                                match result {
+                                    Ok(_) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(if pin {
+                                            "Đã ghim tin nhắn lên nhóm".into()
+                                        } else {
+                                            "Đã bỏ ghim tin nhắn".into()
+                                        }));
+                                        match crate::chat::get_group_board(&s, &group_id).await {
+                                            Ok(messages) => {
+                                                let _ = gui_tx_clone.send(GuiEvent::GroupBoardSynced {
+                                                    group_id,
+                                                    messages,
+                                                });
+                                            }
+                                            Err(error) => {
+                                                let _ = gui_tx_clone.send(GuiEvent::GroupBoardSyncFailed {
+                                                    group_id,
+                                                    error: error.to_string(),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(
+                                            format!("Không cập nhật được tin ghim: {error}"),
+                                        ));
+                                    }
+                                }
                                 ctx_clone.request_repaint();
                             });
                         }

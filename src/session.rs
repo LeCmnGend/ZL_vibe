@@ -320,6 +320,17 @@ impl Domains {
                 *slot = v;
             }
         }
+        let board_urls: Vec<_> = map
+            .get("group_board")
+            .map(all_urls)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|url| is_trusted_zalo_url(url, &["https"]))
+            .collect();
+        if !board_urls.is_empty() {
+            self.service_map_candidates
+                .insert("group_board".into(), board_urls);
+        }
         if crate::endpoints::service("conversation").is_none() {
             if let Some(v) = map.get("conversation").and_then(first_url) {
                 self.conversation = v;
@@ -381,6 +392,9 @@ impl Domains {
         if canonical == "group_cloud_message" {
             push_unique_host(&mut list, "https://tt-group-cm.chat.zalo.me");
             push_unique_host(&mut list, "https://tt-group-cm.api.zaloapp.com");
+        }
+        if canonical == "group_board" {
+            push_unique_host(&mut list, crate::endpoints::GROUP_BOARD_FALLBACK);
         }
         if canonical == "friend" {
             push_unique_host(&mut list, &self.profile);

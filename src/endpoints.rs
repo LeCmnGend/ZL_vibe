@@ -29,6 +29,10 @@ pub const CONVERS_CTL: &str = "https://p5-ctl-chat.zaloapp.com";
 /// `zpw_chts_new[0]` — message plane.
 pub const MSG_CHAT: &str = "https://p5-msg-chat.zaloapp.com";
 
+/// Fallback for group board APIs when the login service map omits `group_board`.
+/// The runtime service map takes precedence over this source-derived host.
+pub const GROUP_BOARD_FALLBACK: &str = "https://groupboard-wpa.chat.zalo.me";
+
 /// Auth host for `reqqr` / password login.
 pub const AUTH: &str = "https://wpa.zaloapp.com";
 

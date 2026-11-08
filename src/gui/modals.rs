@@ -8389,6 +8389,113 @@ impl ZaloGuiApp {
         }
     }
 
+    pub(super) fn render_group_poll_dialog(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
+        let Some(group_id) = self.group_poll_create_id.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = false;
+        let mut close = false;
+        egui::Window::new("Tạo bình chọn")
+            .id(Id::new("group_poll_create_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(420.0)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(pal.bg_elevated)
+                    .rounding(Rounding::same(12.0))
+                    .inner_margin(Margin::symmetric(18.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Câu hỏi").color(pal.text_secondary));
+                ui.add_enabled(
+                    !self.group_poll_submitting,
+                    egui::TextEdit::singleline(&mut self.group_poll_question)
+                        .hint_text("Nhập câu hỏi bình chọn")
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(8.0);
+                ui.label(RichText::new("Lựa chọn").color(pal.text_secondary));
+                for (index, option) in self.group_poll_options.iter_mut().enumerate() {
+                    ui.add_enabled(
+                        !self.group_poll_submitting,
+                        egui::TextEdit::singleline(option)
+                            .hint_text(format!("Lựa chọn {}", index + 1))
+                            .desired_width(ui.available_width()),
+                    );
+                }
+                if self.group_poll_options.len() < 8
+                    && ui.add_enabled(!self.group_poll_submitting, egui::Button::new("+ Thêm lựa chọn")).clicked()
+                {
+                    self.group_poll_options.push(String::new());
+                }
+                ui.checkbox(&mut self.group_poll_allow_multi, "Cho phép chọn nhiều lựa chọn");
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let options_valid = self
+                            .group_poll_options
+                            .iter()
+                            .filter(|option| !option.trim().is_empty())
+                            .count()
+                            >= 2;
+                        if ui
+                            .add_enabled(
+                                !self.group_poll_submitting
+                                    && !self.group_poll_question.trim().is_empty()
+                                    && options_valid,
+                                egui::Button::new("Tạo bình chọn")
+                                    .fill(pal.primary)
+                                    .rounding(Rounding::same(7.0)),
+                            )
+                            .clicked()
+                        {
+                            submit = true;
+                        }
+                        if ui
+                            .add_enabled(!self.group_poll_submitting, egui::Button::new("Huỷ"))
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+                if self.group_poll_submitting {
+                    ui.label(RichText::new("Đang tạo bình chọn…").color(pal.text_muted));
+                }
+            });
+
+        if close {
+            open = false;
+        }
+        if !open && !self.group_poll_submitting {
+            self.group_poll_create_id = None;
+        }
+        if submit {
+            let options = self.group_poll_options.clone();
+            if let Some(tx) = WORKER_TX.get() {
+                if tx
+                    .send(WorkerCmd::CreateGroupPoll {
+                        group_id,
+                        question: self.group_poll_question.trim().to_owned(),
+                        options,
+                        allow_multi_choices: self.group_poll_allow_multi,
+                    })
+                    .is_ok()
+                {
+                    self.group_poll_submitting = true;
+                } else {
+                    self.show_toast("Không gửi được yêu cầu tạo bình chọn");
+                }
+            } else {
+                self.show_toast("Hãy đăng nhập để tạo bình chọn");
+            }
+        }
+    }
+
     pub(super) fn render_group_add_members_dialog(
         &mut self,
         ctx: &egui::Context,
