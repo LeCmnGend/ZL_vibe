@@ -78,6 +78,21 @@ pub fn send_ws_frame(cmd: u16, sub_cmd: u8, version: u8, data: Option<&Value>) -
     false
 }
 
+/// Request one older-message page for a user or group conversation.
+pub fn request_old_messages(is_group: bool, last_message_id: Option<&str>) -> bool {
+    let cmd = if is_group {
+        CMD_PULL_MSG_GROUP
+    } else {
+        CMD_PULL_MSG_1_1
+    };
+    let data = json!({
+        "first": true,
+        "lastId": last_message_id,
+        "preIds": [],
+    });
+    send_ws_frame(cmd, 1, 1, Some(&data))
+}
+
 /// Emit `SYNC_MESSAGE.REQUEST_MOBILE_WAKE_UP` (`cmd 592`, `subCmd 0`) over the live WebSocket
 /// to wake up the user's phone Zalo client for cross-device message sync.
 pub fn send_mobile_wakeup(sync_id: &str) -> bool {

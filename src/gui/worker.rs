@@ -5,6 +5,22 @@ use super::*;
 pub(super) static KNOWN_THREADS: std::sync::Mutex<Vec<(String, String, bool)>> =
     std::sync::Mutex::new(Vec::new());
 
+fn oldest_server_message_id(messages: &[ChatMessage]) -> Option<String> {
+    messages.iter().find_map(|message| {
+        let id = message
+            .wire_ref
+            .server_id
+            .as_ref()
+            .and_then(|value| match value {
+                serde_json::Value::String(id) => Some(id.clone()),
+                serde_json::Value::Number(id) => Some(id.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| message.id.clone());
+        (!id.is_empty() && id.chars().all(|ch| ch.is_ascii_digit())).then_some(id)
+    })
+}
+
 pub enum WorkerCmd {
     /// Read OS authorization without prompting.
     ReadNotificationAuthorization {
@@ -27,8 +43,7 @@ pub enum WorkerCmd {
     LoadGroupHistory {
         group_id: String,
         is_group: bool,
-        /// Messages the GUI already holds. SQLite is read `have + 300` deep, so each
-        /// "Tải thêm" reaches further back instead of re-reading the same newest 500.
+        /// Number of messages currently held by the GUI, used to recover the oldest server cursor.
         have: usize,
     },
     /// Page group / Cloud history back from the server into SQLite: (id, name, is_group).
@@ -1819,35 +1834,32 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                     crate::store::load_history_into_threads(
                                         &db_path,
                                         &mut t_list,
-                                        (have + 300).max(500),
+                                        have.max(1),
                                     );
                                     let Some(mut t) =
                                         t_list.into_iter().find(|x| x.id == group_id)
                                     else {
                                         return;
                                     };
-                                    if !is_group && !is_send2me {
-                                        let mut one_list = vec![t.clone()];
-                                        if let Ok(resp) = crate::chat::get_last_msgs(
-                                            &s,
-                                            std::slice::from_ref(&group_id),
-                                        )
-                                        .await
-                                        {
-                                            crate::chat::merge_previews(&mut one_list, &resp);
-                                        }
-                                        if let Ok(resp_all) =
-                                            crate::chat::get_last_msgs(&s, &[]).await
-                                        {
-                                            crate::chat::merge_previews(&mut one_list, &resp_all);
-                                        }
-                                        if let Some(updated) =
-                                            one_list.into_iter().find(|x| x.id == group_id)
-                                        {
-                                            t = updated;
-                                        }
+                                    if !is_send2me {
+                                        let last_id = oldest_server_message_id(&t.messages);
+                                        let sent = crate::socket::request_old_messages(
+                                            is_group,
+                                            last_id.as_deref(),
+                                        );
+                                        let status = if sent {
+                                            let kind = if is_group { "nhóm" } else { "riêng" };
+                                            format!(
+                                                "Đã gửi yêu cầu tải lịch sử chat {kind}; tin cũ sẽ hiện khi máy chủ phản hồi"
+                                            )
+                                        } else {
+                                            "WebSocket chưa kết nối; không gửi được yêu cầu tải lịch sử cũ".into()
+                                        };
+                                        let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(status));
+                                        ctx_clone.request_repaint();
+                                        return;
                                     }
-                                    if is_group || is_send2me {
+                                    if is_send2me {
                                         if let Ok(cm_resp) = crate::chat::get_cloud_messages(
                                             &s,
                                             &group_id,
@@ -1931,17 +1943,6 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                             cursor_id = nc;
                                         }
                                     }
-                                    if is_group
-                                        && !is_send2me
-                                        && (crate::chat::is_generic_thread_name(&t.name)
-                                            || t.avatar.as_deref().unwrap_or("").is_empty())
-                                    {
-                                        crate::chat::resolve_thread_names(
-                                            &s,
-                                            std::slice::from_mut(&mut t),
-                                        )
-                                        .await;
-                                    }
                                     let cnt = t.messages.len();
                                     if !t.messages.is_empty() || !t.name.is_empty() {
                                         let uin = s.login.as_ref().map(|l| l.uin.as_str()).unwrap_or_default();
@@ -1956,14 +1957,15 @@ pub(super) fn spawn_session_worker(session: Session, gui_tx: GuiTx, egui_ctx: eg
                                         }
                                         let _ = gui_tx_clone.send(GuiEvent::ThreadsUpdated(vec![t]));
                                     }
-                                    if cnt <= have {
-                                        let _ = gui_tx_clone.send(GuiEvent::HistoryReachedStart(group_id.clone()));
-                                    } else {
-                                        let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(format!(
-                                            "✅ Đã tải thêm {} tin nhắn cũ ({cnt} tin trong hội thoại)",
+                                    let status = if cnt > have {
+                                        format!(
+                                            "Đã tải thêm {} tin nhắn cũ từ Cloud",
                                             cnt.saturating_sub(have)
-                                        )));
-                                    }
+                                        )
+                                    } else {
+                                        "Cloud không trả thêm tin nhắn cũ trong lượt này".into()
+                                    };
+                                    let _ = gui_tx_clone.send(GuiEvent::StatusUpdate(status));
                                     ctx_clone.request_repaint();
                                 }
                             });

@@ -2622,59 +2622,45 @@ impl ZaloGuiApp {
                                                 && !self.filter_starred_only
                                             {
                                                 let has_more_in_memory = thread.messages.len() > render_limit;
-                                                let reached_start = self.history_reached_start.contains(&thread_id);
-
-                                                if reached_start && !has_more_in_memory {
-                                                    ui.vertical_centered(|ui| {
-                                                        ui.add_space(8.0);
-                                                        ui.label(
-                                                            RichText::new("— Đây là tin nhắn đầu tiên của cuộc trò chuyện —")
-                                                                .size(11.5)
-                                                                .color(pal.text_muted),
-                                                        );
-                                                        ui.add_space(8.0);
-                                                    });
-                                                } else {
-                                                    ui.vertical_centered(|ui| {
-                                                        let hist_btn = egui::Button::new(
-                                                            RichText::new(format!(
-                                                                "{} Tải thêm tin nhắn cũ",
-                                                                lucide::REFRESH
-                                                            ))
-                                                            .size(11.5)
-                                                            .color(pal.text_secondary),
+                                                ui.vertical_centered(|ui| {
+                                                    let hist_btn = egui::Button::new(
+                                                        RichText::new(format!(
+                                                            "{} Tải thêm tin nhắn cũ",
+                                                            lucide::REFRESH
+                                                        ))
+                                                        .size(11.5)
+                                                        .color(pal.text_secondary),
+                                                    )
+                                                    .fill(pal.bg_elevated)
+                                                    .stroke(Stroke::new(1.0_f32, pal.border))
+                                                    .rounding(Rounding::same(12.0));
+                                                    if ui
+                                                        .add(hist_btn)
+                                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                                        .on_hover_text(
+                                                            "Đồng bộ thêm lịch sử tin nhắn cũ từ máy chủ Zalo",
                                                         )
-                                                        .fill(pal.bg_elevated)
-                                                        .stroke(Stroke::new(1.0_f32, pal.border))
-                                                        .rounding(Rounding::same(12.0));
-                                                        if ui
-                                                            .add(hist_btn)
-                                                            .on_hover_cursor(CursorIcon::PointingHand)
-                                                            .on_hover_text(
-                                                                "Đồng bộ thêm lịch sử tin nhắn cũ từ máy chủ Zalo",
-                                                            )
-                                                            .clicked()
-                                                        {
-                                                            if has_more_in_memory {
-                                                                widen_window = true;
-                                                                let new_count = (render_limit + CHAT_RENDER_STEP).min(thread.messages.len());
-                                                                custom_toast = Some(format!("Đã hiển thị thêm tin nhắn cũ ({new_count}/{})", thread.messages.len()));
-                                                            } else {
-                                                                if let Some(tx) = WORKER_TX.get() {
-                                                                    let _ = tx.send(
-                                                                        WorkerCmd::LoadGroupHistory {
-                                                                            group_id: thread_id.clone(),
-                                                                            is_group,
-                                                                            have: thread.messages.len(),
-                                                                        },
-                                                                    );
-                                                                }
-                                                                load_older_clicked = true;
+                                                        .clicked()
+                                                    {
+                                                        if has_more_in_memory {
+                                                            widen_window = true;
+                                                            let new_count = (render_limit + CHAT_RENDER_STEP).min(thread.messages.len());
+                                                            custom_toast = Some(format!("Đã hiển thị thêm tin nhắn cũ ({new_count}/{})", thread.messages.len()));
+                                                        } else {
+                                                            if let Some(tx) = WORKER_TX.get() {
+                                                                let _ = tx.send(
+                                                                    WorkerCmd::LoadGroupHistory {
+                                                                        group_id: thread_id.clone(),
+                                                                        is_group,
+                                                                        have: thread.messages.len(),
+                                                                    },
+                                                                );
                                                             }
+                                                            load_older_clicked = true;
                                                         }
-                                                        ui.add_space(6.0);
-                                                    });
-                                                }
+                                                    }
+                                                    ui.add_space(6.0);
+                                                });
                                             }
                                             let only_starred = self.filter_starred_only;
                                             let in_chat_q = if self.in_chat_search_open {

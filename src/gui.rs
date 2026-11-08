@@ -271,7 +271,6 @@ pub enum GuiEvent {
     ProxyUpdated(Result<Option<String>, String>),
     FileDownloaded(Result<(String, String), String>),
     LoggedOut,
-    HistoryReachedStart(String),
     GroupBoardSynced {
         group_id: String,
         messages: Vec<ChatMessage>,
@@ -970,7 +969,6 @@ pub struct ZaloGuiApp {
     quote_jump: Option<QuoteJump>,
     ime_active: bool,
     ime_just_committed: bool,
-    history_reached_start: HashSet<String>,
     force_scroll_to_bottom: bool,
 
     // Background poll trigger
@@ -1476,7 +1474,6 @@ impl ZaloGuiApp {
             quote_jump: None,
             ime_active: false,
             ime_just_committed: false,
-            history_reached_start: HashSet::new(),
             force_scroll_to_bottom: false,
             demo_mode: false,
             nav_section: NavSection::Messages,
@@ -1586,7 +1583,6 @@ impl ZaloGuiApp {
                     self.hidden_chat_pin.zeroize();
                     self.hidden_chat_status.clear();
                     self.unread_counts.clear();
-                    self.history_reached_start.clear();
                     self.group_board_requested = None;
                     self.selected_thread_index = 0;
                     self.login_in_progress = false;
@@ -2036,7 +2032,6 @@ impl ZaloGuiApp {
                     self.selected_thread_index = 0;
                     self.status_msg = format!("Đã chuyển sang tài khoản {name}");
                     self.show_toast(format!("Đã chuyển sang tài khoản {name}"));
-                    self.history_reached_start.clear();
                     self.group_board_requested = None;
                     if let Some(tx) = WORKER_TX.get() {
                         let _ = tx.send(WorkerCmd::SyncContactAliases);
@@ -2686,10 +2681,6 @@ impl ZaloGuiApp {
                 }
                 GuiEvent::StatusUpdate(msg) => {
                     self.status_msg = msg;
-                }
-                GuiEvent::HistoryReachedStart(tid) => {
-                    self.history_reached_start.insert(tid);
-                    self.show_toast("Đã hiển thị toàn bộ lịch sử tin nhắn của cuộc trò chuyện này");
                 }
                 GuiEvent::RefreshFinished {
                     threads,
