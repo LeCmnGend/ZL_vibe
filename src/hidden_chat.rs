@@ -20,12 +20,13 @@ pub async fn unlock(
     private.dump = false;
     private.dump_raw = false;
     let params = private.encoded_params(&json!({ "imei": private.imei }))?;
-    let url = format!(
-        "{}/api/hiddenconvers/get-all?{}&params={params}",
-        private.domains.convers_api.trim_end_matches('/'),
+    let path = format!(
+        "/api/hiddenconvers/get-all?{}&params={params}",
         private.common_params(),
     );
-    let response = private.get_sensitive(&url).await?;
+    let response = private
+        .get_sensitive_endpoint("conversation", &path)
+        .await?;
     let mut response = private
         .maybe_decrypt(response, private.session_key_bytes())
         .await;

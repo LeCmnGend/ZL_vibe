@@ -555,12 +555,11 @@ pub async fn fetch_manual_unread_marks(
         anyhow::bail!("No active session");
     }
     let params = session.encoded_params(&serde_json::json!({}))?;
-    let url = format!(
-        "{}/api/conv/getUnreadMark?{}&params={params}",
-        session.domains.conversation.trim_end_matches('/'),
+    let path = format!(
+        "/api/conv/getUnreadMark?{}&params={params}",
         session.common_params()
     );
-    let raw = session.get(&url).await?;
+    let raw = session.get_endpoint("conversation", &path).await?;
     let response = session
         .maybe_decrypt(raw, session.session_key_bytes())
         .await;

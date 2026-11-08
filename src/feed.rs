@@ -182,13 +182,12 @@ impl crate::session::Session {
         });
 
         let enc = self.encoded_params(&body)?;
-        let url = format!(
-            "{}/api/social/friend/getprofiles?{}&params={enc}&os=8",
-            self.domains.profile,
+        let path = format!(
+            "/api/social/friend/getprofiles?{}&params={enc}&os=8",
             self.common_params()
         );
 
-        let resp = self.get(&url).await?;
+        let resp = self.get_endpoint("profile", &path).await?;
         let dec = self.maybe_decrypt(resp, self.session_key_bytes()).await;
 
         if dec.get("error_code").and_then(Value::as_i64) == Some(0) {
@@ -215,13 +214,12 @@ impl crate::session::Session {
         });
 
         let enc = self.encoded_params(&body)?;
-        let url = format!(
-            "{}/api/social/avatar-list?{}&params={enc}&os=8",
-            self.domains.profile,
+        let path = format!(
+            "/api/social/avatar-list?{}&params={enc}&os=8",
             self.common_params()
         );
 
-        let resp = self.get(&url).await?;
+        let resp = self.get_endpoint("profile", &path).await?;
         let dec = self.maybe_decrypt(resp, self.session_key_bytes()).await;
 
         let mut photos = Vec::new();
@@ -276,13 +274,12 @@ impl crate::session::Session {
             "imei": self.imei,
         });
         let enc = self.encoded_params(&body)?;
-        let url = format!(
-            "{}/api/social/friend/getprofiles/v2?{}",
-            self.domains.profile,
+        let path = format!(
+            "/api/social/friend/getprofiles/v2?{}",
             self.common_params()
         );
         let form = format!("params={enc}");
-        let resp = self.post_form(&url, form).await?;
+        let resp = self.post_endpoint_form("profile", &path, form).await?;
         let dec = self.maybe_decrypt(resp, self.session_key_bytes()).await;
 
         let mut profiles = Vec::new();

@@ -1006,12 +1006,11 @@ impl Session {
             "imei": self.imei,
         });
         let enc = self.encoded_params(&body).ok()?;
-        let url = format!(
-            "{}/api/social/profile/me-v2?{}&params={enc}&os=8",
-            self.domains.profile,
+        let path = format!(
+            "/api/social/profile/me-v2?{}&params={enc}&os=8",
             self.common_params()
         );
-        let resp = self.get(&url).await.ok()?;
+        let resp = self.get_endpoint("profile", &path).await.ok()?;
         let dec = self.maybe_decrypt(resp, self.session_key_bytes()).await;
         let profile = dec
             .get("data")
@@ -1400,6 +1399,18 @@ impl Session {
     pub async fn get_endpoint(&self, endpoint: &str, path_and_query: &str) -> Result<Value> {
         self.request_with_candidates(endpoint, path_and_query, |url| async move {
             self.get(&url).await
+        })
+        .await
+    }
+
+    /// Perform a privacy-sensitive `GET` with endpoint host failover and redacted logging.
+    pub async fn get_sensitive_endpoint(
+        &self,
+        endpoint: &str,
+        path_and_query: &str,
+    ) -> Result<Value> {
+        self.request_with_candidates(endpoint, path_and_query, |url| async move {
+            self.get_sensitive(&url).await
         })
         .await
     }

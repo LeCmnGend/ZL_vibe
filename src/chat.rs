@@ -4594,12 +4594,11 @@ pub async fn get_last_msgs(s: &Session, thread_ids: &[String]) -> Result<Value> 
         }
     };
 
-    let url = format!(
-        "{}/api/preloadconvers/get-last-msgs?{}&{params}",
-        s.domains.convers_api,
+    let path = format!(
+        "/api/preloadconvers/get-last-msgs?{}&{params}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("conversation", &path).await?;
     let resp = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     if crate::trace_shape::enabled() {
         crate::trace_shape::line(
@@ -4616,17 +4615,7 @@ pub async fn get_pinned(s: &Session) -> Result<Value> {
         anyhow::bail!("chưa đăng nhập");
     }
     let path = format!("/api/pinconvers/list?{}", s.common_params());
-    let resp = match s.get_endpoint("conversation", &path).await {
-        Ok(v) => v,
-        Err(_) => {
-            let url = format!(
-                "{}/api/pinconvers/list?{}",
-                s.domains.conversation,
-                s.common_params()
-            );
-            s.get(&url).await?
-        }
-    };
+    let resp = s.get_endpoint("conversation", &path).await?;
     Ok(s.maybe_decrypt(resp, s.session_key_bytes()).await)
 }
 
@@ -5206,12 +5195,11 @@ pub async fn get_group_history(s: &Session, group_id: &str, count: u32) -> Resul
             Session::plain_params(&body)
         }
     };
-    let url = format!(
-        "{}/api/group/history?{}&{params}",
-        s.domains.group,
+    let path = format!(
+        "/api/group/history?{}&{params}",
         s.common_params()
     );
-    match s.get(&url).await {
+    match s.get_endpoint("group", &path).await {
         Ok(resp) => Ok(s.maybe_decrypt(resp, s.session_key_bytes()).await),
         Err(e) => {
             // Keep the original cause: the raw probe below asks the same question with a
@@ -5252,12 +5240,11 @@ pub async fn get_group_history_raw(s: &Session, grid: &str, count: u32) -> Resul
             Session::plain_params(&body)
         }
     };
-    let url = format!(
-        "{}/api/group/history?{}&{params}",
-        s.domains.group,
+    let path = format!(
+        "/api/group/history?{}&{params}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("group", &path).await?;
     let resp = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     Ok(resp)
 }
@@ -5289,12 +5276,13 @@ pub async fn fetch_group_profiles(
     let gv_str = serde_json::to_string(&gv_zero)?;
     let body = obj(&[("gridVerMap", json!(gv_str)), ("imei", json!(s.imei))]);
     let params = s.encoded_params(&body)?;
-    let mg_url = format!(
-        "{}/api/group/getmg-v2?{}",
-        s.domains.group,
+    let mg_path = format!(
+        "/api/group/getmg-v2?{}",
         s.common_params()
     );
-    let mg_resp = s.post_form(&mg_url, format!("params={params}")).await?;
+    let mg_resp = s
+        .post_endpoint_form("group", &mg_path, format!("params={params}"))
+        .await?;
     let mut mg_dec = s.maybe_decrypt(mg_resp, s.session_key_bytes()).await;
     if let Some(d_str) = mg_dec.get("data").and_then(Value::as_str) {
         if let Ok(parsed) = serde_json::from_str::<Value>(d_str.trim()) {
@@ -5466,12 +5454,11 @@ pub async fn get_groups(s: &Session) -> Result<Vec<Thread>> {
     if s.login.is_none() {
         return Ok(Vec::new());
     }
-    let url = format!(
-        "{}/api/group/getlg/v4?{}",
-        s.domains.group,
+    let path = format!(
+        "/api/group/getlg/v4?{}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("group", &path).await?;
     let mut resp = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     if let Some(d_str) = resp.get("data").and_then(Value::as_str) {
         if let Ok(parsed) = serde_json::from_str::<Value>(d_str.trim()) {
@@ -5606,13 +5593,12 @@ pub async fn get_mini_profiles(
         .collect();
     let body = obj(&[("friend_pversion_map", json!(versioned_ids))]);
     let params = s.encoded_params(&body)?;
-    let url = format!(
-        "{}/api/social/group/members?{}",
-        s.domains.profile,
+    let path = format!(
+        "/api/social/group/members?{}",
         s.common_params()
     );
     let form = format!("params={params}");
-    let resp = s.post_form(&url, form).await?;
+    let resp = s.post_endpoint_form("profile", &path, form).await?;
     let mut resp = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     if let Some(d_str) = resp.get("data").and_then(Value::as_str) {
         if let Ok(parsed) = serde_json::from_str::<Value>(d_str.trim()) {
@@ -8072,17 +8058,11 @@ pub async fn get_friend_request_status(s: &Session, fid: &str) -> Result<Value> 
     }
     let body = obj(&[("fid", json!(fid)), ("imei", json!(s.imei))]);
     let enc = s.encoded_params(&body)?;
-    let host = if s.domains.friend.is_empty() {
-        "https://tt-friend-wpa.chat.zalo.me"
-    } else {
-        &s.domains.friend
-    };
-    let url = format!(
-        "{}/api/friend/reqstatus?{}&params={enc}",
-        host.trim_end_matches('/'),
+    let path = format!(
+        "/api/friend/reqstatus?{}&params={enc}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("friend", &path).await?;
     Ok(s.maybe_decrypt(resp, s.session_key_bytes()).await)
 }
 
@@ -8098,17 +8078,11 @@ pub async fn get_user_online_status(s: &Session, uid: &str) -> Result<(bool, Str
         ("imei", json!(s.imei)),
     ]);
     let enc = s.encoded_params(&body)?;
-    let host = if s.domains.profile.is_empty() {
-        "https://tt-profile-wpa.chat.zalo.me"
-    } else {
-        &s.domains.profile
-    };
-    let url = format!(
-        "{}/api/social/profile/lastOnline?{}&params={enc}",
-        host.trim_end_matches('/'),
+    let path = format!(
+        "/api/social/profile/lastOnline?{}&params={enc}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("profile", &path).await?;
     let mut dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     if let Some(d_str) = dec.get("data").and_then(Value::as_str) {
         if let Ok(parsed) = serde_json::from_str::<Value>(d_str.trim()) {
@@ -8317,16 +8291,11 @@ pub async fn find_user_by_phone(s: &Session, raw_phone: &str) -> Result<PhoneLoo
         ("reqSrc", json!(40)),
     ]);
     let enc = s.encoded_params(&body)?;
-    let host = if s.domains.friend.is_empty() {
-        "https://tt-friend-wpa.chat.zalo.me"
-    } else {
-        s.domains.friend.trim_end_matches('/')
-    };
-    let url = format!(
-        "{host}/api/friend/profile/get?{}&params={enc}",
+    let path = format!(
+        "/api/friend/profile/get?{}&params={enc}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("friend", &path).await?;
     let dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     if let Some(code) = dec.get("error_code").and_then(Value::as_i64) {
         if code != 0 {
