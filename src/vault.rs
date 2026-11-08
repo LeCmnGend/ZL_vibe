@@ -40,7 +40,7 @@ pub fn initialize(data_dir: &Path) -> Result<()> {
                     bytes
                 });
                 let mut blob = KEY_MAGIC.to_vec();
-                blob.extend_from_slice(&dpapi_protect(&key)?);
+                blob.extend_from_slice(&dpapi_protect(&key[..])?);
                 crate::data_dir::write_private_atomic(&key_path, &blob)?;
                 key.to_vec()
             }
