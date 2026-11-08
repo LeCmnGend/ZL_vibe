@@ -200,6 +200,11 @@ impl ZaloGuiApp {
         let mut view_profile_member: Option<String> = None;
         let show_info_drawer = self.info_drawer_open && drawer_allowed;
         let drawer_w = (screen_w * 0.26).clamp(240.0, 310.0);
+        let drawer_h = (screen_rect.height() - 56.0).max(240.0);
+        let drawer_rect = Rect::from_min_size(
+            Pos2::new(screen_rect.right() - drawer_w, screen_rect.top() + 34.0),
+            Vec2::new(drawer_w, drawer_h),
+        );
 
         if show_info_drawer {
             if let Some((ref d_id, ref d_name, ref d_ava, d_is_group, d_msg_count)) = thread_meta {
@@ -245,19 +250,23 @@ impl ZaloGuiApp {
                     })
                     .unwrap_or_default();
 
-                egui::SidePanel::right("conversation_info_drawer")
-                    .resizable(false)
-                    .exact_width(drawer_w)
-                    .frame(
+                egui::Area::new(Id::new("conversation_info_drawer"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(drawer_rect.min)
+                    .show(ctx, |ui| {
+                        ui.set_min_size(drawer_rect.size());
+                        ui.set_max_size(drawer_rect.size());
+                        let _ = ui.interact(
+                            drawer_rect,
+                            Id::new("conversation_info_drawer_surface"),
+                            Sense::click(),
+                        );
                         egui::Frame::none()
                             .fill(pal.bg_list)
-                            .stroke(Stroke::new(1.0_f32, pal.border)),
-                    )
-                    .show(ctx, |ui| {
-                        ui.set_max_width(drawer_w);
-                        egui::Frame::none()
+                            .stroke(Stroke::new(1.0_f32, pal.border))
                             .inner_margin(Margin::symmetric(16.0, 18.0))
                             .show(ui, |ui| {
+                                ui.set_max_width(drawer_w - 32.0);
                                 ui.vertical_centered(|ui| {
                                     let (av_rect, _) = ui
                                         .allocate_exact_size(Vec2::new(64.0, 64.0), Sense::hover());
@@ -870,7 +879,9 @@ impl ZaloGuiApp {
                             && input
                                 .pointer
                                 .interact_pos()
-                                .is_some_and(|pos| chat_rect.contains(pos))
+                                .is_some_and(|pos| {
+                                    chat_rect.contains(pos) && !drawer_rect.contains(pos)
+                                })
                     });
                 // Soft diagonal gradient behind the whole chat column (header, stream, composer).
                 paint_diagonal_gradient(ui.painter(), ui.max_rect(), pal.canvas_top, pal.canvas_bottom);
