@@ -66,7 +66,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn sync_and_persist_session(session: &Arc<Mutex<Session>>) {
+pub(crate) async fn sync_and_persist_session(session: &Arc<Mutex<Session>>) {
     let mut g = session.lock().await;
     let old_sek = g.zpw_sek.clone();
     g.sync_live_sek();
@@ -99,7 +99,7 @@ fn set_qr(f: impl FnOnce(&mut QrFlowState)) {
     }
 }
 
-fn is_live(s: &Session) -> bool {
+pub(crate) fn is_live(s: &Session) -> bool {
     s.login.is_some()
         && (s.zpw_sek.is_some() || s.current_zpw_sek().is_some())
         && !s.is_expired_marked()
@@ -548,7 +548,7 @@ async fn qr_status(session: &Arc<Mutex<Session>>) -> Value {
     v
 }
 
-fn msg_from(v: &Value) -> ChatMessage {
+pub(crate) fn msg_from(v: &Value) -> ChatMessage {
     let text = |k: &str| match v.get(k) {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
@@ -739,6 +739,6 @@ pub async fn route(
             let gid = p.trim_start_matches("/api/v1/groups/").trim_end_matches("/members").trim_matches('/');
             group_members(session, gid).await
         }
-        _ => return None,
+        _ => return crate::api_hub_actions::route(session, method, path, q, body).await,
     })
 }

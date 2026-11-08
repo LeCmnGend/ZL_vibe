@@ -12,9 +12,9 @@ mod sync_v1;
 use anyhow::Result;
 use session::Session;
 pub use zalo_rust::{
-    account_manager, api_mcp, audio, call, chat, clock, crypto, data_dir, download, endpoints, feed, gui, history_sync,
-    logger, login, media, media_resources, message_model, param_cipher, paths, qr, reaction, reactions, scheduler,
-    session, socket, store, sync_state, trace_shape, tui, ui, unread, updater, video, voip_log,
+    api_hub_actions, api_mcp, audio, call, chat, clock, crypto, data_dir, endpoints, feed, gui, history_sync,
+    logger, login, media, media_resources, message_model, param_cipher, qr, reactions, scheduler,
+    session, socket, store, tui, ui, unread, updater, voip_log,
 };
 
 pub const POLL_SECS: u64 = 4;
@@ -134,11 +134,11 @@ async fn main() -> Result<()> {
         });
 
     if force_logout && !demo_mode {
-        let _ = std::fs::remove_file(paths::session_file());
-        let _ = std::fs::remove_file(paths::threads_cache_file());
+        let _ = std::fs::remove_file(data_path.join("session.json"));
+        let _ = std::fs::remove_file(data_path.join("threads_cache.json"));
         println!(
             "✓ Đã đăng xuất và xóa phiên lưu trữ (session.json, threads_cache.json) trong {}.",
-            paths::data_dir().display()
+            data_path.display()
         );
         if !force_gui && !force_tui && !force_qr {
             return Ok(());
