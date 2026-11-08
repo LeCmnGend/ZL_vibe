@@ -2108,6 +2108,7 @@ pub(super) fn render_chat_bubble(
     next_same_sender: bool,
     is_latest_outgoing: bool,
     is_group: bool,
+    sender_profile_uid: Option<&str>,
     thread_name: &str,
     sender_avatar: Option<&str>,
     pal: &ThemePalette,
@@ -2494,10 +2495,12 @@ pub(super) fn render_chat_bubble(
         ui.horizontal_top(|ui| {
             let display_sender = thread_name;
             let sender_accent = avatar_color_for(display_sender, false);
+            let mut sender_avatar_clicked = false;
 
             // Sender Avatar (only on first message of a consecutive group)
             if !prev_same_sender {
-                let (av_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), Sense::hover());
+                let (av_rect, avatar_response) =
+                    ui.allocate_exact_size(Vec2::new(30.0, 30.0), Sense::click());
                 paint_user_avatar(
                     ui.painter(),
                     av_rect.center(),
@@ -2508,6 +2511,10 @@ pub(super) fn render_chat_bubble(
                     sticker_textures,
                     loading_stickers,
                 );
+                sender_avatar_clicked = avatar_response
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text("Xem thông tin tài khoản")
+                    .clicked();
             } else {
                 ui.add_space(30.0);
             }
@@ -2629,6 +2636,11 @@ pub(super) fn render_chat_bubble(
                     })
             })
             .inner
+            .or_else(|| {
+                sender_avatar_clicked.then(|| {
+                    BubbleAction::OpenSenderProfile(sender_profile_uid.map(str::to_owned))
+                })
+            })
         })
         .inner
     }
@@ -2639,6 +2651,7 @@ pub(super) enum BubbleAction {
     Reply,
     Mention(String),
     OpenMentionProfile(String),
+    OpenSenderProfile(Option<String>),
     JumpToQuoted(String),
     Forward,
     /// Open the "who reacted" dialog for this message.
@@ -4200,6 +4213,7 @@ mod quote_navigation_tests {
                                 false,
                                 false,
                                 false,
+                                None,
                                 "Thread",
                                 None,
                                 &ThemePalette::light(),

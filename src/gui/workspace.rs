@@ -2495,6 +2495,23 @@ impl ZaloGuiApp {
                                                     } else {
                                                         thread_name.clone()
                                                     };
+                                                    let sender_profile_uid = if is_group {
+                                                        s_id.clone().or_else(|| {
+                                                            self.group_members_map
+                                                                .get(&thread_id)
+                                                                .and_then(|members| {
+                                                                    members.iter().find(|member| {
+                                                                        self.contact_display_name(
+                                                                            &member.id,
+                                                                            &member.name,
+                                                                        ) == display_sender_fallback
+                                                                    })
+                                                                })
+                                                                .map(|member| member.id.clone())
+                                                        })
+                                                    } else {
+                                                        Some(thread_id.clone())
+                                                    };
                                                     let message_action = if self
                                                         .message_selection_thread
                                                         .as_deref()
@@ -2518,6 +2535,7 @@ impl ZaloGuiApp {
                                                                 next_same_sender,
                                                                 is_latest_outgoing,
                                                                 is_group,
+                                                                sender_profile_uid.as_deref(),
                                                                 &display_sender_fallback,
                                                                 sender_ava_opt,
                                                                 pal,
@@ -2537,6 +2555,7 @@ impl ZaloGuiApp {
                                                             next_same_sender,
                                                             is_latest_outgoing,
                                                             is_group,
+                                                            sender_profile_uid.as_deref(),
                                                             &display_sender_fallback,
                                                             sender_ava_opt,
                                                             pal,
@@ -2724,6 +2743,22 @@ impl ZaloGuiApp {
                                             "Không tìm thấy hồ sơ thành viên @{name} trong nhóm đã tải"
                                         ));
                                     }
+                                }
+                                BubbleAction::OpenSenderProfile(Some(uid)) => {
+                                    self.feed_modal_open = true;
+                                    self.feed_modal_tab = FeedModalTab::Profile;
+                                    self.feed_target_uid = uid.clone();
+                                    self.feed_loading_profile = true;
+                                    self.feed_profile_error = None;
+                                    self.trigger_feed_timeline_load();
+                                    if let Some(tx) = WORKER_TX.get() {
+                                        let _ = tx.send(WorkerCmd::FetchSocialProfile {
+                                            target_uid: uid,
+                                        });
+                                    }
+                                }
+                                BubbleAction::OpenSenderProfile(None) => {
+                                    self.show_toast("Không xác định được tài khoản người gửi");
                                 }
                                 BubbleAction::JumpToQuoted(reference) => {
                                     let index = self
