@@ -173,8 +173,7 @@ pub fn generate_sync_public_key() -> String {
 /// Synchronize 1-1 and group messages from the user's phone and Zalo cloud (`Đồng bộ tin nhắn từ điện thoại`, #68).
 ///
 /// Workflow:
-/// 1. Sends mobile pull signal (`request_phone_sync` `cmd 12000` + `request_phone_sync_v2` `cmd 12888`)
-///    so the phone Zalo app is notified to push recent 1-1 & group messages.
+/// 1. Sends the Zalo PC mobile pull request (`cmd 12000`); tries Sync-V2 only if it is rejected.
 /// 2. Drains `lp_chat` (`get_chat_from_polling`) across multiple batches to collect queued 1-1 & group messages.
 /// 3. Queries `/api/preloadconvers/get-last-msgs` (`get_last_msgs`) in 25-thread batches across all
 ///    1-1 and group conversations and merges messages into `threads`.
@@ -229,19 +228,29 @@ where
             "📲 Đang gửi yêu cầu đồng bộ tới Zalo trên điện thoại (hãy mở Zalo trên điện thoại và bấm 'Đồng bộ ngay')…".to_string(),
         );
         let requested = chat::request_phone_sync(s, &pub_key).await;
-        if requested.as_ref().map(|v| v.get("error_code").and_then(|c| c.as_i64()).unwrap_or(0) != 0).unwrap_or(true) {
+        let legacy_request_accepted = requested
+            .as_ref()
+            .map(|reply| {
+                reply
+                    .get("error_code")
+                    .and_then(|code| code.as_i64())
+                    .unwrap_or(0)
+                    == 0
+            })
+            .unwrap_or(false);
+        if !legacy_request_accepted {
             on_progress(
                 0.15,
-                "ℹ️ Máy chủ Zalo yêu cầu xác thực thiết bị Sync-V2; tiếp tục đồng bộ Cloud & Nhóm…"
+                "ℹ️ Yêu cầu đồng bộ cơ bản chưa được chấp nhận; đang thử Sync-V2…"
                     .to_string(),
             );
-        }
-        if let Err(err) = chat::request_phone_sync_v2(s, &pub_key).await {
-            crate::logger::log_error("history_sync::request_phone_sync_v2", &err.to_string());
-            on_progress(
-                0.15,
-                format!("ℹ️ Sync-V2 chưa khả dụng ({err}); vẫn tiếp tục đồng bộ Cloud & Nhóm…"),
-            );
+            if let Err(err) = chat::request_phone_sync_v2(s, &pub_key).await {
+                crate::logger::log_error("history_sync::request_phone_sync_v2", &err.to_string());
+                on_progress(
+                    0.15,
+                    format!("ℹ️ Sync-V2 chưa khả dụng ({err}); vẫn tiếp tục đồng bộ Cloud & Nhóm…"),
+                );
+            }
         }
 
         // Wait for user to confirm on phone (up to 90 seconds)
