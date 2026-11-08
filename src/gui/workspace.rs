@@ -3496,6 +3496,7 @@ impl ZaloGuiApp {
                             bottom: 11.0,
                         })
                         .show(ui, |ui| {
+                            let composer_content_width = ui.available_width();
                             // Handle drag-and-drop files onto the chat window
                             let dropped: Vec<std::path::PathBuf> = ui.ctx().input(|i| {
                                 i.raw
@@ -4376,6 +4377,7 @@ impl ZaloGuiApp {
                             self.composer_focus_pending = true;
                         }
                     }
+                    ui.set_min_width(composer_content_width);
                     }
                 } else {
                     ui.vertical_centered(|ui| {
