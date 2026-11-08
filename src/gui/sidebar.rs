@@ -1867,10 +1867,10 @@ impl ZaloGuiApp {
         } else {
             t.preview.clone()
         };
-        if last_outgoing && !base.starts_with("Bạn:") && !Self::is_cloud_thread(t) {
-            format!("Bạn: {base}")
-        } else {
+        if last_outgoing && Self::is_cloud_thread(t) {
             base
+        } else {
+            t.sidebar_preview(&base)
         }
     }
 

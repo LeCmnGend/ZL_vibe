@@ -515,7 +515,7 @@ impl Thread {
         }
     }
 
-    pub fn sidebar_preview(&self) -> String {
+    pub fn sidebar_preview(&self, preview: &str) -> String {
         let latest = self
             .messages
             .iter()
@@ -538,7 +538,7 @@ impl Thread {
             .find(|member| member.id == sender && !member.name.trim().is_empty())
             .map(|member| member.name.as_str())
             .unwrap_or(sender);
-        let text = self.preview.replace('\n', " ");
+        let text = preview.replace('\n', " ");
         if text.is_empty() {
             return text;
         }
