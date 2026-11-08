@@ -3083,22 +3083,17 @@ pub async fn parse_link_metadata(
     };
 
     if s.login.is_some() {
-        let file_host = if s.domains.file.is_empty() {
-            "https://tt-files-wpa.chat.zalo.me"
-        } else {
-            s.domains.file.trim_end_matches('/')
-        };
         let body = obj(&[
             ("link", json!(url)),
             ("version", json!(1)),
             ("imei", json!(s.imei)),
         ]);
         if let Ok(params) = s.encoded_params(&body) {
-            let parse_url = format!(
-                "{file_host}/api/message/parselink?{}&params={params}",
+            let path = format!(
+                "/api/message/parselink?{}&params={params}",
                 s.common_params()
             );
-            if let Ok(resp) = s.get(&parse_url).await {
+            if let Ok(resp) = s.get_endpoint("file", &path).await {
                 let dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
                 let d = dec
                     .get("data")
@@ -3425,11 +3420,6 @@ pub async fn fetch_sticker_store_packs(s: &Session) -> Result<Vec<StickerPackInf
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
-    let sticker_host = if s.domains.sticker.is_empty() {
-        "https://tt-sticker-wpa.chat.zalo.me"
-    } else {
-        s.domains.sticker.trim_end_matches('/')
-    };
     let key = s.session_key_bytes();
     if key.is_empty() {
         anyhow::bail!("thiếu session key để tải kho nhãn dán");
@@ -3448,11 +3438,11 @@ pub async fn fetch_sticker_store_packs(s: &Session) -> Result<Vec<StickerPackInf
         }
     }
 
-    let list_url = format!(
-        "{sticker_host}/api/message/sticker/category/list/v2?{}&params={encoded_param}",
+    let list_path = format!(
+        "/api/message/sticker/category/list/v2?{}&params={encoded_param}",
         s.common_params()
     );
-    let resp = s.get(&list_url).await?;
+    let resp = s.get_endpoint("sticker", &list_path).await?;
     let dec = s.maybe_decrypt(resp, key).await;
     let data = dec.get("data").unwrap_or(&dec);
 
@@ -3553,17 +3543,12 @@ pub async fn fetch_sticker_pack_items(
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
-    let sticker_host = if s.domains.sticker.is_empty() {
-        "https://tt-sticker-wpa.chat.zalo.me"
-    } else {
-        s.domains.sticker.trim_end_matches('/')
-    };
     let params = s.encoded_params(&json!({ "cid": cate_id.to_string() }))?;
-    let url = format!(
-        "{sticker_host}/api/message/sticker/category/sticker_detail?{}&params={params}",
+    let path = format!(
+        "/api/message/sticker/category/sticker_detail?{}&params={params}",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("sticker", &path).await?;
     let dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     let arr = dec
         .get("data")
@@ -3736,17 +3721,12 @@ pub async fn fetch_sticker_suggest_keywords(s: &Session) -> Result<Vec<String>> 
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
-    let sticker_host = if s.domains.sticker.is_empty() {
-        "https://tt-sticker-wpa.chat.zalo.me"
-    } else {
-        s.domains.sticker.trim_end_matches('/')
-    };
     let params = s.encoded_params(&json!({ "imei": s.imei }))?;
-    let url = format!(
-        "{sticker_host}/api/message/sticker/suggest/keywords?{}&params={params}",
+    let path = format!(
+        "/api/message/sticker/suggest/keywords?{}&params={params}",
         s.common_params()
     );
-    let resp = match s.get(&url).await {
+    let resp = match s.get_endpoint("sticker", &path).await {
         Ok(r) => r,
         Err(_) => {
             let fallback_url = format!(
@@ -3792,7 +3772,6 @@ pub async fn fetch_sticker_suggest_keywords(s: &Session) -> Result<Vec<String>> 
 
 async fn query_sticker_endpoints_once(
     s: &Session,
-    sticker_host: &str,
     queries: &[String],
 ) -> Vec<(u64, u64, u32, u8)> {
     let mut futs = Vec::with_capacity(queries.len() * 2);
@@ -3805,13 +3784,13 @@ async fn query_sticker_endpoints_once(
             ("imei", json!(s.imei)),
         ]);
         if let Ok(params) = s.encoded_params(&sugg_body) {
-            let url = format!(
-                "{sticker_host}/api/message/sticker/suggest/stickers?{}&params={params}",
+            let path = format!(
+                "/api/message/sticker/suggest/stickers?{}&params={params}",
                 s.common_params()
             );
             let is_primary = q_idx == 0;
             futs.push(async move {
-                let Ok(resp) = s.get(&url).await else {
+                let Ok(resp) = s.get_endpoint("sticker", &path).await else {
                     return Vec::new();
                 };
                 let dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
@@ -3854,13 +3833,13 @@ async fn query_sticker_endpoints_once(
             ("imei", json!(s.imei)),
         ]);
         if let Ok(params) = s.encoded_params(&search_body) {
-            let url = format!(
-                "{sticker_host}/api/message/sticker/search?{}&params={params}",
+            let path = format!(
+                "/api/message/sticker/search?{}&params={params}",
                 s.common_params()
             );
             let is_primary = q_idx == 0;
             search_futs.push(async move {
-                let Ok(resp) = s.get(&url).await else {
+                let Ok(resp) = s.get_endpoint("sticker", &path).await else {
                     return Vec::new();
                 };
                 let dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
@@ -3942,14 +3921,8 @@ pub async fn search_stickers_by_keyword(s: &Session, keyword: &str) -> Result<Ve
     if s.login.is_none() {
         anyhow::bail!("chưa đăng nhập");
     }
-    let sticker_host = if s.domains.sticker.is_empty() {
-        "https://tt-sticker-wpa.chat.zalo.me"
-    } else {
-        s.domains.sticker.trim_end_matches('/')
-    };
-
     let queries = canonical_vn_sticker_queries(&kw);
-    let mut raw_items = query_sticker_endpoints_once(s, sticker_host, &queries).await;
+    let mut raw_items = query_sticker_endpoints_once(s, &queries).await;
 
     // If a multi-word sentence/phrase (e.g. "anh ơi đi chơi", "hôm nay mệt quá") had no direct match,
     // automatically fallback to its trailing 2-word phrase (`tail2`) or trailing word (`last_word`).
@@ -3970,7 +3943,7 @@ pub async fn search_stickers_by_keyword(s: &Session, keyword: &str) -> Result<Ve
             }
             for fb in fallback_phrases {
                 let fb_queries = canonical_vn_sticker_queries(&fb);
-                raw_items = query_sticker_endpoints_once(s, sticker_host, &fb_queries).await;
+                raw_items = query_sticker_endpoints_once(s, &fb_queries).await;
                 if !raw_items.is_empty() {
                     break;
                 }
@@ -6018,17 +5991,11 @@ pub async fn get_cloud_messages(
     } else {
         "/api/cm/getrecentv2"
     };
-    let host = if s.domains.cloud_msg.is_empty() {
-        "https://tt-group-cm.api.zaloapp.com"
-    } else {
-        &s.domains.cloud_msg
-    };
-    let url = format!(
-        "{}{ep}?{}&params={params}&nretry=0",
-        host.trim_end_matches('/'),
+    let path = format!(
+        "{ep}?{}&params={params}&nretry=0",
         s.common_params()
     );
-    let resp = s.get(&url).await?;
+    let resp = s.get_endpoint("group_cloud_message", &path).await?;
     let mut dec = s.maybe_decrypt(resp, s.session_key_bytes()).await;
     if let Some(d_str) = dec.get("data").and_then(Value::as_str) {
         let trimmed = d_str.trim();

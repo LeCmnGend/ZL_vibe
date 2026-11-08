@@ -14,9 +14,9 @@ References: [OA authentication](https://docs.zaloplatforms.com/docs/OA/quan-ly/q
 ## Chuẩn hoá đã làm
 
 - Các GET chỉ đọc đã chuẩn hoá dùng `Session::get_endpoint`; POST chỉ đọc đã chuẩn hoá dùng `Session::post_endpoint_form`.
-- Các tuyến đã chuyển gồm hồ sơ, ảnh đại diện, dấu chưa đọc, hội thoại ghim, lịch sử nhóm, hồ sơ nhóm, tra bạn và trạng thái quan hệ.
+- Các tuyến đã chuyển gồm hồ sơ, ảnh đại diện, dấu chưa đọc, hội thoại ghim, lịch sử nhóm/Cloud, hồ sơ nhóm, tra bạn, trạng thái quan hệ, nhãn dán và phân tích liên kết phía máy chủ.
 - Hội thoại ẩn dùng `get_sensitive_endpoint`, giữ việc che nội dung nhạy cảm khỏi log.
-- API thay đổi trạng thái, gửi tin, long-poll, tải tệp, và đăng nhập giữ luồng chuyên biệt; không bật thử lại tự động cho thao tác có thể tạo tác dụng phụ.
+- API thay đổi trạng thái, gửi tin, long-poll, tải tệp, CDN, và đăng nhập giữ luồng chuyên biệt; không bật thử lại tự động cho thao tác có thể tạo tác dụng phụ.
 - Mã hoá tham số, cookie, giải mã phản hồi và xác thực HTTPS không đổi.
 
 Manual verification after a user-authorized build:
