@@ -3146,7 +3146,7 @@ impl ZaloGuiApp {
                         })
                         .inner_margin(Margin {
                             left: 16.0,
-                            right: 8.0,
+                            right: 0.0,
                             top: 11.0,
                             bottom: 11.0,
                         })
@@ -3609,10 +3609,14 @@ impl ZaloGuiApp {
                                             // Send Button
                                             let can_send = !self.input_message.trim().is_empty()
                                                 || self.pending_clipboard_image.is_some();
+                                            // Move only the Send button left; keep the composer frame full width.
+                                            let send_gap = ui.spacing().item_spacing.x;
+                                            ui.spacing_mut().item_spacing.x = 0.0;
                                             let (send_rect, send_resp) = ui.allocate_exact_size(
                                                 Vec2::new(send_btn_w, 34.0),
                                                 Sense::click(),
                                             );
+                                            ui.spacing_mut().item_spacing.x = send_gap;
                                             if send_resp.secondary_clicked() {
                                                 self.schedule_modal_open = true;
                                             }
