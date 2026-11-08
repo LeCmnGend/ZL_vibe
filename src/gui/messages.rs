@@ -4015,9 +4015,7 @@ pub(super) fn render_hover_reaction_bar(
     let hover_id = Id::new("active_hover_reaction_bubble");
     let msg_key = format!("{}_{}", msg.id, msg.ts);
 
-    let pointer_pos = ui
-        .ctx()
-        .input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
+    let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
     let in_hover_zone = pointer_pos.map_or(false, |p| hover_zone.contains(p));
     let in_bubble = pointer_pos.map_or(false, |p| {
         bubble_rect.expand2(Vec2::new(4.0, 4.0)).contains(p)
