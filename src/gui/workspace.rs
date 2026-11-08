@@ -2798,10 +2798,14 @@ impl ZaloGuiApp {
                                                                 .get(&thread_id)
                                                                 .and_then(|members| {
                                                                     members.iter().find(|member| {
-                                                                        self.contact_display_name(
-                                                                            &member.id,
-                                                                            &member.name,
-                                                                        ) == display_sender_fallback
+                                                                        self.settings
+                                                                            .contact_nicknames
+                                                                            .get(&Self::contact_nickname_key(&member.id))
+                                                                            .map(|name| name.trim())
+                                                                            .filter(|name| !name.is_empty())
+                                                                            .unwrap_or(member.name.as_str())
+                                                                            == display_sender_fallback
+                                                                                .as_str()
                                                                     })
                                                                 })
                                                                 .map(|member| member.id.clone())
